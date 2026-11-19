@@ -813,6 +813,8 @@ def _with_hotspot_ca_contact_metrics(run_dir: Path, candidate: dict[str, Any]) -
 
 
 def write_candidates(run_dir: Path, source_tool: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from mn_molecular_design_studio.design_creation import preserve_creation_times
+    candidates = preserve_creation_times(run_dir, candidates)
     # Container paths such as /work/artifacts/... are valid inputs/outputs
     # inside the running tool. Translate and persist them only when collecting
     # the scientific candidates into Results; keep the original path in

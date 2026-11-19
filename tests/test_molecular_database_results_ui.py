@@ -59,6 +59,29 @@ def _result_rows(group_id: str):
     ]
 
 
+def test_unadmitted_results_display_pending_review_without_claiming_a_pass(tmp_path, monkeypatch):
+    import json
+    from mn_molecular_design_studio import molecular_database_results, molecular_database_results_ui
+
+    _isolate_workspace(tmp_path, monkeypatch)
+    run_dir = tmp_path / 'runs/design/review-pending'
+    run_dir.mkdir(parents=True)
+    (run_dir / 'metadata.json').write_text(json.dumps({
+        'status': 'completed', 'library_admission_review': {'status': 'not_admitted'},
+    }))
+    monkeypatch.setattr(molecular_database_results, 'list_run_molecules', lambda *args, **kwargs: [])
+    monkeypatch.setattr(molecular_database_results_ui, '_render_run_passing_collection', lambda *args: None)
+    script = f'''
+from pathlib import Path
+from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions
+render_run_database_actions(Path({str(run_dir)!r}), {USER!r}, [])
+'''
+    app = AppTest.from_string(script, default_timeout=10).run()
+    assert not app.exception
+    assert any('not admitted to Database' in item.value and 'review is pending' in item.value for item in app.info)
+    assert not app.success
+
+
 def test_results_action_saves_exact_selected_subset(tmp_path, monkeypatch):
     _isolate_workspace(tmp_path, monkeypatch)
     from mn_molecular_design_studio import molecular_database_results, molecular_database_results_ui

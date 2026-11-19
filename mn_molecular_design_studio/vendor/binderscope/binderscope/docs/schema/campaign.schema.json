@@ -1,0 +1,3021 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binderscope.local/schema/campaign.schema.json",
+  "title": "Campaign blob (RAW)",
+  "description": "data/campaign.json: everything the board, map and query pages read (and the inspector reads a subset of through its own blob). One object per project; designs of all runs live in one array. Field meaning, units, producers and consumers are in docs/data_contract.md section 3. Older blobs without a profile validate once a profile is added.",
+  "type": "object",
+  "required": [
+    "profile",
+    "target",
+    "designs",
+    "modes",
+    "run"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "binderscope.campaign/1"
+    },
+    "profile": {
+      "$ref": "profile.schema.json"
+    },
+    "target": {
+      "$ref": "#/$defs/target"
+    },
+    "designs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/design"
+      }
+    },
+    "modes": {
+      "$ref": "#/$defs/modes"
+    },
+    "run": {
+      "$ref": "#/$defs/run"
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/run_item"
+      },
+      "description": "NEW. One entry per run. Required when profile.caps.multi_run is true; a single-run project may omit it (the viewer then builds one virtual run from `run`)."
+    },
+    "caps": {
+      "type": "object",
+      "description": "LEGACY. Capability flags written by older exporters (min_ipae, complex_rmsd, dg, models, traj, outcomes, glycan, olig, hotspot_rmsd, real). The viewer merges it underneath profile.caps (the profile wins). `real` is deprecated and must not be written by new exports.",
+      "additionalProperties": true
+    },
+    "fold": {
+      "$ref": "#/$defs/fold"
+    },
+    "diversity": {
+      "$ref": "#/$defs/diversity"
+    },
+    "generated": {
+      "type": "object",
+      "description": "NEW. Who wrote the file: {tool, version, date}.",
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "date": {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "target": {
+      "type": "object",
+      "description": "Target block: the reference chain the designs are placed on, plus the context the checks use. All coordinates are in the reference frame. resi/resn/ss/rsa/ca run over the same residues in the same order (the union of the residues of all runs' targets).",
+      "required": [
+        "resi",
+        "resn",
+        "ss",
+        "ca",
+        "atoms",
+        "hotspots",
+        "epitope",
+        "glycan",
+        "glycan_xyz",
+        "membrane",
+        "sites"
+      ],
+      "properties": {
+        "resi": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "description": "Residue numbers of the reference chain, UniProt numbering, ascending. Gaps are allowed (a run that deleted a loop, or an unresolved stretch of the reference structure)."
+        },
+        "resn": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/residue_code"
+          },
+          "description": "Residue name per entry of resi. One-letter codes in new exports (older data: three-letter)."
+        },
+        "ss": {
+          "$ref": "common.schema.json#/$defs/ss_string",
+          "description": "Secondary structure per entry of resi (H, E or L), from the reference chain."
+        },
+        "rsa": {
+          "$ref": "common.schema.json#/$defs/num_list",
+          "description": "Relative side-chain accessibility per entry of resi, 0..1, of the reference chain alone. Reserved (not rendered by the current pages)."
+        },
+        "ca": {
+          "$ref": "common.schema.json#/$defs/flat_xyz",
+          "description": "CA coordinates per entry of resi, flat [x,y,z,...], Angstrom, reference frame."
+        },
+        "atoms": {
+          "type": "object",
+          "required": [
+            "x",
+            "res",
+            "el",
+            "name",
+            "sasa"
+          ],
+          "description": "Heavy atoms of the reference chain, no hydrogens. x is flat xyz (3 numbers per atom); res is the 0-based index into resi; sasa is the per-atom solvent accessible area in A^2 of the chain alone (atoms with sasa <= 0.3 are not drawn by the canvas renderer).",
+          "properties": {
+            "x": {
+              "$ref": "common.schema.json#/$defs/flat_xyz"
+            },
+            "res": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "el": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sasa": {
+              "$ref": "common.schema.json#/$defs/num_list"
+            }
+          },
+          "additionalProperties": true
+        },
+        "hotspots": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "description": "Pooled hotspot residues of all runs (union), UniProt numbering. Per run: hotspots_by_run."
+        },
+        "epitope": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "description": "Residues that define the intended epitope (precision and recall are measured against it). Pooled over runs; per run: epitope_by_run."
+        },
+        "glycan": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "description": "N-glycosylation sites (Asn) that lie in the reference chain and have an anchor atom in glycan_xyz. Sites outside the construct are listed in profile.frame.glycan_sites only."
+        },
+        "glycan_xyz": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "common.schema.json#/$defs/xyz"
+          },
+          "description": "Anchor position (Asn ND2) per glycan site, key = site number as a string."
+        },
+        "membrane": {
+          "type": "object",
+          "required": [
+            "axis",
+            "centroid",
+            "offset"
+          ],
+          "description": "Membrane-side exclusion plane. A binder atom x is past the plane when (x - centroid) . axis > offset. axis is a unit vector pointing towards the membrane.",
+          "properties": {
+            "axis": {
+              "$ref": "common.schema.json#/$defs/xyz"
+            },
+            "centroid": {
+              "$ref": "common.schema.json#/$defs/xyz"
+            },
+            "offset": {
+              "type": "number"
+            },
+            "label": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string",
+              "description": "How the plane was derived (UniProt topology, construct end, a chain end of the reference structure ...)."
+            }
+          },
+          "additionalProperties": true
+        },
+        "sites": {
+          "type": "object",
+          "required": [
+            "A1"
+          ],
+          "description": "Named surface sites. A1 is the intended-epitope site: the page views are oriented by A1.normal. When no run records a hotspot, A1 is built from the residues the designs contact most (or from the whole construct) and its source says so. Other keys (A2, B, ...) are optional.",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "center",
+              "normal",
+              "residues"
+            ],
+            "properties": {
+              "center": {
+                "$ref": "common.schema.json#/$defs/xyz"
+              },
+              "normal": {
+                "$ref": "common.schema.json#/$defs/xyz",
+                "description": "Unit vector from the centroid of the target towards the site (the axis along which the construct is thinnest when the site is the whole construct)."
+              },
+              "residues": {
+                "$ref": "common.schema.json#/$defs/resi_list"
+              },
+              "source": {
+                "type": "string",
+                "description": "Present only when the site is not made from hotspots: where it comes from (no hotspots recorded, the residues the designs contact most or the whole construct)."
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "uniprot": {
+          "type": "string"
+        },
+        "construct": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[first, last] residue of the union construct."
+        },
+        "length": {
+          "type": "integer",
+          "description": "Length of the full-length protein."
+        },
+        "dom": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Domain or segment label per entry of resi. Reserved (not rendered by the current pages)."
+        },
+        "foot": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "common.schema.json#/$defs/resi_list"
+          },
+          "description": "Named residue footprints of known complexes (for example the binders of a known complex), name -> residues."
+        },
+        "olig": {
+          "type": "object",
+          "description": "Partner-subunit (oligomer) context. buried: reference-chain residues buried by the partner(s) in the assembly, residue (string) -> buried area in A^2. neigh: partner CA traces, chain key -> flat xyz (the inspector blob carries the copy the pages draw).",
+          "properties": {
+            "buried": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number"
+              }
+            },
+            "neigh": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "common.schema.json#/$defs/flat_xyz"
+              }
+            },
+            "chains": {
+              "$ref": "common.schema.json#/$defs/string_list",
+              "description": "NEW. Chain keys of the partners, in drawing order."
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "NEW. Chain key -> label shown on hover."
+            },
+            "source": {
+              "type": "string",
+              "description": "NEW. Where the partners come from, e.g. '1ABC assembly 1'."
+            },
+            "min_area": {
+              "type": "number",
+              "description": "NEW. Smallest buried area (A^2) that counts as buried (default 5)."
+            }
+          },
+          "additionalProperties": true
+        },
+        "orig_resi": {
+          "type": "array",
+          "items": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "description": "NEW. For each entry of resi, the residue number in the structure BindCraft was given (construct numbering, shown on hover), or null."
+        },
+        "numbering": {
+          "type": "object",
+          "description": "NEW. How UniProt numbers relate to the input numbering: orig = uniprot + input_offset.",
+          "properties": {
+            "scheme": {
+              "type": "string"
+            },
+            "input_offset": {
+              "type": "integer"
+            },
+            "input_label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "reference": {
+          "type": "object",
+          "description": "NEW. Where the reference coordinates come from.",
+          "properties": {
+            "pdb": {
+              "type": "string"
+            },
+            "chain": {
+              "type": "string"
+            },
+            "assembly": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "uniprot": {
+              "type": "string"
+            },
+            "given": {
+              "type": "boolean",
+              "description": "false when no full-length reference structure was given: pdb is then empty and the construct is the frame."
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "unresolved": {
+          "$ref": "common.schema.json#/$defs/ranges",
+          "description": "NEW. Ranges inside the construct span that are missing from the reference structure. Drawn as a chain break (a gap in the CA trace), not as a removed region."
+        },
+        "hotspots_by_run": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "common.schema.json#/$defs/resi_list"
+          },
+          "description": "NEW. run id -> hotspots of that run, UniProt numbering."
+        },
+        "epitope_by_run": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "common.schema.json#/$defs/resi_list"
+          },
+          "description": "NEW. run id -> epitope residues of that run (restricted to residues present in the run's target)."
+        },
+        "glycan_atoms": {
+          "type": "object",
+          "description": "NEW. Heavy atoms of the sugars attached to glycan sites, key = site number as a string. Used for the glycan distance and for drawing.",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "xyz",
+              "el"
+            ],
+            "properties": {
+              "chain": {
+                "type": "string"
+              },
+              "resn": {
+                "$ref": "common.schema.json#/$defs/string_list",
+                "description": "Sugar residue names in order, e.g. [NAG, NAG]."
+              },
+              "el": {
+                "$ref": "common.schema.json#/$defs/string_list"
+              },
+              "xyz": {
+                "$ref": "common.schema.json#/$defs/flat_xyz"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "rest": {
+          "type": "object",
+          "description": "NEW. Rest-of-chain context: the parts of the full-length chain that no run's target contains (the union of removed regions is per run, see runs[].target.removed).",
+          "properties": {
+            "ref": {
+              "type": "string"
+            },
+            "ranges": {
+              "$ref": "common.schema.json#/$defs/ranges",
+              "description": "Ranges outside the union construct, UniProt numbering."
+            },
+            "n_res": {
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "run": {
+      "type": "object",
+      "description": "Project-level run summary. Legacy single-run blobs carry the BindCraft counts here (n_traj, n_traj_pass, n_scored, n_accepted, cols, failure); dataset blobs carry dataset counts (n_total, n_boltz, n_sample, n_binders_*, license, credit). For a multi-run project this block summarises the whole project and the per-run numbers live in runs[].",
+      "required": [
+        "source",
+        "name"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Origin of the designs, e.g. 'BindCraft v1.5', 'a public dataset'."
+        },
+        "name": {
+          "type": "string"
+        },
+        "n_traj": {
+          "$ref": "common.schema.json#/$defs/int_or_null",
+          "description": "Trajectories attempted. null = unknown (the Trajectory folders were not given)."
+        },
+        "n_traj_pass": {
+          "$ref": "common.schema.json#/$defs/int_or_null"
+        },
+        "n_scored": {
+          "$ref": "common.schema.json#/$defs/int_or_null"
+        },
+        "n_accepted": {
+          "$ref": "common.schema.json#/$defs/int_or_null"
+        },
+        "cols": {
+          "type": "integer"
+        },
+        "failure": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "description": "[[filter stem or column, label, count], ...], most frequent first. A sequence can fail several filters, so the counts overlap."
+        },
+        "n_runs": {
+          "type": "integer"
+        },
+        "n_total": {
+          "type": "integer"
+        },
+        "n_boltz": {
+          "type": "integer"
+        },
+        "n_sample": {
+          "type": "integer"
+        },
+        "n_binders_total": {
+          "type": "integer"
+        },
+        "n_binders_sample": {
+          "type": "integer"
+        },
+        "export": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "credit": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "run_item": {
+      "type": "object",
+      "description": "NEW. One run. Settings, target construct, funnel and filters are per run because two runs of one target can differ in everything (hotspots, lengths, construct, filters).",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "common.schema.json#/$defs/key_id"
+        },
+        "label": {
+          "type": "string"
+        },
+        "reader": {
+          "type": "string",
+          "description": "bindcraft1 or bindcraft2."
+        },
+        "source": {
+          "type": "string",
+          "description": "Tool and revision text shown in the UI, e.g. 'BindCraft v1.5'."
+        },
+        "tool_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "experimental": {
+          "type": "boolean"
+        },
+        "folder": {
+          "type": "string",
+          "description": "Basename of the run folder (no absolute path is written anywhere in the bundle)."
+        },
+        "n_designs": {
+          "type": "object",
+          "properties": {
+            "accepted": {
+              "type": "integer"
+            },
+            "rejected": {
+              "type": "integer"
+            },
+            "rejected_with_structure": {
+              "type": "integer"
+            },
+            "rows": {
+              "type": "integer",
+              "description": "Rows of mpnn_design_stats.csv (accepted plus rejected)."
+            },
+            "families": {
+              "type": "integer",
+              "description": "Backbone families with at least one accepted design."
+            }
+          },
+          "additionalProperties": true
+        },
+        "settings": {
+          "type": "object",
+          "description": "Run settings. Hotspots are given twice: in UniProt numbering (hotspots) and as written in the settings (hotspots_input).",
+          "properties": {
+            "binder_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "protocol": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "advanced_settings": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "filters_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target_settings": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "helicity": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "chains": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "length_range": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "final_designs_target": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "hotspots": {
+              "$ref": "common.schema.json#/$defs/resi_list",
+              "description": "UniProt numbering."
+            },
+            "hotspots_input": {
+              "$ref": "common.schema.json#/$defs/resi_list",
+              "description": "Numbering of the file BindCraft was given (construct numbering)."
+            },
+            "sources": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Where each value came from: settings_json, csv, inferred or unknown, keyed by setting name."
+            }
+          },
+          "additionalProperties": true
+        },
+        "target": {
+          "$ref": "#/$defs/run_target"
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "stem",
+              "threshold",
+              "op"
+            ],
+            "properties": {
+              "stem": {
+                "type": "string"
+              },
+              "metric": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Key in design.m that carries the same quantity (null when the page has none)."
+              },
+              "threshold": {
+                "type": "number"
+              },
+              "op": {
+                "type": "string",
+                "enum": [
+                  ">=",
+                  "<="
+                ]
+              },
+              "per_model": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "provenance": {
+                "type": "string",
+                "description": "counter-verified, bounded or memory: a reconstruction of BindCraft 1's default threshold, and how well the data support it (binder_review.config). campaign: the threshold the run recorded itself (BindCraft 2, campaign_metadata.json), which also carries source, mandatory, judged_per_model and value_stem."
+              },
+              "note": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string",
+                "description": "campaign rules only: where the threshold was read (campaign_metadata, or settings.min_plddt_final)."
+              },
+              "mandatory": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "campaign rules only: BindCraft fails a design whose metric could not be measured."
+              },
+              "judged_per_model": {
+                "type": "boolean",
+                "description": "campaign rules only: BindCraft judges the filter on each validation model while the CSV holds the rounded mean."
+              },
+              "value_stem": {
+                "type": "string",
+                "description": "campaign rules only: the key of design.src.average that holds the values (the campaign's own name is repeated there)."
+              }
+            },
+            "additionalProperties": true
+          },
+          "description": "The filter set that decided accepted or rejected, as far as it is known: the thresholds the run recorded itself (BindCraft 2) or, for a run that records none, BindCraft 1's reconstructed defaults. Builds the BindCraft filters group of the query page."
+        },
+        "filter_set": {
+          "type": "object",
+          "description": "Only for a run judged by the thresholds it recorded itself (BindCraft 2): source (campaign), n_rules, unevaluated (recorded thresholds on metrics Binderscope does not carry or that no design carries: name, op, threshold, mandatory, source, reason), unlimited (names recorded with an infinite threshold: no limit, no rule) and a note. A run on BindCraft 1's reconstructed defaults has no filter_set.",
+          "additionalProperties": true
+        },
+        "funnel": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "label",
+              "n",
+              "status"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "n": {
+                "$ref": "common.schema.json#/$defs/int_or_null",
+                "description": "null = unknown."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "observed",
+                  "derived",
+                  "unknown"
+                ]
+              },
+              "note": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          },
+          "description": "Ordered funnel stages. An unknown count is written as n null with status unknown and is drawn as '?', never as 0."
+        },
+        "failure": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "description": "Same shape as run.failure, for this run."
+        },
+        "n_traj": {
+          "$ref": "common.schema.json#/$defs/int_or_null"
+        },
+        "n_traj_pass": {
+          "$ref": "common.schema.json#/$defs/int_or_null"
+        },
+        "n_scored": {
+          "$ref": "common.schema.json#/$defs/int_or_null"
+        },
+        "n_accepted": {
+          "$ref": "common.schema.json#/$defs/int_or_null"
+        },
+        "traj_basis": {
+          "type": "string",
+          "enum": [
+            "attempted",
+            "passed",
+            "none"
+          ],
+          "description": "What design.traj counts: attempted trajectories, or only the trajectories that passed (the row order of trajectory_stats.csv), or nothing (traj is 0)."
+        },
+        "epoch": {
+          "type": "object",
+          "description": "Settings epoch. Estimates must never be pooled across different epochs.",
+          "properties": {
+            "hash": {
+              "type": "string"
+            },
+            "fields": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "warnings": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "notes": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "paratope": {
+          "$ref": "#/$defs/paratope_block",
+          "description": "NEW. Paratope of the accepted designs of a scaffolded run. Absent for a run that is not scaffolded or whose edit spec cannot be used (the reason is in the run's notes)."
+        },
+        "term": {
+          "$ref": "#/$defs/run_term"
+        },
+        "paratope_rejected": {
+          "$ref": "#/$defs/paratope_block",
+          "description": "NEW. The same block over the rejected designs; the contrast with the accepted block shows what the filters removed."
+        },
+        "diversity_paratope": {
+          "$ref": "#/$defs/diversity_paratope"
+        }
+      },
+      "additionalProperties": true
+    },
+    "run_target": {
+      "type": "object",
+      "description": "NEW. The target construct of one run, in UniProt numbering. The residues present are the union of resi_ranges; removed lists the stretches deleted from the construct (their flanks are extra cut points); unresolved is not repeated here (it belongs to the reference structure).",
+      "required": [
+        "resi_ranges"
+      ],
+      "properties": {
+        "resi_ranges": {
+          "$ref": "common.schema.json#/$defs/ranges",
+          "description": "Contiguous stretches of residues present, ascending, e.g. [[40,87],[96,129],[142,210]]."
+        },
+        "removed": {
+          "$ref": "common.schema.json#/$defs/ranges",
+          "description": "Stretches missing between first and last, e.g. [[88,95],[130,141]]."
+        },
+        "first": {
+          "type": "integer"
+        },
+        "last": {
+          "type": "integer"
+        },
+        "n_resi": {
+          "type": "integer"
+        },
+        "cut_points": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "description": "Residues next to a cut: the first and last residue when the construct is cut there, and the residues flanking every removed stretch."
+        },
+        "input_offset": {
+          "type": "integer",
+          "description": "orig = uniprot + input_offset for this run's input file."
+        },
+        "hotspots": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "description": "This run's hotspots, UniProt numbering."
+        },
+        "epitope": {
+          "$ref": "common.schema.json#/$defs/resi_list"
+        },
+        "sequence_matches_reference": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "consistent": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Every structure of the run carries the identical residue set."
+        }
+      },
+      "additionalProperties": true
+    },
+    "modes": {
+      "type": "object",
+      "description": "Binding modes (clusters of contact position), keys M1..M7 ordered by size. The CSS defines seven colours and shapes, so at most seven modes exist; the modes module merges the smallest clusters into M7 when it finds more.",
+      "minProperties": 1,
+      "patternProperties": {
+        "^M[1-7]$": {
+          "$ref": "#/$defs/mode"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mode": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Short label, shown on the legend and map (up to about 40 characters)."
+        },
+        "note": {
+          "type": "string",
+          "description": "One to three sentences shown in the mode detail panel. Absent in older blobs (profile.modes.notes holds the text)."
+        },
+        "n": {
+          "type": "integer",
+          "description": "NEW. Accepted designs in the mode."
+        },
+        "n_rejected": {
+          "type": "integer",
+          "description": "NEW. Rejected designs assigned to the mode."
+        },
+        "by_run": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "NEW. run id -> accepted designs."
+        },
+        "top": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "description": "Most contacted residues, UniProt numbering."
+        },
+        "enr": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "description": "Residues enriched in this mode against all others."
+        },
+        "site": {
+          "type": "string",
+          "description": "NEW. Key of target.sites that this mode overlaps most."
+        },
+        "auto_name": {
+          "type": "boolean",
+          "description": "NEW. True when the name was generated from the residues instead of written by hand."
+        }
+      },
+      "additionalProperties": true
+    },
+    "fold": {
+      "type": "object",
+      "description": "TM-align fold similarity between the binders. tm is a base64 string of an n x n uint8 matrix (row-major), TM-score x 100 normalised by the shorter chain, symmetric, diagonal 100. ids gives the design id of each row in order.",
+      "required": [
+        "n",
+        "ids",
+        "tm"
+      ],
+      "properties": {
+        "n": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ids": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "tm": {
+          "type": "string",
+          "contentEncoding": "base64"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "diversity": {
+      "type": "object",
+      "description": "NEW. Reference results of the family statistics at the default thresholds, per run (never pooled) and pooled (descriptive only). The viewer recomputes interactively; both must agree at the defaults (tests compare them).",
+      "properties": {
+        "schema": {
+          "type": "integer"
+        },
+        "basis_default": {
+          "type": "string",
+          "enum": [
+            "fold",
+            "site",
+            "both"
+          ]
+        },
+        "distance_default": {
+          "type": "object",
+          "properties": {
+            "fold": {
+              "type": "number"
+            },
+            "site": {
+              "type": "number"
+            },
+            "both": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": true,
+          "description": "Average-linkage cut distance (1 - similarity) per basis."
+        },
+        "fold_weight": {
+          "type": "number",
+          "description": "Weight of fold distance in the 'both' basis (0.5)."
+        },
+        "runs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/diversity_block"
+          }
+        },
+        "pooled": {
+          "$ref": "#/$defs/diversity_block"
+        }
+      },
+      "additionalProperties": true
+    },
+    "diversity_block": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "n_designs": {
+          "type": "integer"
+        },
+        "n_families": {
+          "type": "integer"
+        },
+        "estimates_valid": {
+          "type": "boolean",
+          "description": "False for the pooled block when the runs have different epochs: no coverage or forecast is given."
+        },
+        "clusters": {
+          "type": "object",
+          "description": "basis -> list of clusters, largest first.",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "size",
+                "fams"
+              ],
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "size": {
+                  "type": "integer"
+                },
+                "fams": {
+                  "$ref": "common.schema.json#/$defs/string_list",
+                  "description": "Family (bb) ids."
+                }
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "counts": {
+          "type": "object",
+          "description": "basis -> {n, S, f1, f2}: families, clusters, clusters seen once, clusters seen twice.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "n": {
+                "type": "integer"
+              },
+              "S": {
+                "type": "integer"
+              },
+              "f1": {
+                "type": "integer"
+              },
+              "f2": {
+                "type": "integer"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "advice": {
+          "type": "object",
+          "description": "basis -> Chao-Jost readout (see data_contract.md section 3.9). Present only when estimates_valid and design order is known.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "coverage": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "f0": {
+                "type": "number",
+                "minimum": 0
+              },
+              "chao1": {
+                "type": "number"
+              },
+              "hill1": {
+                "type": "number"
+              },
+              "hill2": {
+                "type": "number"
+              },
+              "dominance": {
+                "type": "number"
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "early",
+                  "keep",
+                  "maybe",
+                  "enough"
+                ]
+              },
+              "low_confidence": {
+                "type": "boolean"
+              },
+              "n_traj": {
+                "$ref": "common.schema.json#/$defs/int_or_null"
+              },
+              "traj_basis": {
+                "type": "string",
+                "enum": [
+                  "attempted",
+                  "passed",
+                  "none"
+                ]
+              },
+              "yield": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "p": {
+                    "type": "number"
+                  },
+                  "lo": {
+                    "type": "number"
+                  },
+                  "hi": {
+                    "type": "number"
+                  }
+                },
+                "additionalProperties": true
+              },
+              "snew": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "Expected new clusters after m = 1..n more families, m up to n."
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "replay": {
+          "type": "array",
+          "description": "Backtest: what the readout would have said after each checkpoint of the run, and what the run went on to find.",
+          "items": {
+            "type": "object",
+            "required": [
+              "upto",
+              "n_families",
+              "S"
+            ],
+            "properties": {
+              "upto": {
+                "type": "integer",
+                "description": "Checkpoint in units of traj_basis."
+              },
+              "n_families": {
+                "type": "integer"
+              },
+              "S": {
+                "type": "integer"
+              },
+              "coverage": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "level": {
+                "type": "string"
+              },
+              "found_later": {
+                "type": "integer",
+                "description": "Clusters found after the checkpoint."
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "fold": {
+          "$ref": "#/$defs/diversity_axis",
+          "description": "NEW. Present, with status off, for a run built on a fixed scaffold: the fold-based bases (fold, both) are then left out of clusters, counts, sweep, advice and replay_by_basis."
+        },
+        "basis_off": {
+          "$ref": "common.schema.json#/$defs/string_list",
+          "description": "NEW. Bases left out of this block because they include fold distance."
+        },
+        "basis_default": {
+          "type": "string",
+          "enum": [
+            "fold",
+            "site",
+            "both"
+          ],
+          "description": "NEW. Only when it differs from the project's basis_default: the basis this run is read on."
+        },
+        "epitope": {
+          "$ref": "#/$defs/epitope_diversity"
+        }
+      },
+      "additionalProperties": true
+    },
+    "design": {
+      "type": "object",
+      "description": "One designed binder sequence with its complex model, placed in the reference frame of the target. Accepted and rejected designs share this shape; status tells them apart.",
+      "required": [
+        "id",
+        "bb",
+        "fam",
+        "s",
+        "seed",
+        "traj",
+        "sc",
+        "mode",
+        "len",
+        "seq",
+        "ca",
+        "view",
+        "vc",
+        "emb",
+        "tc",
+        "bc",
+        "hot",
+        "m",
+        "glycan",
+        "liab"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique across the project. The BindCraft design id when that is unique, otherwise '<run>/<design id>'. Used for tiles, links (#d=<id>), decisions."
+        },
+        "name": {
+          "type": "string",
+          "description": "The design id as the tool wrote it (without _model suffix). Differs from id only when ids had to be made unique."
+        },
+        "run": {
+          "$ref": "common.schema.json#/$defs/key_id",
+          "description": "NEW. Run id (runs[].id). A single-run legacy blob may omit it."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "rejected"
+          ],
+          "description": "NEW. Default accepted when absent."
+        },
+        "rank": {
+          "$ref": "common.schema.json#/$defs/int_or_null",
+          "description": "NEW. BindCraft rank within the run (accepted designs)."
+        },
+        "bb": {
+          "type": "string",
+          "description": "Backbone id: one BindCraft trajectory. The unit of a family."
+        },
+        "fam": {
+          "type": "string",
+          "description": "Family id. Equal to bb in every data set so far."
+        },
+        "s": {
+          "type": "integer",
+          "description": "Sequence index on the backbone (the mpnn number); 1 when the source has none."
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "traj": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Generation order of the backbone within its run (1 = first), in units of runs[].traj_basis. 0 = unknown or not applicable."
+        },
+        "sc": {
+          "type": "string",
+          "description": "Fold class: scaffold name (synthetic data), design class (datasets), or fold-cluster label F1, F2, ... from the families module (BindCraft runs)."
+        },
+        "site": {
+          "type": "string",
+          "description": "Key of target.sites nearest to the design's contact centroid. Not rendered by the current pages."
+        },
+        "mode": {
+          "type": "string",
+          "pattern": "^M[1-7]$"
+        },
+        "len": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "seq": {
+          "$ref": "common.schema.json#/$defs/binder_sequence"
+        },
+        "flip": {
+          "type": "boolean",
+          "description": "Mock flag: the re-score placed a confident design elsewhere. false when there is no re-score."
+        },
+        "ca": {
+          "$ref": "common.schema.json#/$defs/flat_xyz",
+          "description": "CA of the binder, one point per residue (3 * len numbers), reference frame."
+        },
+        "rf": {
+          "$ref": "common.schema.json#/$defs/transform12",
+          "description": "Pose of the re-scored model relative to the design: [R (9), t (3)]. Identity when there is no re-score."
+        },
+        "view": {
+          "$ref": "common.schema.json#/$defs/rot9",
+          "description": "Canonical thumbnail view: rows are the view x, y and z axes in the reference frame."
+        },
+        "vc": {
+          "$ref": "common.schema.json#/$defs/xyz",
+          "description": "Centre of the thumbnail view."
+        },
+        "emb": {
+          "$ref": "common.schema.json#/$defs/emb2"
+        },
+        "tc": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "description": "Target residues in contact (any heavy-atom pair within 4.5 A), UniProt numbering, ascending."
+        },
+        "bc": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": "Binder residues in contact, 0-based indexes into seq/ca (the board draws ca[3 * i])."
+        },
+        "nc": {
+          "type": "integer",
+          "description": "Number of atom-pair contacts."
+        },
+        "hot": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "description": "Contacted residues that are hotspots of the design's own run."
+        },
+        "hot_of": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "NEW. Number of hotspots of the design's own run (the denominator of 'hot'). Falls back to target.hotspots.length."
+        },
+        "m": {
+          "$ref": "#/$defs/metrics"
+        },
+        "glycan": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "Distance in A from the nearest binder heavy atom to each glycan site of target.glycan (sugar atoms when modelled, else the Asn ND2 anchor). Key = site number as a string."
+        },
+        "models": {
+          "type": "array",
+          "description": "Predictor entries. BindCraft-only data: one entry {model: 'AF2 (BindCraft)', ipsae: null, iptm: i_pTM, rmsd: Hotspot_RMSD}.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "model": {
+                "type": "string"
+              },
+              "ipsae": {
+                "$ref": "common.schema.json#/$defs/num_or_null"
+              },
+              "iptm": {
+                "$ref": "common.schema.json#/$defs/num_or_null"
+              },
+              "rmsd": {
+                "$ref": "common.schema.json#/$defs/num_or_null"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "liab": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "k",
+              "p",
+              "m",
+              "s"
+            ],
+            "properties": {
+              "k": {
+                "type": "string",
+                "description": "Kind of liability."
+              },
+              "p": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "1-based position in the binder."
+              },
+              "m": {
+                "type": "string",
+                "description": "Motif."
+              },
+              "s": {
+                "$ref": "common.schema.json#/$defs/severity"
+              },
+              "b": {
+                "enum": ["recorded", "inferred"],
+                "description": "Disulfide entries only (Unpaired cysteine, Disulfide geometry loose): whether the pairing came from the structure file's record or was inferred from the model's SG-SG distances because the file records none."
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "inspect": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Tag of this design in the inspector blob, or null."
+        },
+        "pl": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "description": "Per-residue pLDDT, 0..100 (B-factor of chain B for BindCraft). Optional: when absent the pages disable pLDDT colouring (they must not invent values)."
+        },
+        "wt": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Sampling weight (inverse sampling probability) when the set is a sample; 1 otherwise. Used with outcomes."
+        },
+        "outcome": {
+          "$ref": "#/$defs/outcome"
+        },
+        "method": {
+          "type": "string",
+          "description": "Design method as submitted (datasets)."
+        },
+        "author": {
+          "type": "string"
+        },
+        "pbid": {
+          "type": "string",
+          "description": "Id in the source dataset."
+        },
+        "fpov": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Contacted residues inside each footprint of target.foot, name -> count."
+        },
+        "prov": {
+          "type": "object",
+          "description": "NEW. Provenance of the design.",
+          "properties": {
+            "run": {
+              "type": "string"
+            },
+            "binder_name": {
+              "type": "string"
+            },
+            "backbone": {
+              "type": "string"
+            },
+            "length": {
+              "type": "integer"
+            },
+            "seed": {
+              "type": "integer"
+            },
+            "mpnn": {
+              "$ref": "common.schema.json#/$defs/int_or_null"
+            },
+            "protocol": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "$ref": "common.schema.json#/$defs/int_or_null",
+              "description": "k of the _model{k} suffix: the AF2 model whose pose is in the structure file."
+            },
+            "model_file": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Structure file relative to the run folder (accepted/<name>_model<k>.pdb)."
+            },
+            "rank": {
+              "$ref": "common.schema.json#/$defs/int_or_null"
+            },
+            "csv": {
+              "type": "string",
+              "description": "CSV the scores were read from."
+            },
+            "design_time_s": {
+              "$ref": "common.schema.json#/$defs/num_or_null"
+            },
+            "notes": {
+              "type": "string",
+              "description": "BindCraft's Notes column (e.g. 'Relaxed structure contains clashes.')."
+            },
+            "structure": {
+              "type": "string",
+              "enum": [
+                "present",
+                "missing"
+              ]
+            },
+            "marked": {
+              "type": "boolean",
+              "description": "Row highlighted in the run's xlsx (meaning unconfirmed)."
+            },
+            "fit": {
+              "type": "string",
+              "enum": [
+                "interface",
+                "all",
+                "core"
+              ],
+              "description": "How the design was placed on the reference chain: interface (the superposition is weighted around the binder), all (every shared residue counts the same) or core (the residues a trimmed fit keeps). It differs from the mode asked for (manifest.thresholds.placement) when there was nothing to weight around (fit_note says why)."
+            },
+            "fit_note": {
+              "type": "string",
+              "description": "Why the design was not placed by the fit that was asked for; absent otherwise."
+            }
+          },
+          "additionalProperties": true
+        },
+        "src": {
+          "type": "object",
+          "description": "NEW. Scores exactly as the tool reported them (CSV scales), so that recomputed values in m can be compared. average: stem -> Average_<stem>; models: model number -> {stem: value}; interface_aas: amino-acid counts at the interface.",
+          "properties": {
+            "tool": {
+              "type": "string"
+            },
+            "average": {
+              "$ref": "common.schema.json#/$defs/stem_value_map"
+            },
+            "models": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "common.schema.json#/$defs/stem_value_map"
+              }
+            },
+            "interface_aas": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "fail": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/filter_failure"
+          },
+          "description": "NEW. Filters the design fails under the run's filter set (empty for accepted designs). One entry per rule and scope."
+        },
+        "nm": {
+          "type": "object",
+          "description": "NEW. Near-miss summary of a rejected design.",
+          "properties": {
+            "n_failed": {
+              "type": "integer",
+              "description": "Number of distinct stems failed."
+            },
+            "stems": {
+              "$ref": "common.schema.json#/$defs/string_list"
+            },
+            "worst_rel": {
+              "type": "number",
+              "description": "Largest relative miss over the failures."
+            },
+            "score": {
+              "type": "number",
+              "description": "0..1, higher = closer to passing (1 - worst_rel clipped, penalised by n_failed)."
+            },
+            "near": {
+              "type": "boolean",
+              "description": "True when the design is a near-miss: it fails one stem, and by no more than 25 % of the threshold. Never true when a failure is not measured."
+            },
+            "unmeasured": {
+              "$ref": "common.schema.json#/$defs/string_list",
+              "description": "Only for a run judged by the thresholds it recorded itself: the stems BindCraft reported as failed whose size the CSV does not show. A design with any is not near and has score 0."
+            }
+          },
+          "additionalProperties": true
+        },
+        "para": {
+          "$ref": "#/$defs/design_para"
+        },
+        "term": {
+          "$ref": "#/$defs/design_term"
+        }
+      },
+      "additionalProperties": true
+    },
+    "outcome": {
+      "type": "object",
+      "description": "Assay outcome of a design (plumbing for the lab data pass). Kinetic constants in SI units. Hidden behind the reveal switch; the whole object is absent when profile.caps.outcomes is false.",
+      "required": [
+        "binds"
+      ],
+      "properties": {
+        "binds": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Binding detected. null = tested, not conclusive."
+        },
+        "strength": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Strong, Medium or Weak, as the source labels it."
+        },
+        "kd": {
+          "$ref": "common.schema.json#/$defs/num_or_null",
+          "description": "Dissociation constant in M."
+        },
+        "kon": {
+          "$ref": "common.schema.json#/$defs/num_or_null",
+          "description": "Association rate in 1/(M s)."
+        },
+        "koff": {
+          "$ref": "common.schema.json#/$defs/num_or_null",
+          "description": "Dissociation rate in 1/s."
+        },
+        "expressed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "assay": {
+          "type": "string"
+        },
+        "sample": {
+          "type": "string",
+          "description": "Sample name in the lab files (maps to the design)."
+        },
+        "source": {
+          "type": "string",
+          "description": "File the result was read from."
+        }
+      },
+      "additionalProperties": true
+    },
+    "metrics": {
+      "type": "object",
+      "description": "Page metrics of one design. Every core key is present; a quantity the data does not carry is null (the viewer then switches the checks that need it off). Scales: 0..1 unless a unit is given. docs/data_contract.md section 3.6 lists meaning, units, producers and consumers.",
+      "required": [
+        "binder_rmsd",
+        "charge",
+        "complex_rmsd",
+        "cterm_d",
+        "dg",
+        "dsasa",
+        "epi_prec",
+        "epi_rec",
+        "gravy",
+        "helix_frac",
+        "hotspot_rmsd",
+        "hphob_patch",
+        "hyd_frac",
+        "iface_helix",
+        "ipae_mean",
+        "ipae_norm",
+        "ipsae",
+        "iptm",
+        "iptm_b",
+        "loop_frac",
+        "mem_excess",
+        "min_ipae",
+        "n_agree",
+        "n_cys",
+        "n_hbonds",
+        "n_met",
+        "n_salt",
+        "n_trp",
+        "n_unsat",
+        "nterm_d",
+        "pI",
+        "plddt",
+        "ptm",
+        "sc",
+        "seed_spread",
+        "strand_frac",
+        "surf_hyd",
+        "target_rmsd"
+      ],
+      "properties": {
+        "plddt": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Mean pLDDT of the binder in the primary complex model."
+        },
+        "ptm": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "pTM of the primary model."
+        },
+        "iptm": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "i_pTM of the primary model (BindCraft: Average_i_pTM; datasets: Boltz-2 ipTM)."
+        },
+        "iptm_b": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "BindCraft's own i_pTM (Average_i_pTM). Equal to iptm when BindCraft's AF2 is the primary model."
+        },
+        "ipae_norm": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "BindCraft Average_i_pAE: inter-chain PAE divided by 31 (0.35 = 10.85 A)."
+        },
+        "ipae_mean": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Mean inter-chain PAE in A (ipae_norm * 31 for BindCraft, or from a PAE matrix)."
+        },
+        "min_ipae": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Lowest inter-chain PAE in A, from a PAE matrix. Null for BindCraft-only data."
+        },
+        "ipsae": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "ipSAE (the minimum over the two chain orders) of a co-folding model. Null for BindCraft-only data."
+        },
+        "ipsae_max": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "ipSAE, maximum over the two chain orders (datasets)."
+        },
+        "complex_rmsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "CA RMSD in A of the binder in the re-score model against the design pose after aligning on the target. Null without a re-score."
+        },
+        "binder_rmsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "BindCraft Binder_RMSD (binder alone against binder in the complex); datasets: ESMFold monomer against the complex shape."
+        },
+        "hotspot_rmsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "BindCraft Hotspot_RMSD: movement of the binder between trajectory and prediction after superposing the target."
+        },
+        "target_rmsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "BindCraft Target_RMSD, or the placement RMSD of the design's target on the reference when BindCraft gives none."
+        },
+        "dsasa": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Surface area buried on binding, recomputed from the structure (BindCraft's own dSASA is in src)."
+        },
+        "sc": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Shape complementarity, 0..1 (BindCraft ShapeComplementarity)."
+        },
+        "dg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Rosetta interface energy in REU (BindCraft dG, more negative is better). Null without PyRosetta output."
+        },
+        "n_hbonds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Interface hydrogen bonds, donor-acceptor heavy-atom pairs within 3.5 A, recomputed."
+        },
+        "n_salt": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Interface salt bridges within 4.0 A, recomputed."
+        },
+        "n_unsat": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Buried polar atoms without a hydrogen-bond partner within 3.5 A, recomputed."
+        },
+        "hyd_frac": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Share of the interface area that is carbon or sulfur."
+        },
+        "hphob_patch": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Largest exposed hydrophobic patch on the binder."
+        },
+        "surf_hyd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "BindCraft Surface_Hydrophobicity."
+        },
+        "loop_frac": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Share of the binder's interface residues that are in loops."
+        },
+        "helix_frac": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Share of binder residues in helices."
+        },
+        "strand_frac": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "iface_helix": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Share of interface residues in helices."
+        },
+        "pI": {
+          "type": "number",
+          "description": "Isoelectric point."
+        },
+        "charge": {
+          "type": "number",
+          "description": "Net charge at pH 7.4."
+        },
+        "gravy": {
+          "type": "number",
+          "description": "Grand average of hydropathy (Kyte-Doolittle)."
+        },
+        "n_cys": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "n_met": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "n_trp": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "epi_prec": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Share of the contacted target residues that lie in the intended epitope of the design's run. null when the run records no hotspot."
+        },
+        "epi_rec": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Share of the intended epitope (restricted to the run's target) that is contacted. null when the run records no hotspot."
+        },
+        "mem_excess": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Largest signed distance of any binder heavy atom beyond the membrane exclusion plane; negative = clear by that much, positive = crosses it."
+        },
+        "nterm_d": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Distance from the binder's first CA to the nearest target heavy atom."
+        },
+        "cterm_d": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Distance from the binder's last CA to the nearest target heavy atom."
+        },
+        "seed_spread": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Spread of the pose over repeat seeds."
+        },
+        "n_agree": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Independent predictors that reproduce the design (0..3)."
+        },
+        "ciplddt": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Interface pLDDT, 0..1 (BindCraft i_pLDDT; dataset complex ipLDDT)."
+        },
+        "cplddt": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Complex pLDDT, 0..1 (datasets)."
+        },
+        "esm_plddt": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "ESMFold monomer pLDDT, 0..100 (datasets)."
+        },
+        "pde": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Predicted distance error of a dataset entry."
+        },
+        "lis": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Local interaction score of a dataset entry."
+        },
+        "olig_min": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Smallest distance from any binder heavy atom to any heavy atom of the partner subunit(s) (glycans included). Null without partner context."
+        },
+        "olig_n3": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Binder heavy atoms within 3.0 A of the partner subunit(s)."
+        },
+        "olig_n4": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "NEW in m (inspector octx had it). Binder heavy atoms within 4.0 A of the partner subunit(s)."
+        },
+        "olig_n": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Contacted target residues that are buried at the partner interface in the assembly."
+        },
+        "stalk_n": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Contacted residues in the flagged region of the profile (for example a stalk). Absent for targets without a flagged region."
+        },
+        "rest_min": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "NEW. A. Smallest distance from any binder heavy atom to the removed regions of the same chain (everything the design's target lacks, glycans included)."
+        },
+        "rest_n3": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "NEW. Binder heavy atoms within 3.0 A of the removed regions."
+        },
+        "rest_n4": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "NEW. Binder heavy atoms within 4.0 A of the removed regions."
+        },
+        "cut_n": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "NEW. Contacted target residues within checks.cut_k residues of a cut point (construct ends and the flanks of removed stretches of the design's run)."
+        },
+        "cov_n": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "NEW. Contacted target residues that the removed regions would bury (SASA drop above checks.cover_min_area)."
+        },
+        "place_rmsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "NEW. A. CA RMSD of the design's target chain on the reference chain over all shared residues, under the transform that placed the design (prov.fit)."
+        },
+        "place_iface_rmsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "NEW. A. CA RMSD of the design's target chain on the reference chain over the residues near the binder (within about 13 A of a binder heavy atom, in the design's own frame): how well the placement fits where the context checks depend on it. null when no residue is that near."
+        },
+        "place_iface_n": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "NEW. Number of residues behind place_iface_rmsd."
+        },
+        "place_global_rmsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "NEW. A. CA RMSD over all shared residues that the plain whole-target fit gives (the smallest any rigid transform reaches); place_rmsd minus this is what the interface fit gives up over the parts of the target far from the binder."
+        }
+      },
+      "additionalProperties": true
+    },
+    "diversity_axis": {
+      "type": "object",
+      "description": "NEW. One diversity axis of a scaffolded run. Every axis carries a status; an axis that is unknown or off carries a `why` a person can read, because a silently missing number reads as a bug.",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "observed",
+            "derived",
+            "unknown",
+            "off"
+          ],
+          "description": "observed: counted from the data. unknown: could not be determined, `why` says why (never drawn as zero). off: deliberately not given for this run, `why` says why."
+        },
+        "why": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "epitope_diversity": {
+      "type": "object",
+      "description": "NEW. Epitope spread of a run: how far apart the families' epitopes are. Computed for every run (diversity.runs[].epitope), scaffolded or not, because it does not depend on fold or modality. The epitope of a family is every target residue contacted by any of its accepted designs.",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "observed",
+            "derived",
+            "unknown",
+            "off"
+          ],
+          "description": "observed: counted from the data. unknown: could not be determined, `why` says why (never drawn as zero). off: deliberately not given for this run, `why` says why."
+        },
+        "why": {
+          "type": "string"
+        },
+        "n_families": {
+          "type": "integer",
+          "description": "Families that have an epitope (at least two for the status to be observed)."
+        },
+        "pairwise_jaccard": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[lowest, highest] Jaccard overlap between two families' epitopes, two decimals."
+        },
+        "shared_by_all": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "description": "Target residues every family contacts (UniProt numbering when `numbering` says so)."
+        },
+        "sizes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Family id -> number of target residues in its epitope."
+        },
+        "source": {
+          "type": "string",
+          "description": "Where the residues come from: BindCraft's Interface_Target_Residues or contacts recomputed from the structures. Never mixed within a run."
+        },
+        "numbering": {
+          "type": "string",
+          "enum": [
+            "uniprot",
+            "construct"
+          ]
+        },
+        "rule": {
+          "type": "string"
+        },
+        "low_confidence": {
+          "type": "boolean",
+          "description": "True below 30 families (families.LOW_CONFIDENCE_BELOW)."
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "paratope_block": {
+      "type": "object",
+      "description": "NEW. Which segments of the scaffold touch the target, over the accepted (runs[].paratope) or the rejected (runs[].paratope_rejected) designs of a run built on a fixed scaffold. Absent for a run that is not scaffolded or whose edit spec cannot be used. Regions come from the campaign's edit spec (settings.filters.Scaffold_Sequence_Retained_Fraction.params.scaffold_edits), not from IMGT numbering; the contact criterion is BindCraft's Interface_Binder_Residues.",
+      "required": [
+        "source",
+        "modality",
+        "segments",
+        "aligned",
+        "unaligned",
+        "n",
+        "group",
+        "share",
+        "framework_share",
+        "loop_use",
+        "note"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "scaffold_edits"
+          ]
+        },
+        "scaffold": {
+          "type": "string",
+          "description": "File name of the scaffold (no directory)."
+        },
+        "modality": {
+          "type": "string"
+        },
+        "naming": {
+          "type": "string",
+          "enum": [
+            "VHH",
+            "antibody",
+            "generic"
+          ],
+          "description": "How the segments were named; generic means numbered, with no CDR language."
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "scaffold",
+              "designed",
+              "length"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "CDR1..3 (VHH), H1..3 / L1..3 (scFv, Fab) or 'designed segment n'. CDR language only for antibody modalities."
+              },
+              "chain": {
+                "type": "string"
+              },
+              "scaffold": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "First and last designed position of the segment in the scaffold's numbering (the campaign's own edit spec, not IMGT or Kabat)."
+              },
+              "designed": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "description": "Designed stretches inside the segment, [first, last]."
+              },
+              "length": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "[lowest, highest] length of the stretch the spec lets vary, else the span of the segment."
+              },
+              "variable": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "minItems": 4,
+                  "maxItems": 4
+                },
+                "description": "[first, last, lo, hi] of each stretch whose designed length varies."
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "framework_designed": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Designed positions outside every segment (a VHH's framework-2 face)."
+        },
+        "aligned": {
+          "type": "integer",
+          "description": "Designs of the whole run placed on the scaffold."
+        },
+        "unaligned": {
+          "type": "integer",
+          "description": "Designs of the whole run that could not be placed; they are reported, never guessed at."
+        },
+        "unaligned_designs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "n": {
+          "type": "integer",
+          "description": "Designs of this group that went into the block."
+        },
+        "group": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "rejected"
+          ]
+        },
+        "share": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "Region -> percent of the group's interface residues, one decimal, regions with none left out."
+        },
+        "framework_share": {
+          "type": "number",
+          "description": "Percent of interface residues outside every designed segment."
+        },
+        "loop_use": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "loops",
+              "n",
+              "share"
+            ],
+            "properties": {
+              "loops": {
+                "$ref": "common.schema.json#/$defs/string_list"
+              },
+              "n": {
+                "type": "integer"
+              },
+              "share": {
+                "type": "number"
+              }
+            }
+          },
+          "description": "Which designed segments a design touches: designs per set of segments (an empty set is a design that binds through framework alone)."
+        },
+        "framework_positions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "region": {
+                "type": "string"
+              },
+              "scaffold": {
+                "type": "integer"
+              },
+              "aa": {
+                "type": "string"
+              },
+              "n": {
+                "type": "integer",
+                "description": "Designs with an interface residue there."
+              }
+            }
+          }
+        },
+        "chains": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "no_interface": {
+          "type": "integer"
+        },
+        "notes": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "diversity_paratope": {
+      "type": "object",
+      "description": "NEW. runs[].diversity_paratope: what varies in a run built on a fixed scaffold, where fold diversity is switched off because every design shares the scaffold. Four axes, each observed, unknown or off; none is invented.",
+      "required": [
+        "fold",
+        "paratope",
+        "loop_length",
+        "epitope"
+      ],
+      "properties": {
+        "fold": {
+          "$ref": "#/$defs/diversity_axis"
+        },
+        "paratope": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/diversity_axis"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "profiles": {
+                  "type": "integer",
+                  "description": "Distinct sets of designed segments touching the target among accepted designs."
+                },
+                "n": {
+                  "type": "integer"
+                },
+                "n_families": {
+                  "type": "integer"
+                },
+                "profile_list": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "common.schema.json#/$defs/string_list"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "loop_length": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/diversity_axis"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "segment": {
+                  "type": "string"
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "description": "Length of the variable stretch, one per family, ascending."
+                },
+                "distinct": {
+                  "type": "integer"
+                },
+                "classes": {
+                  "type": "integer",
+                  "description": "Length classes: a class is a chain of lengths each within class_gap residues of the next."
+                },
+                "class_ranges": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "class_families": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                "class_gap": {
+                  "type": "integer"
+                }
+              }
+            }
+          ]
+        },
+        "epitope": {
+          "$ref": "#/$defs/epitope_diversity"
+        },
+        "n_families": {
+          "type": "integer"
+        },
+        "low_confidence": {
+          "type": "boolean"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "design_para": {
+      "type": "object",
+      "description": "NEW. designs[].para: where one design's interface residues fall on the scaffold. Absent when the run is not scaffolded or the design did not align.",
+      "required": [
+        "segments",
+        "loops",
+        "framework"
+      ],
+      "properties": {
+        "segments": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Region (designed segments and framework regions) -> interface residues, regions with none left out."
+        },
+        "loops": {
+          "$ref": "common.schema.json#/$defs/string_list",
+          "description": "Designed segments with at least one interface residue, in scaffold order."
+        },
+        "framework": {
+          "type": "integer",
+          "description": "Interface residues outside every designed segment."
+        },
+        "lengths": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Segment -> length of its variable stretch in this design."
+        },
+        "face": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "VHH only: designed framework-2 face positions (scaffold numbering) -> the residue in this design."
+        },
+        "face_mutated": {
+          "$ref": "common.schema.json#/$defs/string_list",
+          "description": "The face positions whose residue differs from the scaffold's."
+        },
+        "framework_at": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "[region, scaffold position] of each framework interface residue, for naming a framework contact by position."
+        }
+      },
+      "additionalProperties": true
+    },
+    "term_grade": {
+      "type": "object",
+      "description": "NEW. One tag size at one end: whether a tag of that size can be carried by the end, and the linker it needs.",
+      "required": [
+        "s",
+        "l"
+      ],
+      "properties": {
+        "s": {
+          "enum": [
+            "free",
+            "linker",
+            "blocked"
+          ],
+          "description": "free: fits against the end as it is. linker: fits once l residues of linker carry it out of the way. blocked: no room within the longest linker tried (15 residues), or, for a folded fusion only, the end itself is in the interface. For an unstructured tag (His6, Twin-Strep) the test is whether a flexible chain of its length can route from the end into open solvent without crossing the target or the binder; for a folded fusion (GFP, Fc) it is a sphere in a cone."
+        },
+        "l": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Linker residues needed (0 when free). null when blocked."
+        },
+        "why": {
+          "enum": [
+            "contact",
+            "room"
+          ],
+          "description": "Only when blocked. contact: the terminal residue touches the target (folded fusions only). room: no way out to open solvent (flexible tags), or nothing in the cone of directions the chain can leave in is clear (folded fusions)."
+        },
+        "esc": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Flexible tags only. A. Length of the shortest path from the end to open solvent (the tag's clearance from every atom), through space at least 3 A from every atom, as found on a 2.5 A grid. null when there is none within the longest linker. Compare it with the tag's reach (runs[].term.tags[].budget)."
+        }
+      },
+      "additionalProperties": true
+    },
+    "term_end": {
+      "type": "object",
+      "description": "NEW. One end (N or C) of one design, judged against the predicted complex. Numbers are rounded for display; an end the structure cannot judge has conf off, a reason in why and null in the rest.",
+      "required": [
+        "d",
+        "conf"
+      ],
+      "properties": {
+        "d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "A. Terminal CA to the nearest target heavy atom of the design's own construct (the nterm_d or cterm_d of design.m)."
+        },
+        "d_env": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "A. Terminal CA to the nearest atom outside the construct (the other subunit, the rest of the protein, a glycan) as the placed pose shows it. null when that was not checked."
+        },
+        "env_what": {
+          "enum": [
+            "olig",
+            "rest",
+            "glycan",
+            null
+          ],
+          "description": "Which of those d_env is measured to."
+        },
+        "at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "The binder residue (1-based) the probe starts from: the terminal residue, or the last ordered residue when the end is a disordered tail."
+        },
+        "dir": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/xyz"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Unit vector, in the frame of inspect.designs[].pdb_b: the direction the chain leaves the fold in at the end."
+        },
+        "aim": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 180,
+          "description": "Degrees between dir and the direction from the probe origin to the nearest target atom: 0 points at it, 180 points away."
+        },
+        "away": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": -1,
+          "maximum": 1,
+          "description": "Cosine of the angle between the end's offset from the binder's centre and the binder's offset from the interface centre: 1 is the side of the binder farthest from the paratope, -1 the paratope side."
+        },
+        "side": {
+          "enum": [
+            "paratope",
+            "lateral",
+            "far",
+            null
+          ],
+          "description": "paratope: within 10 A of the target, in the interface, or on the interface side of the binder (away below -0.25). far: away at least 0.25 and not near. lateral: otherwise."
+        },
+        "contact": {
+          "type": "boolean",
+          "description": "The terminal residue is in the 4.5 A interface."
+        },
+        "iface_n": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "How many of the three terminal residues are in the interface."
+        },
+        "rsa": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Mean relative solvent accessibility of the three terminal residues in the complex (the interface buries some)."
+        },
+        "plddt": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Mean pLDDT of the five terminal residues."
+        },
+        "ss": {
+          "enum": [
+            "H",
+            "E",
+            null
+          ],
+          "description": "Secondary structure of the terminal element: the first helix or strand reached from the end. null when the chain is loop throughout."
+        },
+        "elem": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Residues in that element."
+        },
+        "tail": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Loop residues between the end and that element."
+        },
+        "room": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "A. Radius of the largest sphere that fits against the end without a linker (capped at const.room_cap). 0 when none does. The judgement behind g."
+        },
+        "limit": {
+          "enum": [
+            "target",
+            "fold",
+            "olig",
+            "rest",
+            "glycan",
+            null
+          ],
+          "description": "What stops the first tag size that is not free: the target, the binder's own fold, the other subunit, the rest of the protein or a glycan."
+        },
+        "g": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/term_grade"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Tag size key (run.term.tags) -> grade."
+        },
+        "conf": {
+          "enum": [
+            "ok",
+            "low",
+            "off"
+          ],
+          "description": "ok. low: the terminal residues are below pLDDT 70 or the end is a disordered tail, so where it lies is a guess. off: not judged."
+        },
+        "via_tail": {
+          "type": "boolean",
+          "description": "The end is a disordered tail judged from its last ordered residue, with the tail counted as linker."
+        },
+        "why": {
+          "type": "string",
+          "description": "Only when conf is off: the reason."
+        }
+      },
+      "additionalProperties": true
+    },
+    "design_term": {
+      "type": "object",
+      "description": "NEW. designs[].term and inspect.designs[].term: which end of the binder can carry a tag or a fusion and what it costs (docs/termini.md). Present for accepted designs and near-miss rescues only. A prediction from one predicted conformation. When applies is false the question has no answer for the molecule (a cyclic peptide has no free ends) and nothing else is present.",
+      "required": [
+        "v",
+        "applies"
+      ],
+      "properties": {
+        "v": {
+          "type": "integer"
+        },
+        "applies": {
+          "type": "boolean"
+        },
+        "why": {
+          "type": "string",
+          "description": "Only when applies is false."
+        },
+        "format": {
+          "type": "string",
+          "description": "de novo, VHH, scFv, Fab, ARP, cyclic peptide or the raw modality word."
+        },
+        "copies": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Protomers of a homo-oligomer binder; a tag appears on every copy."
+        },
+        "n": {
+          "$ref": "#/$defs/term_end"
+        },
+        "c": {
+          "$ref": "#/$defs/term_end"
+        },
+        "nc_d": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "A. Between the first and the last CA (BindCraft's termini_together measure)."
+        },
+        "env": {
+          "type": "boolean",
+          "description": "The other subunits and the rest of the protein were part of the check (a reference structure was given). false: they were not, and the absence of a finding there says nothing."
+        },
+        "pick": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "enum": [
+                  "N",
+                  "C",
+                  "both",
+                  "none"
+                ]
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Tag size key -> the end to tag. Room first, then the side of the binder (an end on the paratope side loses to one that is not), then the linker needed. both: alike. none: neither can carry it."
+        },
+        "immob": {
+          "enum": [
+            "N",
+            "C",
+            "either",
+            null
+          ],
+          "description": "The end to hold the binder by (SPR, BLI, a plate) so that the paratope faces away from the surface: of the ends that take a short tag, those on the far side from the interface. null when there is none."
+        }
+      },
+      "additionalProperties": true
+    },
+    "run_term": {
+      "type": "object",
+      "description": "NEW. runs[].term: what molecule the run designed, whether BindCraft was asked to keep its ends free, the tag sizes and the constants the designs' term blocks were judged with.",
+      "required": [
+        "v",
+        "format",
+        "designed_for",
+        "tags"
+      ],
+      "properties": {
+        "v": {
+          "type": "integer"
+        },
+        "format": {
+          "type": "object",
+          "required": [
+            "kind",
+            "applies"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "known": {
+              "type": "boolean",
+              "description": "The run recorded its modality. false: read as de novo because nothing said otherwise."
+            },
+            "copies": {
+              "type": "integer"
+            },
+            "chains": {
+              "type": "integer"
+            },
+            "applies": {
+              "type": "boolean"
+            },
+            "why": {
+              "type": "string"
+            },
+            "convention": {
+              "enum": [
+                "N",
+                "C",
+                null
+              ],
+              "description": "The end the format's usual practice tags (C for a VHH). Not used to judge a design; the pages set the result beside it."
+            },
+            "convention_why": {
+              "type": "string"
+            },
+            "scaffold": {
+              "type": "boolean"
+            },
+            "peptide": {
+              "type": "boolean"
+            },
+            "notes": {
+              "$ref": "common.schema.json#/$defs/string_list"
+            }
+          },
+          "additionalProperties": true
+        },
+        "designed_for": {
+          "type": "object",
+          "required": [
+            "known"
+          ],
+          "properties": {
+            "known": {
+              "type": "boolean",
+              "description": "The run recorded its settings. false: nothing is claimed either way."
+            },
+            "accessible": {
+              "type": "boolean",
+              "description": "BindCraft was asked to angle both ends away from the target (termini_accessible)."
+            },
+            "together": {
+              "type": "boolean",
+              "description": "BindCraft was asked to bring the two ends within 10 A (termini_together)."
+            },
+            "buried": {
+              "type": "boolean",
+              "description": "BindCraft was asked to bury the ends (protease_stable), the opposite of what a tag wants."
+            },
+            "items": {
+              "$ref": "common.schema.json#/$defs/string_list"
+            }
+          },
+          "additionalProperties": true
+        },
+        "tags": {
+          "type": "array",
+          "description": "The tags judged: key (his6, strep, domain, large), what it stands for, how it is tested (kind) and a size. A flexible tag (His6, Twin-Strep) is an unstructured peptide: r is the clearance in A that counts as open solvent for it, res its length in residues, motif how many of them must lie in open solvent, budget the reach in A (3.3 A per residue) it has beyond the motif. A globular tag (GFP, Fc) is a sphere of radius r.",
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "what",
+              "r"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "what": {
+                "type": "string"
+              },
+              "r": {
+                "type": "number"
+              },
+              "kind": {
+                "enum": [
+                  "flexible",
+                  "globular"
+                ]
+              },
+              "res": {
+                "type": "integer"
+              },
+              "motif": {
+                "type": "integer"
+              },
+              "budget": {
+                "type": "number"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "const": {
+          "type": "object",
+          "description": "Every threshold of the analysis.",
+          "additionalProperties": true
+        },
+        "env": {
+          "type": "boolean",
+          "description": "A reference structure was given, so the designs were checked against what lies outside the construct."
+        },
+        "partner": {
+          "type": "boolean",
+          "description": "The reference holds other subunits."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

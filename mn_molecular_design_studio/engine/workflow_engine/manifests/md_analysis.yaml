@@ -2,7 +2,7 @@ tool: md_analysis
 group: md-analysis
 image: mn-md:cu128
 gpu: false
-description: Streamed protein-aligned RMSD and geometric residue-contact analysis for an existing molecular-dynamics trajectory.
+description: Streamed protein-aligned RMSD, Cα/ligand RMSF, mass-weighted radius of gyration and geometric residue-contact analysis for an existing molecular-dynamics trajectory.
 inputs:
   source_run_dir: {type: md_source_run, required: true}
   topology_path: {type: md_topology, required: true}
@@ -23,4 +23,5 @@ outputs:
   analysis_summary: {path: artifacts/md_analysis/summary.json, type: md_analysis_summary}
   timeseries: {path: artifacts/md_analysis/timeseries.csv, type: md_analysis_timeseries_csv}
   residue_contacts: {path: artifacts/md_analysis/residue_contacts.csv, type: md_residue_contact_map_csv}
+  rmsf: {path: artifacts/md_analysis/rmsf.csv, type: md_rmsf_csv}
   representative_frame: {path: artifacts/md_analysis/representative_frame.pdb, type: md_representative_frame_pdb}

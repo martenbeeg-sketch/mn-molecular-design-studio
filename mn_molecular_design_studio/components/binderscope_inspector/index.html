@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline'; img-src data: blob:; worker-src blob:; connect-src 'none'">
+<title>__STUDIO_TITLE__ · design inspector</title><style>__STUDIO_STYLE__</style></head>
+<body><main id="inspector">
+<header class="head"><div><span class="eyebrow">BINDERSCOPE · SAVED DESIGN</span><h1 id="design-title"></h1><p class="muted" id="target-label"></p></div><span class="badge">Read-only assessment</span></header>
+<p class="notice" id="context-note"></p>
+<section class="workspace">
+<div class="structure-panel">
+<div class="panel-heading"><h2>Structure</h2><button id="reset-view" type="button">Reset view</button><button id="save-image" type="button">Save image</button></div>
+<div class="color-controls" role="group" aria-label="Structure coloring"><button data-color="role" aria-pressed="true">Chain</button><button data-color="confidence">pLDDT · binder</button><button data-color="interface">Interface</button><button data-color="burial">Buried area</button></div>
+<div class="layer-controls" role="group" aria-label="Structure overlays"><label><input id="show-hbonds" type="checkbox" checked> H-bonds</label><label><input id="show-salt" type="checkbox" checked> Salt bridges</label><label><input id="show-hotspots" type="checkbox" checked> Hotspots</label><label><input id="show-polar" type="checkbox"> Unpaired polar atoms</label><label><input id="show-surface" type="checkbox"> Target surface</label></div>
+<div class="viewer-wrap"><div id="viewer" role="img" aria-label="Interactive saved target–binder complex"></div><div id="viewer-error" role="status"></div><div class="viewer-key"><i class="target"></i>Target <i class="binder"></i>Binder <span>Proteins shown as cartoons</span></div></div>
+<div id="selection" class="selection" aria-live="polite">Hover a residue or contact; click to focus it in 3D.</div>
+<details class="tracks" open><summary>Sequence tracks <small>hover to highlight · click to focus</small></summary><div id="sequence-tracks"></div></details>
+</div>
+<section class="analysis-panel" aria-label="Analysis">
+<div class="tabs" role="tablist" aria-label="Analysis views"><button role="tab" id="tab-interface" aria-controls="panel-interface" aria-selected="true" data-tab="interface">Interface</button><button role="tab" id="tab-findings" aria-controls="panel-findings" aria-selected="false" data-tab="findings">Findings</button><button role="tab" id="tab-confidence" aria-controls="panel-confidence" aria-selected="false" data-tab="confidence">Confidence</button><button role="tab" id="tab-footprint" aria-controls="panel-footprint" aria-selected="false" data-tab="footprint">Footprint</button></div>
+<div class="tab-content" id="panel-interface" role="tabpanel" aria-labelledby="tab-interface"><h3>Residue contact diagram</h3><p class="legend"><i class="hbond"></i>H-bond <i class="salt"></i>salt bridge <i style="background:#be7826"></i>both <i class="contact"></i>other contact</p><div class="graph-scroll"><svg id="contact-diagram" role="img" aria-label="Contacts between target residues and binder residues"></svg></div><p class="muted">Target left · binder right · orange nodes = intended hotspot. Lines identify residue contacts, not atom-level chemical bonds.</p><div class="panel-heading"><h3>Per-residue burial</h3><button id="save-diagram" type="button">Save diagram</button></div><div id="burial-bars"></div><p class="muted">Buried surface area, not an alanine scan or a residue's contribution to affinity.</p><h3>Contacts by size</h3><div id="contact-table"></div></div>
+<div class="tab-content" id="panel-findings" role="tabpanel" aria-labelledby="tab-findings" hidden><h3>Recorded observations</h3><p class="muted">Click a finding to highlight its residues. These are not new admission or experimental-binding verdicts.</p><div id="findings"></div></div>
+<div class="tab-content" id="panel-confidence" role="tabpanel" aria-labelledby="tab-confidence" hidden><h3>Binder confidence</h3><div id="confidence-panel"></div></div>
+<div class="tab-content" id="panel-footprint" role="tabpanel" aria-labelledby="tab-footprint" hidden><h3>Target interface footprint</h3><p class="muted">One saved complex, not a campaign-wide contact frequency. The surface is colored by this target's recorded burial.</p><button id="show-footprint" type="button" class="primary">Show target interface surface</button><div id="target-footprint"></div><p class="muted" id="numbering-note"></p></div>
+</section>
+</section>
+<footer><span id="technical-note"></span><details><summary>Scope and provenance</summary><p id="scope-note"></p><code id="source-digest"></code><p>Viewer coordinates are renumbered only on a display copy; labels and selections retain the saved author mapping. The original files and scientific results are unchanged.</p></details></footer>
+</main><script>__STUDIO_VIEWER__</script><script type="application/json" id="assessment-data">__STUDIO_DATA__</script><script>__STUDIO_SCRIPT__</script></body></html>

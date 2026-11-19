@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -123,6 +124,7 @@ def run_md_analysis(
     chunk_size: int = 100,
     cpu_cores: int = 8,
     source_segments: list[dict[str, Any]] | None = None,
+    expected_source_sha256: dict[str, str] | None = None,
 ) -> Path:
     """Run streamed, protein-aligned RMSD and geometric contact analysis.
 
@@ -174,6 +176,11 @@ def run_md_analysis(
         or any(not isinstance(segment, dict) for segment in source_segments)
     ):
         raise ValueError("Source segment lineage must be a list of metadata objects.")
+    if expected_source_sha256 is not None and (not isinstance(expected_source_sha256, dict)
+            or set(expected_source_sha256) != {"topology", "trajectory"}
+            or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                for value in expected_source_sha256.values())):
+        raise ValueError("Expected MD source hashes must identify exactly the topology and trajectory SHA-256 values.")
     source, topology, trajectory = _resolve_source_paths(source_run_dir, topology_path, trajectory_path)
     source_ref = source.relative_to(runs_root().expanduser().resolve()).as_posix()
     trajectory_rel = trajectory.relative_to(source).as_posix()
@@ -191,6 +198,7 @@ def run_md_analysis(
         "chunk_size": chunk_size,
         "cpu_cores": cpu_cores,
         "source_segments": source_segments or [],
+        "expected_source_sha256": expected_source_sha256,
     }
     inputs = {
         "source_run_dir": str(source),
@@ -239,6 +247,7 @@ def run_md_analysis(
             {"name": "analysis_summary", "type": "md_analysis_summary/v1", "path": "artifacts/md_analysis/summary.json"},
             {"name": "timeseries", "type": "md_analysis_timeseries_csv/v1", "path": "artifacts/md_analysis/timeseries.csv"},
             {"name": "residue_contacts", "type": "md_residue_contact_map_csv/v1", "path": "artifacts/md_analysis/residue_contacts.csv"},
+            {"name": "rmsf", "type": "md_rmsf_csv/v1", "path": "artifacts/md_analysis/rmsf.csv"},
             {"name": "representative_frame", "type": "md_representative_frame_pdb/v1", "path": "artifacts/md_analysis/representative_frame.pdb"},
         ],
         "structure_output": True,
@@ -281,6 +290,8 @@ def run_md_analysis(
         "timeseries": "artifacts/md_analysis/timeseries.csv",
         "residue_contacts": "artifacts/md_analysis/residue_contacts.csv",
     }
+    if (artifact_root / "rmsf.csv").is_file():
+        expected_outputs["rmsf"] = "artifacts/md_analysis/rmsf.csv"
     if (artifact_root / "representative_frame.pdb").is_file():
         expected_outputs["representative_frame"] = "artifacts/md_analysis/representative_frame.pdb"
     finish_job(job.run_dir, success, {

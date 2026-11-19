@@ -149,7 +149,7 @@ _SPECS = (
     _spec("ligand.generation.pgmg", "ligand_tools", "run_ligand_pgmg", "ligand-generation", "pgmg_generation", "ligand_generation", "Generate compounds from a PGMG-compatible pharmacophore hypothesis."),
     _spec("ligand.md.gromacs", "ligand_tools", "run_ligand_gromacs_md", "ligand-md", "gromacs_md", "ligand_md", "Prepare a bound protein–ligand complex and run explicit-solvent GROMACS dynamics."),
     _spec("ligand.md.openmm", "ligand_tools", "run_ligand_openmm_md", "ligand-md", "openmm_md", "ligand_md", "Prepare a bound protein–ligand complex and run explicit-solvent OpenMM dynamics."),
-    _spec("ligand.md.analysis", "md_analysis", "run_md_analysis", "md-analysis", "md_analysis", "md_analysis", "Analyze a recorded MD segment with protein-aligned RMSD and residue contact occupancy."),
+    _spec("ligand.md.analysis", "md_analysis", "run_md_analysis", "md-analysis", "md_analysis", "md_analysis", "Analyze a recorded MD segment with protein-aligned RMSD, Cα/ligand RMSF, mass-weighted radius of gyration and geometric residue-contact occupancy."),
     _spec("target.prepare", "target_prep", "enqueue_target_preparation", "target-prep", "internal_pdb_cleaner", "target_preparation", "Clean, trim, and optionally prepare MSAs for a PDB target.", "target_prepare"),
     _spec("target.crop", "target_crop", "run_target_crop", "target-crop", "internal_pdb_cropper", "target_cropping", "Crop a prepared target by residue ranges or Mol* selection coordinates."),
     _spec("target.mask", "target_masking", "create_masked_target", "target-prep", "internal_target_masker", "target_masking", "Create a mutation/masked-target job with recorded mutation details.", "direct"),
@@ -224,6 +224,7 @@ _SPECS = (
     _spec("analysis.tag_fusion_context", "analysis", "run_tag_fusion_context_contract", "analysis", "tag_fusion_context", "analysis", "Extend Tag and Fusion clearance using an explicit, validated Database reference association and a saved Reference Placement Evaluation. Only resolved reference coordinates are considered; no biological accessibility or glycan score is claimed."),
     _spec("analysis.sequence_liability", "analysis", "run_sequence_liability_contract", "analysis", "sequence_liability", "analysis", "Screen selected Database protein chains for sequence motifs and structure-supported liabilities, reusing only exact-structure saved Sequence QC, Biotite, PEP-Patch, PLIP and PandaMap evidence. Alerts are advisory and do not predict experimental modification or developability."),
     _spec("analysis.binder_interface_chemistry", "analysis", "run_binder_interface_chemistry_contract", "analysis", "binder_interface_chemistry_v1", "analysis", "Measure protein–protein interface dSASA, carbon/sulfur buried area, geometry-based polar interaction evidence and author-numbered residue annotations on one exact authorized Database structure. This is distinct from Rosetta scoring and does not predict affinity."),
+    _spec("analysis.binderscope", "binderscope", "run_binderscope", "analysis", "binderscope", "analysis", "Run the integrated BinderScope engine: interface chemistry, liabilities, binding modes, structural diversity and terminal suitability. Native campaigns additionally retain rejection/funnel, scaffold and supplied reference/specificity context. Saved SQL designs retain exact structure identities and original admission decisions."),
     _spec("analysis.validation_acceptance", "analysis", "run_validation_acceptance_analysis", "analysis", "validation_acceptance", "analysis", "Apply explicit acceptance filters to saved native metrics and structures without launching a prediction engine."),
     _spec("import.bindcraft", "candidate_import", "run_bindcraft_import", "candidate-import", "bindcraft_import", "candidate_import", "Import a BindCraft result folder as normalized candidates."),
     _spec("import.table", "candidate_import", "run_generic_table_import", "candidate-import", "generic_table_import", "candidate_import", "Import candidates from CSV/TSV/Excel and referenced structures."),
@@ -809,6 +810,12 @@ def _apply_resource_parameters(
 
 
 def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) -> None:
+    if spec.workflow_id == "analysis.binderscope":
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.binderscope import validate_request
+        try:
+            validate_request(parameters, require_files=not _schema_only_paths.get())
+        except (TypeError, ValueError, OSError) as exc:
+            raise AutomationError(str(exc)) from exc
     campaign = parameters.get("distributed_campaign")
     if isinstance(campaign, dict) and campaign.get("enabled"):
         from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
@@ -1121,7 +1128,13 @@ def submit_workflow_request(request_file: str | Path, *, defer_dispatch: bool = 
     _validate_resources(payload.get('resources'))
     from mn_molecular_design_studio.logical_runs import context_tags
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import submission_tags
-    with execution_resources(payload.get('resources')), submission_tags(**context_tags(payload.get('run_context'))):
+    from mn_molecular_design_studio.job_dependencies import projected_references
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import runs_root
+    tags = context_tags(payload.get('run_context'))
+    references = projected_references({}, payload, root=runs_root().resolve())
+    if references:
+        tags['dependency_refs'] = references
+    with execution_resources(payload.get('resources')), submission_tags(**tags):
         return _submit_workflow_request(request_path, defer_dispatch=defer_dispatch)
 
 

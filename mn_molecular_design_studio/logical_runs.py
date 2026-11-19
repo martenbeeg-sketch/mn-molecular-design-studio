@@ -107,13 +107,22 @@ def group_runs(rows):
             row = parents[reference(row)]
         return row
 
+    from mn_molecular_design_studio.job_dependencies import parents as dependency_parents, identity as dependency_identity
+    dependencies = dependency_parents(rows)
+    by_dependency = {dependency_identity(row): row for row in rows}
+    for row in rows:
+        sources = dependencies[dependency_identity(row)]
+        if reference(row) not in parents and len(sources) == 1:
+            parents[reference(row)] = by_dependency[next(iter(sources))]
+            row["_dependency_parented"] = True
+
     groups = {}
     for row in rows:
         parent = root(row)
         row["_logical_root_ref"] = reference(parent)
         legacy = legacy_batch(parent)
         explicit = parent.get("campaign_group_id")
-        rid = row.get("studio_run_id") or parent.get("studio_run_id")
+        rid = parent.get("studio_run_id") or row.get("studio_run_id")
         if not rid:
             rid = stable_id(*scope(parent), "group", explicit) if explicit else (
                 stable_id(*scope(parent), "legacy", parent.get("tool"), legacy["label"]) if legacy else
@@ -140,6 +149,7 @@ def group_runs(rows):
         item["outputs"] = run_outputs(item)
         for row in item["jobs"]:
             row.pop("_logical_root_ref", None)
+            row.pop("_dependency_parented", None)
         result.append(item)
     return sorted(result, key=lambda r: r["updated_at"], reverse=True)
 
@@ -159,6 +169,8 @@ def run_outputs(run):
         # launch separate; identical tool names do not imply identical policy.
         if not output_id and row.get("task_group") == "analysis" and reference(row) != reference(root):
             output_id = "analysis-" + hashlib.sha256(reference(row).encode()).hexdigest()[:16]
+        if not output_id and row.get("_dependency_parented"):
+            output_id = "linked-" + hashlib.sha256(reference(row).encode()).hexdigest()[:16]
         output_id = output_id or "results"
         output = groups.setdefault(output_id, {"id": output_id,
             "name": output_name or ("Results" if output_id == "results" else row.get("campaign_name") or row.get("tool")),

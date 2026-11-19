@@ -8,7 +8,7 @@ settings, status and provenance. A repaired receptor is a different structure
 revision even if its sequence is unchanged. Historical unknown context remains
 explicitly unknown; it is not reconstructed by guessing.
 
-The Database's default sheet selects one evaluation per molecule, preferring
+The Database's **Collections** sheet selects one evaluation per molecule, preferring
 the most recent representative model/pose, then the most recent calculation.
 Use **Evaluation selection** to restrict the target, evaluator or run, and the
 detail panel's **Evaluation** selector to inspect a specific model. The displayed
@@ -20,6 +20,107 @@ The local `molecule_evaluations` and `molecule_metric_values` tables are derived
 indexes. They rebuild from the existing observations, invalidate on updates and
 deletion, and do not introduce a second replicated scientific data source.
 Canonical evaluation IDs survive peer remapping of physical SQL row IDs.
+
+## Scientific outcomes in Molecules and Runs
+
+The three-column browser defaults to **Scientific outcomes**, not a list of
+calculations. Choose a target/ligand or a run on the left; select a retained
+outcome in the centre; inspect its structure and scores on the right. Left-hand
+filters include molecular type and whether the reference itself has recorded
+coordinates or is sequence-only. A design complex does not make a sequence-only
+target a structure-backed reference.
+
+- **Design** groups exact designed chemical contents for one recorded target.
+  Only retained generated/curated sources contribute primary rows; intermediate
+  sequence/backbone stages and analyses do not become additional designs.
+  Chaperone is a reference for the design-with-attached-history concept, not a
+  replacement database or a requirement for this view. Its optional bridge is
+  unchanged.
+- **Structure prediction** describes independent monomer predictions.
+  **Cofolding** describes independent complex predictions, including ligand
+  complexes. **Binding/docking** keeps docking cases distinct from cofolding.
+- Explicit design-pipeline refolding is attached to the design. Merely using a
+  design sequence as input to a separate prediction does not make that prediction
+  pipeline refolding. New ingestion records workflow purpose in provenance;
+  ambiguous historical purposes stay **Unclassified / Needs review**. This does
+  not force reingestion of unchanged historical jobs or a database migration.
+- **Admitted results** is the default. Designs appear only after a recorded
+  run-filter pass or an explicit later selection. Historical SQL membership alone
+  is not admission. Unreviewed legacy records stay preserved in diagnostic
+  history, not mixed into the admitted design list. A later explicit selection
+  can retain a non-passing design without changing its original filter decision.
+- **Passed / recorded** restricts the view to explicitly passing retained designs and prediction
+  or binding cases with recorded coordinates. **Filter evidence** identifies the
+  recorded acceptance stage: native filtering is not labelled final acceptance.
+  Completed execution and a successful analysis are never acceptance evidence.
+  A required campaign gate takes precedence over native diagnostics.
+- Explicit manual selections without a pass decision are **Manually selected**.
+  Unknown or conflicting legacy acceptance remains **Needs review**. Rejected
+  evidence remains in **Calculation history** unless the design is explicitly
+  retained later; that selection is not relabelled a filter pass.
+
+One navigational design can have original evaluations from several runs. Every
+source retains its own measurements, model, target revision, version and settings;
+values are neither averaged nor replaced with arbitrary latest-tool scores.
+Binding/cofolding cases preserve target revisions; missing revision evidence
+keeps executions separate. Unknown chemical identities/targets are not guessed.
+
+**Calculation history** restores individual evaluation/structure/record rows,
+including optional input/reference history. **Collections** remains the folder
+and imported-library view. These are read-only projections: no historical record
+is deleted, scientifically relabelled, or automatically reimported. Policy-less
+historical runs remain Results-only during ingestion.
+
+## Connected analyses for one design
+
+In the Database's **Molecules** and **Runs** views, select a result in the middle
+column. In Scientific outcomes, **This molecule** shows **Original result scores**
+and **Downstream evaluations** together beneath the existing structure viewer.
+The middle table contains admitted designs, not separate post-analysis entries
+or post-analysis score columns. Linked ipSAE, Biotite, PEP-Patch and other analysis
+data are accessed through the selected design's structure viewer on the right.
+Its status table also counts failed attempts,
+unknown execution status and results on other models. A dash means no verified
+linked SQL result, not proof an analysis never ran. Detailed scores and technical
+identifiers remain under **Analysis scores & provenance** and **Models & calculation
+history**. Names shown in the overview never replace scientific identity keys.
+These include ipSAE, PEP-Patch and Biotite Interface when recorded, and explicit
+design refolding. Calculation history also offers **Design analyses (N)**.
+Each analysis keeps its own native measurements, run, model/pose,
+source representation, calculation digest, engine version and scientific settings.
+The **Evaluation** selector can open any verified linked calculation with its
+own scores and recorded structure. Changing the displayed evaluation does not
+hide the original producing-tool scores in Scientific outcomes. **Scientific
+context** exposes representation, target revision, chains and setting digests;
+**Evaluation details** retains the selected calculation's full recorded context.
+
+Browsing reads saved SQL evidence, not arbitrary work-directory outputs. The
+metadata and derived target lists are cached per session and access scope; fresh
+group permissions and SQLite commits invalidate them, including peer edits and
+deletions. Version-valid evaluation descriptors avoid repeatedly parsing full
+observation contexts. Missing or stale projections fall back to the original
+observations without requiring browser-driven migration or rewriting history.
+The first load still scans authorized metadata; subsequent selections reuse it.
+
+Binder-only identities and complexes containing the exact same designed chains
+can share this navigation. Changed sequences, ligand stereoisomers and different
+binder stoichiometries remain separate. Explicitly different binding targets are
+excluded. Analyses of another structure of the same design, derived structures
+and sequence-only checks are labelled separately. Names and candidate aliases
+alone never establish a relationship. Unresolved source/target links are counted
+but are not automatically attached; their evidence remains in result history.
+
+The three-column layout and left-hand filters are preserved. If a design has
+more than 20 post-evaluations, use **Analysis scores page** on the left to page
+through the score panels. Access changes, peer updates and deletions invalidate
+the session-local metadata cache; opening an individual evaluation rechecks
+access and loads only that evaluation's scores and representations.
+
+This is read-only navigation, not a new scientific acceptance policy or a repair
+of historical relationships. The 2FLU records without acceptance evidence need
+deliberate review before they can appear in the passed shortlist; their absence
+from that shortlist is not data loss. Cold index loading still scans the existing
+catalogue; session caches avoid repeating the projection on unchanged reruns.
 
 ## Compare a collection
 

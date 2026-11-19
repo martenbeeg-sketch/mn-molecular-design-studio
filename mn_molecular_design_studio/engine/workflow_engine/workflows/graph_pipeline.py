@@ -512,6 +512,11 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
     """Only allowlisted adapters can turn graph data into a workflow call."""
     workflow = NODE_CATALOG[kind]["workflow"]
     p = copy.deepcopy(params)
+    if kind == "md_analysis":
+        from mn_molecular_design_studio.md_pipeline import validate_analysis_parameters
+        if not source.get("md_source"):
+            raise ValueError("Connect an exact Saved MD run before MD Analysis.")
+        return {"schema_version": 1, "workflow": workflow, "parameters": {**validate_analysis_parameters(p), **source["md_source"]}}
     if kind == "af2" and source.get("target", {}).get("pipeline_task") in {"ligand_binder", "motif_ligand"}:
         raise ValueError("AlphaFold2 does not predict ligand complexes. Use RosettaFold3, or ESMFold for the binder alone.")
     if kind == "peptide_trap":
@@ -825,10 +830,12 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     request["database_collection_policy"] = "none"
     from mn_molecular_design_studio.quality_tools import WORKFLOWS as quality_workflows
     workflow = str(request.get("workflow", ""))
-    cpu_analysis = workflow.startswith("analysis.") and not quality_workflows.get(workflow, {}).get("gpu", False)
+    cpu_analysis = workflow == "ligand.md.analysis" or workflow.startswith("analysis.") and not quality_workflows.get(workflow, {}).get("gpu", False)
     request["resources"] = {**request.get("resources", {}), "gpu_device": "none" if cpu_analysis or workflow in {"design.kejia_idr", "design.peptide_trap"} else gpu_device, "cpu_cores": request.get("resources", {}).get("cpu_cores", 4)}
     if cpu_analysis:
         request["resources"]["min_vram_gb"] = 0
+    if workflow == "ligand.md.analysis":
+        request["resources"]["cpu_cores"] = int(request["parameters"].get("cpu_cores", 8))
     distributed_campaign = request.get("parameters", {}).get("distributed_campaign")
     campaign_capability = None
     if isinstance(distributed_campaign, dict) and distributed_campaign.get("enabled"):
@@ -1120,6 +1127,8 @@ def _cache_valid(output: dict) -> bool:
         manifest = output.get("content_manifest")
         if not manifest or any(not Path(path).is_file() or file_digest(path) != digest for path, digest in manifest.items()):
             return False
+        if output.get("md_source"):
+            return read_json(Path(output["source_run_dir"]) / "metadata.json").get("status") == "completed"
         analysis_runs = list(output.get("analysis_runs") or [])
         if output.get("analysis_run"):
             analysis_runs.append(output["analysis_run"])
@@ -1130,6 +1139,12 @@ def _cache_valid(output: dict) -> bool:
             result = read_json(root / "result.json")
             if read_json(root / "metadata.json").get("status") != "completed" or result.get("success") is not True:
                 return False
+            if analysis_run.get("kind") == "md_analysis":
+                from mn_molecular_design_studio.md_pipeline import analysis_output
+                verified = analysis_output(root)
+                if any(manifest.get(path) != digest for path, digest in verified["content_manifest"].items()):
+                    return False
+                continue
             artifacts = result.get("outputs", {}).get("artifacts") or []
             if not artifacts or any(not _path(item["path"], root).is_file() for item in artifacts):
                 return False
@@ -1317,8 +1332,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         from mn_molecular_design_studio.cache_provenance import referenced_files
         from mn_molecular_design_studio.candidate_execution import data_hashes
         hash_files = (lambda value, **_: data_hashes(value)) if output.get("candidate_set_manifest") else referenced_files
-        output["content_manifest"] = hash_files({k: output.get(k) for k in
-            ("candidates_jsonl", "review_candidates_jsonl", "candidate_set_manifest", "target", "molecule_task", "analysis_runs", "analysis_run", "port_outputs")}, base=output.get("run_dir"))
+        output["content_manifest"] = {**output.get("content_manifest", {}), **hash_files({k: output.get(k) for k in
+            ("candidates_jsonl", "review_candidates_jsonl", "candidate_set_manifest", "target", "molecule_task", "analysis_runs", "analysis_run", "port_outputs")}, base=output.get("run_dir"))}
         if output.get("candidates_jsonl"):
             for candidate in candidate_sets.iter_candidates(output):
                 output["content_manifest"].update(hash_files(candidate, base=output.get("run_dir")))
@@ -1502,6 +1517,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 allow_development=bool(read_json(parent / "metadata.json").get("studio_development_mode")))
                             persist()
                         output = copy.deepcopy(current["run_source_snapshot"])
+                        complete(node_id, output, fingerprint(kind, output, [])); progressed = True; continue
+                    if kind == "md_source":
+                        from mn_molecular_design_studio.md_pipeline import source_output
+                        output = source_output(params, owner_id=owner_id, project_id=project_id)
                         complete(node_id, output, fingerprint(kind, output, [])); progressed = True; continue
                     if source.get("run_sources"):
                         from mn_molecular_design_studio.candidate_execution import policy as execution_policy
@@ -1771,7 +1790,11 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 persist()
                             progressed=True
                         elif current["status"] == "completed" and child_result.get("success") is True:
-                            if is_analysis_node and (child / "artifacts/normalized_candidates/candidates.jsonl").is_file():
+                            if kind == "md_analysis":
+                                from mn_molecular_design_studio.md_pipeline import analysis_output
+                                complete(node_id, analysis_output(child), key)
+                                progressed = True
+                            elif is_analysis_node and (child / "artifacts/normalized_candidates/candidates.jsonl").is_file():
                                 # Candidate-aware QC (Biotite, clustering, PLIP)
                                 # publishes measurements, not surface tool_status.
                                 complete(node_id, _child_analysis_output(child, source.get("target", {})), key)

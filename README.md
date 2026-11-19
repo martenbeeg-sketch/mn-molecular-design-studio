@@ -45,6 +45,139 @@ fresh collection access and all SQLite commits, including peer edits and deletio
 the first load after new data can still take several seconds. Browsing does not
 merge, rename or delete original records.
 
+### Experimental Data browser
+
+Project and target/ligand names now have [canonical SQL labels](docs/canonical-entity-names.md),
+contextual Properties dialogs, searchable previous names and stale-edit protection.
+Scientific IDs, structures and filesystem paths are unchanged. Shared label
+editing stays on its source workstation; all peers need the naming-capable
+release for consistent target labels.
+
+The separate **Data browser** page adds a folder tree without replacing Database:
+
+- **Projects** is the default: project → target or compound → activity → experiment.
+  Single-activity levels are omitted. Imported libraries open into their compounds;
+  reusable reference libraries expose their targets directly, not as storage folders.
+  **Start at** also offers targets, compounds and deliberate libraries/datasets as
+  shortcuts to the same SQL records. Automatic per-job registration batches are
+  not datasets in the navigation tree.
+- Select an activity or experiment to list its saved outcomes or individual
+  structures. Search and optional refinements apply to the selected level;
+  pagination covers every matching row. Project paths retain project context;
+  a molecule opened from a collection can show its other accessible calculations.
+- Experiments group only recorded logical/campaign lineage within the same owner
+  and project, never matching names alone. **Source jobs & provenance** retains
+  execution batches and workstation identities. Results without a verified subject
+  remain accessible under **Unassigned results** rather than being assigned a target.
+- Docking exposes the recorded engine (for example Vina, GNINA or Uni-Dock Pro),
+  with separate experiments underneath when several exist. Engine selections keep
+  only that engine's evaluations and poses, even when a saved outcome spans tools.
+- Unambiguous exact sequence crops can be browsed under their registered reference
+  family in the same owner/project context. This is navigation only: exact target
+  IDs, constructs and evaluations remain separate; **Target construct** refines the
+  family listing. Ambiguous containment and different PDB contexts are not folded.
+- The right pane keeps original measurements, parameters, provenance and attached
+  post-analysis together. Design-internal refolding is not another design row.
+  Missing analysis is reported as missing, never as a zero or an inferred pass.
+  Protein–ligand complexes use protein cartoons without side-chain sticks and keep
+  native mmCIF atom names, coordinates and connectivity. Missing legacy pose links
+  are distinguished from score-only results. Recovery requires a unique exact file
+  checksum with matching source context; conflicting references are never guessed.
+  Historical MN-Ligand docking links can also be reconciled with
+  `scripts/reconcile_legacy_docking.py`: `plan` compares the original attempt,
+  engine, compound, replicate, numeric scores, pose path and exact receptor frame;
+  `apply` requires that unchanged plan, an administrator and a new SQLite recovery
+  backup. It stores portable copies of the verified coordinates and an audit of
+  the replaced links, without importing molecules, modifying scores or deleting
+  historical representations. Apply on the owning workstation, not a peer copy;
+  normal replication distributes the corrected source records. Source conflicts
+  and concurrent SQL edits fail closed. Rehearse against a separate database first.
+  Molecular-entry replication snapshots allow up to 8 MiB for accumulated
+  scientific evidence; other metadata remains limited to 2 MiB. Synchronization
+  pages are byte-bounded to 16 MiB and retain their continuation cursor.
+- **Molecular dynamics** opens a study → replica tree, with saved RMSD, RMSF,
+  gyration, contact and thermodynamic plots in the middle pane and the exact
+  source pose / recorded topology snapshot on the right. Endpoint energies and
+  trajectory analyses remain separate, source-qualified calculations. See
+  [MD browser semantics and limits](docs/md-data-browser.md).
+- Recorded PDB references have separate target folders, with exact protein
+  constructs underneath when several exist. An identical sequence does not
+  merge different PDB studies or their receptor preparations. Method folders
+  select that method's own saved evaluations and coordinates. Nesso affinity-only
+  calculations appear under **Binding affinity**, not as invented structures.
+  Calculations without an explicit PDB reference remain accessible under a
+  **PDB unspecified** target context instead of being guessed into a PDB study.
+- Native result ingestion and later Results selections use the same exact-target
+  registration contract. Target accessions come from explicit input metadata,
+  an accessible selected/byte-identical SQL representation, or the coordinate
+  file's accession field, never from a display name or a sequence-only guess.
+  `studio.target-reference.v1` preserves recorded, unspecified and conflicting
+  references separately from canonical molecule identity. Conflicts withhold the
+  PDB assignment without merging studies. Missing reference metadata is not a pass.
+  Original structures, scores and attached analysis carry the same reference;
+  post-analysis inherits the exact selected source rather than its output name.
+  Registered artifact-contract workflow IDs also supply purpose when a native
+  adapter does not repeat its workflow ID in the job's input or metadata.
+  Successful coordinate-free affinity calculations are recorded calculations,
+  not passed designs. Unreviewed screening inputs remain outside saved outcomes.
+  Database-bound OpenMM/GROMACS submissions retain owner-qualified pose lineage;
+  ingestion checks the saved pose, receptor frame and staged input-complex digest
+  before attaching MD measurements to the existing ligand. Changed/missing source
+  inputs are withheld, not promoted as another molecule. These contracts apply to
+  new registrations; existing data is not bulk-reingested by opening the browser.
+- **Folder properties** and **Result / molecule properties** open shared, typed
+  editors for project, dataset, compound/target, saved outcome and explicit dataset
+  membership annotations. The left tree stays navigation-only. Dialogs identify
+  the affected scope; Save is explicit and Cancel/Close discard drafts. Project
+  properties use the same editor on the Projects page. Scientific fields remain
+  read-only; project moves, cleanup and access management stay separate actions.
+- The page opens SQLite read-only, including when derived Evaluation indexes are
+  missing. It never indexes workdir jobs, runs an analysis or admits candidates
+  merely because somebody browses them.
+  Explicit metadata saves use a separate writable transaction, not this reader.
+
+Automatically named designs use `Design_<generating-computer>_<creation-time-UTC>`.
+The time comes from the individual native output, never the run start, SQL
+registration, import or transfer time. RFD4 retains its embedded CIF creation
+stamp; original native structure-write times are explicitly distinguished when
+an engine did not record a separate sequence-generation timestamp. Missing
+creation evidence is not replaced by a fabricated time. Short stable collision
+suffixes are used only when needed. There is no distributed counter or
+score-dependent renumbering. Target, engine, run, replicate and native names remain in
+`metadata.studio_naming` and searchable aliases; molecular fingerprints,
+candidate IDs and Evaluation IDs do not depend on display names. Meaningful
+user-supplied names are retained. Unresolved target names are not guessed.
+
+Target folders in both browser pages use the shared SQL-backed component name
+resolver. It prefers a descriptive registered target name, then an accessible
+named input/reference with the exact same molecular contents. Designed-binder
+names and whole-complex/compound names are not used as protein-target names.
+Existing aliases stay searchable. If SQL has no descriptive name, the browser
+retains an explicit recorded label or shows a type/length fallback rather than
+guessing a biological identity. No target-specific naming rules or online lookup
+are needed while browsing.
+
+`scripts/curate_library_names.py` provides a separate administrator-only
+plan/apply workflow for historical naming and exact-target registration. It
+edits only source-owned collections, requires a new integrity-checked SQLite
+backup, rejects stale reviewed rows atomically, and preserves original target
+references alongside canonical links. Optional reviewed reference constructs
+can name an exact target or uniquely matching crop; names alone never link data.
+Apply on owning workstations and synchronize through normal metadata replication.
+`scripts/reconcile_legacy_targets.py` separately plans and backs up missing
+MN-Ligand target links. Docking uses the actual copied receptor, not a reused
+artifact ID or an unverified reference checksum. Cofolding/affinity uses the
+literal protein chains in the exact compound's preserved model input. The plan
+retains source-file hashes and original target references, rejects conflicts,
+checks source snapshots again before applying, and never imports more candidates
+or changes scores, coordinates or admission decisions. Browsing does not run this
+maintenance operation. Historical repairs must run on their owning workstation;
+mixed-version readers need the new browser code to expose all activity folders.
+See the [real-data verification and limitations](docs/audits/2026-11-14-readable-library/verification.md)
+for the initial preview and historical naming maintenance.
+The [creation-time follow-up](docs/design-creation-naming.md) explains source
+evidence, retention during downstream processing, and the backed-up recovery tool.
+
 Studio also supports an optional [workstation cluster](docs/workstation-cluster.md):
 shared job visibility, machine availability, remote submission through local
 schedulers, and analysis on the workstation that owns its input data. Enable it

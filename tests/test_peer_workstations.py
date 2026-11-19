@@ -233,6 +233,57 @@ def test_owner_execution_state_outranks_old_origin_placeholders(peers):
             assert db.execute('SELECT count(*) FROM conflicts').fetchone()[0]==1
 
 
+def test_owner_job_deletion_reaches_peers_and_relay_rejects_stale_replay(peers):
+    nodes, on = peers
+    admin, project = account(on)
+    with on(0):
+        Store().heartbeat(nodes[0]['id'], copy.deepcopy(SNAPSHOT), [{
+            'task_group': 'design', 'run_id': 'finished', 'owner_id': admin['id'],
+            'project_id': project['id'], 'status': 'completed',
+        }])
+        job_id = config.job_id(nodes[0]['id'], 'design/finished')
+        Replica().capture_jobs()
+    stale = transfer(on, 0, 1)
+    transfer(on, 0, 2)
+    with on(0):
+        Store().purge_metadata(job_id, admin)
+        Replica().capture_jobs()
+    transfer(on, 0, 1)
+    transfer(on, 1, 2)
+    for index in (1, 2):
+        with on(index):
+            with pytest.raises(LookupError):
+                Store().job(job_id, admin)
+            replica = Replica()
+            with replica.db() as connection:
+                deletion = dict(connection.execute('SELECT * FROM records WHERE key=?', ('job:' + job_id,)).fetchone())
+            replica.receive(stale)
+            with pytest.raises(LookupError):
+                Store().job(job_id, admin)
+            with replica.db() as connection:
+                assert dict(connection.execute('SELECT * FROM records WHERE key=?', ('job:' + job_id,)).fetchone()) == deletion
+
+
+def test_other_workstation_cannot_delete_an_owned_execution(peers):
+    nodes, on = peers
+    admin, project = account(on)
+    with on(0):
+        Store().heartbeat(nodes[0]['id'], copy.deepcopy(SNAPSHOT), [{
+            'task_group': 'design', 'run_id': 'protected', 'owner_id': admin['id'],
+            'project_id': project['id'], 'status': 'completed',
+        }])
+        job_id = config.job_id(nodes[0]['id'], 'design/protected')
+        Replica().capture_jobs()
+    records = transfer(on, 0, 2)
+    original = next(record for record in records if record['key'] == 'job:' + job_id)
+    forged = dict(original, author=nodes[1]['id'], counter=original['counter'] + 100, value=None)
+    with on(2):
+        assert Replica().receive([forged]) == 0
+        assert Store().job(job_id, admin)['node_id'] == nodes[0]['id']
+        with Replica().db() as connection:
+            assert connection.execute('SELECT count(*) FROM conflicts WHERE key=?', ('job:' + job_id,)).fetchone()[0] == 1
+
+
 def test_job_replication_omits_large_local_request_payload(peers):
     nodes,on=peers
     with on(0):

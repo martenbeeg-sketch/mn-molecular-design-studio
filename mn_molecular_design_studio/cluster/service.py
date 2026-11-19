@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from . import bundles, capabilities, config, transport
 from .store import Store
+from mn_molecular_design_studio.project_lifecycle import serialized
 
 
 def user_record(user):
@@ -223,6 +224,7 @@ def placement_options_from_api(payload, user, *, request_dir, token, authorize_p
     return {"placement": "auto", "candidates": candidates}
 
 
+@serialized
 def accept_submission(envelope, user):
     from mn_molecular_design_studio.workspace import validate_project_id
     from mn_molecular_design_studio.auth import require_project_access

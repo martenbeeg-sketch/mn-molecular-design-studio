@@ -81,6 +81,21 @@ def request_for(engine="protenix_v2"):
     }
 
 
+def test_workflow_source_identity_is_persisted_before_dispatch(api_queue, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
+    payload = request_for()
+    payload['source_job'] = 'design/source-run'
+    request = api_queue.root.parent / 'source-request.json'
+    request.write_text(json.dumps(payload))
+    def enqueue(request_file, *, defer_dispatch=False):
+        queued = jobs.create_job('refolding', 'prediction', 'demo', {}, {})
+        workflow_queue.spawn_worker_for_run(queued.run_dir)
+        return {'run_dir': str(queued.run_dir)}
+    monkeypatch.setattr(workflow_automation, '_submit_workflow_request', enqueue)
+    workflow_automation.submit_workflow_request(request)
+    assert {'node_id': '', 'task_group': 'design', 'run_id': 'source-run'} in api_queue.dispatched[0]['dependency_refs']
+
+
 def test_mpnn_api_and_worker_reuse_one_named_run(api_queue, monkeypatch):
     from mn_molecular_design_studio import mpnn_input
     from mn_molecular_design_studio.engine.workflow_engine.workflows import sequence_design

@@ -379,8 +379,8 @@ def cancel_job(reference: str, *, reason: str = "Cancelled through local automat
     row = resolve_job(reference)
     if row["status"] not in ACTIVE_STATUSES:
         raise AutomationError(f"Job {row['run_id']} is {row['status']}; only active or paused jobs can be cancelled.")
-    jobs.stop_job(Path(row["run_dir"]), reason=reason)
-    return resolve_job(row["run_id"])
+    cancellation = jobs.stop_job(Path(row["run_dir"]), reason=reason)
+    return {**resolve_job(row["run_id"]), "cancellation": cancellation}
 
 
 def wait_for_job(

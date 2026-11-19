@@ -24,6 +24,9 @@ def assessment_protocol(method):
     if method == "analysis.binder_interface_chemistry":
         from mn_molecular_design_studio.complex_analysis_interface_chemistry import METHOD_VERSION
         return {"method_version": METHOD_VERSION}
+    if method == "analysis.binderscope":
+        from mn_molecular_design_studio.binderscope import METHOD_VERSION, REVISION, protocol_revision
+        return {"method_version": METHOD_VERSION, "engine_version": REVISION, "protocol_revision": protocol_revision()}
     if method == "analysis.tag_fusion_suitability":
         from mn_molecular_design_studio.complex_analysis_tag_fusion import METHOD_VERSION
         return {"method_version": METHOD_VERSION}

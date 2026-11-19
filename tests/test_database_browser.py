@@ -33,9 +33,11 @@ def _record(sequence="ACDE", **values):
     return {"name": "Binder", "components": [{"chain": "A", "type": "protein", "sequence": sequence}], **values}
 
 
-def _app_source(view="Molecules", mode="All molecular entities"):
+def _app_source(view="Molecules", mode="All molecular entities", outcomes=False):
     return (f"import streamlit as st\nst.session_state.setdefault('database-browser-view', {view!r})\n"
             f"st.session_state.setdefault('database-browser-molecule-grouping-v3', {mode!r})\n"
+            + (f"st.session_state.setdefault('database-browser-result-mode', {'Scientific outcomes' if outcomes else 'Calculation history'!r})\n"
+               if outcomes is not None else "") +
             f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])")
 
 
@@ -105,6 +107,27 @@ def test_sequence_types_and_ligand_stereochemistry_remain_distinct(database):
     index = build_browser_index(database, USER)
     assert len(molecular_subjects(index)) == 5
     assert len(molecular_subjects(index, individual_sequences=True)) == 3
+
+
+def test_pdb_query_preserves_unannotated_representations_and_exact_native_results(database):
+    from test_molecular_database_policy import _pdb_efg_acd_complex
+
+    imported = _import(database, records=[_record("ACD")])
+    molecule = imported["molecule_ids"][0]
+    structure = database.attach_structure(imported["group_id"], molecule,
+        {"name": "complex.pdb", "content": _pdb_efg_acd_complex().encode()}, context={"run_id": "run-1"})
+    expected = database.add_observation(imported["group_id"], molecule, "predictor", "run-1", {"confidence": 0.9},
+        context={"target_pdb_id": "3gws", "representation_id": structure})
+    database.add_observation(imported["group_id"], molecule, "predictor", "other", {"confidence": 0.1},
+        context={"target_pdb_id": "4LNW"})
+    database.add_observation(imported["group_id"], molecule, "predictor", "unlinked", {"confidence": 0.2})
+    index = build_browser_index(database, USER, include_related=True)
+    subject = {"id": "selected-pdb", "molecule_ids": {molecule}, "group_ids": {imported["group_id"]}, "target_pdb_id": "3GWS"}
+    results = subject_results(database, index, subject, include_metrics=True)
+    assert len(results) == 1 and results[0]["observation_id"] == expected
+    assert results[0]["structure_ids"] == [structure]
+    assert results[0]["metrics"] == {"confidence": 0.9}
+    assert results[0]["target_pdb_id"] == "3GWS"
 
 
 def test_shared_evaluation_group_uses_row_provenance_not_stale_group_origin(database):
@@ -215,7 +238,7 @@ def test_grouped_browser_default_and_original_collection_drilldown(database, mon
     subject = component_subjects(build_browser_index(database, USER))[0]
     picker.set_value(subject["id"]).run()
     assert not app.exception
-    assert any("2 results" in item.value for item in app.caption)
+    assert any("2 calculations / records" in item.value for item in app.caption)
     assert hydration_calls
     assert all(call["molecule_ids"] == first["molecule_ids"] and call["limit"] == 1 for call in hydration_calls)
     app.button(key="database-browser-open-" + subject["id"]).click().run()
@@ -269,7 +292,7 @@ def test_grouped_views_keep_filters_left_and_automatic_viewer_right(database, mo
     imported = _import(database)
     monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
-    monkeypatch.setattr(database_ui, "render_details", lambda database, user, record: st.markdown("VIEWER_ACTIVE: " + record["id"]))
+    monkeypatch.setattr(database_ui, "render_details", lambda database, user, record, **kwargs: st.markdown("VIEWER_ACTIVE: " + record["id"]))
     app = AppTest.from_string(_app_source(view), default_timeout=15).run()
     assert not app.exception
     columns = app.get("column")
@@ -309,7 +332,7 @@ def test_grouped_sheet_focus_changes_the_inspector_without_stale_selection(datab
         database.add_observation(group["id"], imported["molecule_ids"][0], "tool", run_id, {"score": score}, context={"task_group": "design"})
     monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
-    monkeypatch.setattr(database_ui, "render_details", lambda database, user, record: st.markdown("VIEWER_ACTIVE: " + str(record["scores"].get("tool.score"))))
+    monkeypatch.setattr(database_ui, "render_details", lambda database, user, record, **kwargs: st.markdown("VIEWER_ACTIVE: " + str(record["scores"].get("tool.score"))))
     index = build_browser_index(database, USER)
     subject = component_subjects(index)[0]
     second = next(row for row in subject_results(database, index, subject) if row["run_id"] == "second")
@@ -353,7 +376,7 @@ def test_component_navigation_connects_ligands_complexes_and_explicit_target_des
     index = build_browser_index(database, USER, include_related=True)
     subjects = component_subjects(index)
     protein = next(row for row in subjects if row["sequence"] == "ACDE")
-    assert protein["name"] == "Protein target · 4 aa · ACDE"
+    assert protein["name"] == "Protein target · 4 aa"
     assert protein["molecule_ids"] == set(target["molecule_ids"] + complex_record["molecule_ids"] + design["molecule_ids"])
     assert not protein["molecule_ids"] & set(unrelated["molecule_ids"])
     compound_subject = next(row for row in subjects if row["type"] == "small_molecule")
@@ -361,6 +384,61 @@ def test_component_navigation_connects_ligands_complexes_and_explicit_target_des
     results = subject_results(database, index, protein)
     assert set(row["molecule_id"] for row in results) == protein["molecule_ids"] - set(target["molecule_ids"])
     assert next(row for row in results if row["molecule_id"] == design["molecule_ids"][0])["relation"] == "Recorded target link"
+
+
+def test_target_uses_accessible_exact_sequence_reference_name(database):
+    reference = _import(database, records=[_record(name="THRα 4LNW · HY-L126 docking receptor")],
+                        method="user_uploads", kind="curated", run_id="")
+    _import(database, task="refolding", records=[_record(name="Compound 123", components=[
+        {"chain": "T", "type": "protein", "sequence": "ACDE", "role": "target"},
+        {"chain": "L", "type": "small_molecule", "smiles": "CCO"}])])
+    index = build_browser_index(database, USER, include_related=True)
+    target = next(row for row in component_subjects(index, role="targets") if row["type"] == "protein")
+    assert target["name"] == "THRα 4LNW · HY-L126 docking receptor"
+    assert set(reference["molecule_ids"]) <= target["molecule_ids"]
+    from mn_molecular_design_studio.data_browser import folder_scopes
+    scope = next(row for row in folder_scopes(index, []).values() if row["parent"] == "targets" and row["subject"]["type"] == "protein")
+    assert scope["label"] == target["name"]
+    assert "4LNW" in scope["search"]
+
+
+@pytest.mark.parametrize("reference_user,reference_sequence", [(OTHER, "ACDE"), (USER, "FGHI")])
+def test_target_name_never_comes_from_private_or_different_sequence_reference(database, reference_user, reference_sequence):
+    _import(database, user=reference_user, records=[_record(reference_sequence, name="Secret receptor name")],
+            method="user_uploads", kind="curated", run_id="")
+    _import(database, task="refolding", records=[_record(name="Compound 123", components=[
+        {"chain": "T", "type": "protein", "sequence": "ACDE", "role": "target"},
+        {"chain": "L", "type": "small_molecule", "smiles": "CCO"}])])
+    index = build_browser_index(database, USER, include_related=True)
+    target = next(row for row in component_subjects(index, role="targets") if row["type"] == "protein")
+    assert target["name"] == "Protein target · 4 aa"
+    assert "Secret receptor name" not in target["names"]
+
+
+def test_designed_or_complex_names_never_become_target_reference_names(database):
+    _import(database, records=[_record(name="Designed candidate", components=[
+        {"chain": "B", "type": "protein", "sequence": "ACDE", "role": "binder"}])],
+        method="user_uploads", kind="curated", run_id="")
+    _import(database, task="refolding", records=[_record(name="Drug name is not a receptor", components=[
+        {"chain": "T", "type": "protein", "sequence": "ACDE", "role": "target"},
+        {"chain": "L", "type": "small_molecule", "smiles": "CCO"}])])
+    target = next(row for row in component_subjects(build_browser_index(database, USER), role="targets") if row["type"] == "protein")
+    assert target["name"] == "Protein target · 4 aa"
+
+
+@pytest.mark.parametrize("recorded_name,expected", [
+    ("Tau R3", "Tau R3"), ("Sequence-defined target", "Named reference"),
+    ("Recorded target", "Named reference"), ("Protein target · 4 aa", "Named reference"),
+    ("Protein", "Named reference"),
+])
+def test_meaningful_explicit_target_name_has_priority_over_reference_aliases(database, recorded_name, expected):
+    _import(database, records=[_record(name="Named reference")], method="user_uploads", kind="curated", run_id="")
+    _import(database, records=[_record(name=recorded_name, components=[
+        {"chain": "A", "type": "protein", "sequence": "ACDE", "role": "target"}],
+        metadata={"target_identity_type": "sequence_only"})], method="tool_inputs", kind="inputs", run_id="")
+    targets = component_subjects(build_browser_index(database, USER, include_related=True), role="targets")
+    assert len(targets) == 1
+    assert targets[0]["name"] == expected
 
 
 def test_target_history_includes_accessible_nonlibrary_results_without_other_target_evaluations(database):
@@ -433,6 +511,59 @@ def test_selected_evaluations_and_structures_keep_their_own_scores(database):
         assert revision == connection.execute("SELECT local_revision FROM molecular_database_sync_state").fetchone()[0]
 
 
+@pytest.mark.parametrize("conflict", ["", "reference", "input", "pdb", "run", "tool", "replicate", "target", "candidate", "model", "checksum", "ambiguous", "group"])
+def test_stale_pose_reference_is_recovered_only_with_exact_checksum_and_source_context(database, conflict):
+    import hashlib
+
+    imported = _import(database, task="docking", origin={"tool": "vina"})
+    content = b"HETATM    1  C1  LIG L   1       1.000   2.000   3.000  1.00 20.00           C\nEND\n"
+    digest = hashlib.sha256(content).hexdigest()
+    context = {"run_id": "run-1", "tool": "vina", "task_group": "docking", "legacy_run_id": "original-attempt",
+               "row": {"replicate": "1", "compound_id": "compound"}, "candidate_id": "compound", "model_id": "1",
+               "target_structure_digest": "f" * 64, "target_pdb_id": "4LNW", "pose_rank": 1,
+               "database_structure_policy": "best_docking_pose"}
+    saved = {**context, "row": dict(context["row"])}
+    if conflict == "run":
+        saved["run_id"] = "other-run"
+    elif conflict == "tool":
+        saved["tool"] = "gnina"
+    elif conflict == "replicate":
+        saved["row"]["replicate"] = "2"
+    elif conflict == "target":
+        saved["target_structure_digest"] = "e" * 64
+    elif conflict == "candidate":
+        saved["candidate_id"] = "other-compound"
+    elif conflict == "model":
+        saved["model_id"] = "2"
+    elif conflict == "input":
+        saved["input_role"] = "receptor"
+    elif conflict == "pdb":
+        saved["target_pdb_id"] = "3GWS"
+    source = _import(database, name="Other group", run_id="other-source") if conflict == "group" else imported
+    structure = database.attach_structure(source["group_id"], source["molecule_ids"][0],
+        {"name": "pose.pdb", "content": content}, context=saved)
+    if conflict == "ambiguous":
+        database.attach_structure(imported["group_id"], imported["molecule_ids"][0],
+            {"name": "pose.pdb", "content": content}, context={**saved, "pose_rank": 2})
+    observation = database.add_observation(imported["group_id"], imported["molecule_ids"][0], "vina", "run-1", {"affinity": -8},
+        context={**context, "representation_id": "obsolete-peer-pose", "structure_digest": "0" * 64 if conflict == "checksum" else digest})
+    index = build_browser_index(database, USER)
+    if conflict == "reference":
+        index["molecules"][imported["molecule_ids"][0]].update(target_record=True, output_record=False)
+        index["groups"][imported["group_id"]]["collection_kind"] = "inputs"
+    with database.connection() as connection:
+        before = [tuple(row) for row in connection.execute("SELECT * FROM molecule_observations ORDER BY id")]
+        revision = connection.execute("SELECT local_revision FROM molecular_database_sync_state").fetchone()[0]
+    result = next(row for row in subject_results(database, index, component_subjects(index)[0]) if row["observation_id"] == observation)
+    assert result["evaluation"]["representation_id"] == "obsolete-peer-pose"
+    recovered = conflict in {"", "reference"}
+    assert result["structure_ids"] == ([structure] if recovered else [])
+    assert bool(result["structure_link_status"]) == recovered
+    with database.connection() as connection:
+        assert before == [tuple(row) for row in connection.execute("SELECT * FROM molecule_observations ORDER BY id")]
+        assert revision == connection.execute("SELECT local_revision FROM molecular_database_sync_state").fetchone()[0]
+
+
 def test_source_collections_do_not_duplicate_one_run_output(database):
     first = _import(database, name="Generated")
     second = _import(database, name="Selected", method="user_uploads", kind="curated")
@@ -484,7 +615,7 @@ def test_native_evaluation_selector_follows_center_result_for_same_molecule(data
     imported = _import(database)
     for model in ("0", "1"):
         database.add_observation(imported["group_id"], imported["molecule_ids"][0], "predictor", "run-1", {"score": int(model)},
-                                 context={"task_group": "design", "model_id": model})
+                                 context={"task_group": "design", "model_id": model, "target_molecule_id": "verified-target"})
     monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
     index = build_browser_index(database, USER)
@@ -495,7 +626,7 @@ def test_native_evaluation_selector_follows_center_result_for_same_molecule(data
         next(item for item in app.selectbox if item.label == "Inspect result").set_value(row["id"]).run()
         assert not app.exception
         selector = next(item for item in app.selectbox if item.label == "Evaluation")
-        assert selector.value == row["evaluation_id"] and len(selector.options) == 1
+        assert selector.value == row["evaluation_id"] and len(selector.options) == 2
 
 
 def test_targets_use_recorded_names_and_hide_repeated_sequence_carrier_inputs(database):
@@ -515,6 +646,7 @@ def test_targets_use_recorded_names_and_hide_repeated_sequence_carrier_inputs(da
     outputs = subject_results(database, index, targets[0])
     assert len(outputs) == 1 and outputs[0]["evaluation_id"]
     assert outputs[0]["name"] == "bindcraft2_00001"
+    assert "bindcraft2_00001" in index["molecules"][design["molecule_ids"][0]]["names"]
     assert all(row["kind_label"] != "Input / reference" for row in outputs)
     history = subject_results(database, index, targets[0], include_inputs=True)
     assert any(row["kind_label"] == "Input / reference" for row in history)
@@ -591,7 +723,7 @@ def test_default_ui_selects_targets_not_designs_and_real_outputs_not_input_histo
         context={"task_group": "design", "target_molecule_id": target["molecule_ids"][0]})
     monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
-    monkeypatch.setattr(database_ui, "render_details", lambda database, user, record: st.markdown("VIEWER: " + record["name"]))
+    monkeypatch.setattr(database_ui, "render_details", lambda database, user, record, **kwargs: st.markdown("VIEWER: " + record["name"]))
     app = AppTest.from_string(_app_source(mode="Targets & ligands"), default_timeout=15).run()
     assert not app.exception
     assert any("R3 reference" in item.value for item in app.markdown)

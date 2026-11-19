@@ -118,7 +118,7 @@ def normalize_outputs(run_dir, prepared, task, requested):
                 raise ValueError('RFD4 returned a designed chain outside the requested length range.')
         target_reference=prepared.get('target_structure')
         target_artifact=str(local_path(run_dir,target_reference)) if target_reference else None
-        records.append({'candidate_id':ident,'source_tool':'rfd4_proteina','stage':stage,
+        record={'candidate_id':ident,'source_tool':'rfd4_proteina','stage':stage,
                         'parents':[parent['candidate_id']] if parent.get('candidate_id') else [],
                         'complex_pdb':str(path),'binder_pdb':str(binder_path),'binder_sequence':sequence,
                         'target_pdb':target_artifact,'target_chains':targets,'binder_chains':binder,
@@ -128,7 +128,15 @@ def normalize_outputs(run_dir, prepared, task, requested):
                         'upstream_commit':inputs.UPSTREAM_COMMIT,'requested_designs':requested,
                         'studio_molecule_id':ident,'components':components,'unsupported_chemistry':unsupported_chemistry,
                         'reference_constraints':{key:prepared['parameters'].get(key) for key in ('task','condition_spec','options')},
-                        'folding_engine':prepared['parameters'].get('options',{}).get('folding_engine','openfold3_jax') if prepared['parameters'].get('options',{}).get('refold',True) else None}})
+                        'folding_engine':prepared['parameters'].get('options',{}).get('folding_engine','openfold3_jax') if prepared['parameters'].get('options',{}).get('refold',True) else None}}
+        if not folding and prepared['parameters'].get('options',{}).get('refold',True):
+            from mn_molecular_design_studio.rfd4_representations import refolded_representation
+            representation=refolded_representation(path,metrics,root=run_dir)
+            if representation:
+                record['complex_pdb']=representation['refolded_path']
+                record['binder_pdb']=None
+                record['raw_metadata'].update(generated_complex_pdb=str(path),design_representation=representation)
+        records.append(record)
     return records
 
 
@@ -223,7 +231,7 @@ def run_rfd4_proteina_design(
             # RFD4's default Hydra output directory is relative to cwd, so use
             # the writable mounted run directory after dropping container root.
             code=run_docker_job(job.run_dir,manifest,args,gpu_device=gpu_device,extra_mounts=mounts,
-                                environment=env,use_host_user=True,working_dir='/work')
+                                environment={**env,'TZ':'UTC'},use_host_user=True,working_dir='/work')
         native_commands=prepared['root']/'native_command.json'
         receipt_path=job.run_dir/'native_execution.json'
         if receipt_path.is_file() and native_commands.is_file():

@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binderscope.local/schema/common.schema.json",
+  "title": "Shared definitions",
+  "description": "Building blocks referenced by the other Binderscope schemas. Numbering is UniProt numbering unless a field says otherwise. Coordinates are Angstrom in the reference frame of the target (docs/data_contract.md section 2).",
+  "$defs": {
+    "resi": {
+      "type": "integer",
+      "description": "Residue number in UniProt numbering (the numbering of the full-length protein)."
+    },
+    "resi_list": {
+      "type": "array",
+      "items": { "type": "integer" },
+      "description": "Residue numbers, UniProt numbering, ascending unless a field says otherwise."
+    },
+    "ranges": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "type": "integer" },
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "description": "Inclusive residue ranges [first, last]."
+    },
+    "xyz": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "One point [x, y, z] in Angstrom."
+    },
+    "flat_xyz": {
+      "type": "array",
+      "items": { "type": "number" },
+      "description": "Flattened coordinates [x0, y0, z0, x1, y1, z1, ...]. Length is a multiple of 3 (checked by scripts/validate_schema.py, JSON Schema cannot express it)."
+    },
+    "rot9": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 9,
+      "maxItems": 9,
+      "description": "3x3 rotation matrix, row-major."
+    },
+    "transform12": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 12,
+      "maxItems": 12,
+      "description": "Rigid transform: 9 numbers of a row-major rotation R followed by 3 of a translation t. A point x maps to R x + t."
+    },
+    "emb2": {
+      "type": "array",
+      "items": { "type": "number", "minimum": 0, "maximum": 1 },
+      "minItems": 2,
+      "maxItems": 2,
+      "description": "Position on the 2-D map, both coordinates in 0..1."
+    },
+    "num_or_null": {
+      "type": ["number", "null"]
+    },
+    "int_or_null": {
+      "type": ["integer", "null"]
+    },
+    "num_list": {
+      "type": "array",
+      "items": { "type": "number" }
+    },
+    "num_or_null_list": {
+      "type": "array",
+      "items": { "type": ["number", "null"] }
+    },
+    "string_list": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "residue_code": {
+      "type": "string",
+      "pattern": "^([A-Za-z]|[A-Za-z]{3})$",
+      "description": "Amino-acid code of one residue. New exports write one letter; older data holds three-letter codes in target.resn, which the viewer must keep accepting."
+    },
+    "aa_sequence": {
+      "type": "string",
+      "pattern": "^[A-Za-z]+$",
+      "description": "One-letter amino-acid sequence."
+    },
+    "binder_sequence": {
+      "type": "string",
+      "pattern": "^[A-Za-z]+(/[A-Za-z]+)*$",
+      "description": "One-letter binder sequence. A binder of several chains - an scFv's VH and VL, a homo-oligomer's copies - has its chains separated by \"/\", which is how BindCraft writes Binder_Sequence. Readers that want one string remove the separator; anything that orders or synthesises the molecule needs the chains apart."
+    },
+    "ss_string": {
+      "type": "string",
+      "pattern": "^[HEL]*$",
+      "description": "Secondary structure, one letter per residue: H helix, E strand, L everything else."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "warn", "bad"]
+    },
+    "check_state": {
+      "type": "string",
+      "enum": ["pass", "warn", "fail"]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})?)?$",
+      "description": "ISO 8601 date or date-time, UTC unless an offset is given."
+    },
+    "key_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier used as an object key or a reference (design id, run id, mode id, site id)."
+    },
+    "stem_value_map": {
+      "type": "object",
+      "additionalProperties": { "type": ["number", "null"] },
+      "description": "Metric stem -> value."
+    },
+    "filter_failure": {
+      "type": "object",
+      "description": "One failed filter of a rejected (or accepted-with-failed-model) design. Mirrors binder_review.config.FilterFailure.",
+      "required": ["stem", "value", "threshold", "op", "gap"],
+      "properties": {
+        "stem": { "type": "string", "description": "BindCraft metric stem, e.g. Surface_Hydrophobicity, or InterfaceAAs_K." },
+        "metric": { "type": ["string", "null"], "description": "Key of the page metric in design.m that carries the same quantity, or null when the page has none." },
+        "scope": { "type": "string", "description": "'Average' or the model number as a string ('1', '2')." },
+        "value": { "type": "number", "description": "The design's value, in the CSV scale." },
+        "threshold": { "type": "number" },
+        "op": { "type": "string", "enum": [">=", "<="], "description": "The value must satisfy value op threshold to pass." },
+        "gap": { "type": "number", "minimum": 0, "description": "How far the value misses the threshold, in the metric's own unit." },
+        "rel": { "type": ["number", "null"], "description": "gap / max(|threshold|, 1e-9): the miss as a share of the threshold. Used to rank near-misses. Null when the miss is not measured (measured false)." },
+        "reported": { "type": "boolean", "description": "Only for a run judged by the thresholds it recorded itself: true when BindCraft named this filter in failed_filters, false when it was found here from the CSV mean (BindCraft stops at the first validation model that fails)." },
+        "measured": { "type": "boolean", "description": "Only for a run judged by the thresholds it recorded itself: false when BindCraft judged the filter on one validation model and the CSV mean does not show the miss (scope Model, gap 0.0 is a lower bound, rel is null)." }
+      },
+      "additionalProperties": true
+    }
+  }
+}

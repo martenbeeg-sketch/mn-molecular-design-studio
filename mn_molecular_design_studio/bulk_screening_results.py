@@ -184,9 +184,9 @@ def publish_final_selection(run_dir, user, limit, *, database=None, selected_com
             records.append((row, rank, score, record))
         database = database or MolecularDatabase()
         from mn_molecular_design_studio.bound_docking import screening_receptor, register_receptor
-        receptor = screening_receptor(run_dir, target) if any(record["files"] for _, _, _, record in records) else None
+        receptor = screening_receptor(run_dir, target)
         target_context = register_receptor(database, user, receptor, project_id=project,
-            name=str(target.get("target_name") or "Docking receptor")) if receptor else {}
+            name=str(target.get("target_name") or "Docking receptor"), reference=target) if receptor else {}
         group_prefix = "screening-selected-" if explicit_selection else "screening-final-"
         group_label = "Selected compounds" if explicit_selection else "Final shortlist"
         group_id = database.create_group(user, f"{graph.get('name') or run_dir.name} · {group_label}",
@@ -212,7 +212,7 @@ def publish_final_selection(run_dir, user, limit, *, database=None, selected_com
                     representation = existing[0] if existing else _id("structure-", _json([molecule_id, group_id, str(path), structure_context]))
                     connection.execute("INSERT INTO molecule_structures VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET context=excluded.context", (
                         representation, molecule_id, group_id, str(path), item["label"], path.suffix.lstrip("."), _json(structure_context), stamp))
-                context = {**origin, "compound_id": row["compound_id"], "units": units,
+                context = {**origin, "workflow_role": "docking", "compound_id": row["compound_id"], "units": units,
                            "library_id": row.get("library_id"), "compound_key": row.get("compound_key"),
                            "primary_ranking_metric": field, "ranking_direction": direction,
                            **target_context, "representation_id": representation, "settings": docking,

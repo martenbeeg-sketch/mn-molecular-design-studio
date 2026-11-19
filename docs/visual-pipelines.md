@@ -35,6 +35,15 @@ shortlist. See [Phase 5 implementation and validation](testing/task-catalogue-co
 
 ## Working on the canvas
 
+**MD analysis:** use **Create MD analysis pipeline**, or add **Saved MD run** and
+**MD Analysis** from the Molecular dynamics tool group. The typed connection
+carries one exact trajectory/topology pair into the CPU analysis. Connect its
+MD measurements output to Results; branch the saved source to compare sampling
+windows/settings. Source files stay read-only on the pipeline workstation.
+This route calculates RMSD, Cα/ligand RMSF, mass-weighted Rg and geometric
+contacts; it does not automatically perform GB/PB endpoint calculations or
+chemical hydrogen-bond classification. See [MD analysis contracts and limits](md-data-browser.md#executable-md-analysis-tile-and-pipelines).
+
 - Drag a block to any position. Drag between its sockets to connect steps.
 - Branch an output to compare downstream engines; Results can collect several branches.
 - Click a block to open its input form. Main controls and **Optional settings** start with the saved node values. **Reset to tool defaults** loads defaults from the same workflow schema as its standalone tool page.

@@ -289,6 +289,46 @@ def _render_active_target(params, key):
 
 
 def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, graph=None):
+    if selected["data"]["kind"] == "md_source":
+        from mn_molecular_design_studio.md_analysis_ui import _cached_source_options_for_job
+
+        if not project_id:
+            st.info("Choose a project before selecting an MD run.")
+            return {}
+        rows, cursor = [], None
+        while True:
+            page = search_jobs(project_id=project_id, task_group="ligand-md", statuses=["completed"], limit=1000, cursor=cursor)
+            rows.extend(row for row in page["items"] if row.get("run_dir") and Path(row["run_dir"]).is_dir())
+            cursor = page.get("next_cursor")
+            if not cursor:
+                break
+        if not rows:
+            st.info("No completed MD runs are present on this pipeline workstation. Open the pipeline on the workstation holding the trajectory; it is not copied between computers.")
+            return {}
+        params = selected["data"]["params"]
+        by_path = {str(row["run_dir"]): row for row in rows}
+        paths = list(by_path)
+        source = st.selectbox("Completed MD job", paths,
+            index=paths.index(params["source_run_dir"]) if params.get("source_run_dir") in paths else 0,
+            format_func=lambda path: str(by_path[path].get("campaign_name") or by_path[path].get("job_code") or by_path[path].get("run_id")),
+            key=prefix + "-md-job")
+        options = _cached_source_options_for_job(by_path[source])
+        lookup = {row["option_id"]: row for row in options}
+        if not lookup:
+            st.info("No exact trajectory/topology pair is recorded for this MD job.")
+            return {}
+        identifiers = list(lookup)
+        chosen = st.selectbox("Recorded production segment", identifiers,
+            index=identifiers.index(params["option_id"]) if params.get("option_id") in identifiers else 0,
+            format_func=lambda value: lookup[value]["label"], key=prefix + "-md-segment-" + Path(source).name)
+        topologies = [path.relative_to(Path(source).resolve()).as_posix() for path in lookup[chosen]["topology_paths"]]
+        topology = st.selectbox("Matching topology", topologies,
+            index=topologies.index(params["topology_relative_path"]) if params.get("topology_relative_path") in topologies else 0,
+            key=prefix + "-md-topology-" + hashlib.sha256(chosen.encode()).hexdigest()[:12])
+        st.caption("One segment and replica only. Source files stay read-only on this workstation. Configure ligand selection and sampling in MD Analysis.")
+        values = {"source_run_dir": source, "option_id": chosen, "topology_relative_path": topology}
+        params.update(values)
+        return {selected["id"]: values}
     if selected["data"]["kind"] == "run_source":
         from mn_molecular_design_studio.run_inputs_ui import select
         choice = select(project_id, prefix + "-run-output", require_complex=False, allow_docking=True,
@@ -985,6 +1025,10 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         if not definitions and not versions:
             st.caption("Canvas edits autosave to the current draft. Use Save as… to create a separate pipeline; Save version keeps immutable history.")
 
+    with st.expander("Molecular dynamics analysis", expanded=True):
+        st.caption("Saved MD run → MD Analysis → Results. Configure an exact production segment and sampling window; source files remain read-only on this pipeline workstation.")
+        st.button("Create MD analysis pipeline", key=prefix + "-md-template",
+            on_click=_activate_graph, args=(prefix, new_graph("md_analysis")))
     from mn_molecular_design_studio.scientific_tasks_ui import render_legacy_recipe_selector
     created = render_legacy_recipe_selector(prefix)
     if created is not None:

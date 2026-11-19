@@ -42,6 +42,7 @@ class Store:
         self.path = self.root / "coordinator.sqlite3"
         self.clock = clock
         with self.connect() as db:
+            cancellation_history_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='job_cancellations'").fetchone()
             db.executescript("""
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS nodes (
@@ -61,6 +62,11 @@ class Store:
                     origin_node TEXT NOT NULL, placement TEXT NOT NULL,
                     affinity_node TEXT, command_id TEXT, cancelled INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(owner_id,idempotency_key));
+                CREATE TABLE IF NOT EXISTS job_cancellations (
+                    job_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT NOT NULL,
+                    reason TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS cluster_cancellation_scope ON job_cancellations(owner_id,project_id);
+                CREATE INDEX IF NOT EXISTS cluster_jobs_scope ON jobs(owner_id,project_id);
                 CREATE TABLE IF NOT EXISTS commands (
                     id TEXT PRIMARY KEY, node_id TEXT NOT NULL,
                     job_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
@@ -132,6 +138,8 @@ class Store:
                     ON submissions(command_id,job_id)
                     WHERE placement='auto' AND affinity_node IS NULL AND cancelled=0 AND command_id IS NOT NULL;
             """)
+            if not cancellation_history_exists:
+                db.execute("INSERT OR IGNORE INTO job_cancellations SELECT id,owner_id,project_id,'Earlier cancellation request' FROM jobs WHERE json_extract(payload,'$.cancel_requested')=1 OR json_extract(payload,'$.status') IN ('cancelled','canceled','stopped')")
             missing_search_row = db.execute(
                 "SELECT 1 FROM jobs j LEFT JOIN job_search_index s ON s.job_id=j.id "
                 "WHERE s.job_id IS NULL LIMIT 1"
@@ -217,6 +225,7 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             db.execute("UPDATE nodes SET snapshot=?,last_seen=? WHERE id=? AND disabled=0",
                        (encoded(snapshot), self.clock(), node_id))
+            scopes = set()
             for raw in jobs:
                 row = dict(raw)
                 external_library_record = row.pop("external_library_record", None)
@@ -288,6 +297,9 @@ class Store:
                     (jid, node_id, local_ref, str(row.get("owner_id") or ""), str(row.get("project_id") or ""),
                      encoded(row), row.get("created_at") or stamp(self.clock()), str(row.get("data_state") or "present")),
                 )
+                scopes.add((str(row.get("owner_id") or ""), str(row.get("project_id") or "")))
+                if row.get("cancel_requested") or row.get("status") in {"cancelled", "canceled", "stopped"}:
+                    db.execute("INSERT OR IGNORE INTO job_cancellations VALUES (?,?,?,?)", (jid, str(row.get("owner_id") or ""), str(row.get("project_id") or ""), row.get("cancel_reason") or "Upstream job cancelled"))
                 if external_library_record is not None:
                     if row.get("tool") not in {"library_preparation", "library_centroids"}:
                         raise PermissionError("Only a library preparation job can publish external library metadata.")
@@ -310,6 +322,7 @@ class Store:
                             "UPDATE jobs SET data_state=? WHERE id=?",
                             (state, old["id"]),
                         )
+            self._reconcile_dependency_cancellations(db, scopes)
         self.dispatch()
 
     def pulse(self, node_id, snapshot):
@@ -455,6 +468,9 @@ class Store:
                        "status": "waiting_for_workstation", "campaign_name": name, "created_at": stamp(self.clock()),
                        "tool": tool, "pipeline_name": pipeline_name, "job_code": jid[:5].upper(),
                        "request_summary": request["payload"], "wait_reason": "Waiting for a compatible workstation."}
+                row["dependency_origin_node"] = origin_node
+                from mn_molecular_design_studio.job_dependencies import projected_references
+                row["dependency_refs"] = projected_references({}, payload)
                 db.execute(
                     "INSERT INTO jobs (id,node_id,local_ref,owner_id,project_id,payload,created_at) "
                     "VALUES (?,?,?,?,?,?,?)",
@@ -472,6 +488,7 @@ class Store:
                         "INSERT INTO library_transfers(job_id,node_id,origin_node,destination,status,updated_at) VALUES (?,?,?,?,?,?)",
                         (jid, placement, origin_node, str(destination), "waiting", stamp(self.clock())),
                     )
+            self._reconcile_dependency_cancellations(db, {(user["id"], request["project_id"])})
         self.dispatch()
         return {"job": self.job(jid, user)}
 
@@ -750,6 +767,11 @@ class Store:
         if kind not in {"inspect", "artifact", "cancel", "hide", "restore", "retry", "change_gpu", "purge", "md_source_options", "collect_accepted_designs"}:
             raise ValueError("Unsupported workstation action.")
         job = self.job(jid, user)
+        if kind == "cancel":
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                current = json.loads(self._job(db, job["cluster_job_id"])["payload"])
+                return self._cancel_dependency_tree(db, current, reason=str(payload.get("reason") or "Cancelled by user"))
         if kind == "collect_accepted_designs":
             if job.get("status") not in {"completed", "succeeded"}:
                 raise ValueError("Only completed validation results can be promoted to the shared Database.")
@@ -828,20 +850,6 @@ class Store:
             with self.connect() as db:
                 db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(job), job["cluster_job_id"]))
             return {"hidden": job["hidden"]}
-        if kind == "cancel" and not job.get("local_reference"):
-            with self.connect() as db:
-                db.execute("BEGIN IMMEDIATE")
-                submission = db.execute("SELECT command_id FROM submissions WHERE job_id=?", (job["cluster_job_id"],)).fetchone()
-                command = db.execute("SELECT status FROM commands WHERE id=?", (submission["command_id"],)).fetchone() if submission and submission["command_id"] else None
-                if not command or command["status"] == "queued":
-                    if submission and submission["command_id"]:
-                        db.execute("UPDATE commands SET status='cancelled' WHERE id=?", (submission["command_id"],))
-                    db.execute("UPDATE submissions SET cancelled=1 WHERE job_id=?", (job["cluster_job_id"],))
-                    job.update(status="cancelled", wait_reason="Cancelled before the workstation accepted this job.")
-                else:
-                    job.update(cancel_requested=True, wait_reason="Cancellation requested; waiting for the workstation to confirm acceptance.")
-                db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(job), job["cluster_job_id"]))
-            return {"status": job["status"], "cancel_requested": job.get("cancel_requested", False)}
         if not job.get("local_reference"):
             raise ValueError("This job has not been accepted by its workstation yet.")
         if kind == "artifact":
@@ -887,6 +895,78 @@ class Store:
             db.execute("INSERT INTO commands(id,node_id,job_id,kind,payload,owner_id,project_id,created_at) VALUES (?,?,?,?,?,?,?,?)",
                        (command_id, job["node_id"], job["cluster_job_id"], kind, encoded(payload | {"local_reference": job["local_reference"]}), user["id"], job["project_id"], stamp(self.clock())))
         return {"command_id": command_id, "status": "queued", "node_id": job["node_id"]}
+
+    def _queue_dependency_cancel(self, db, job, reason):
+        from mn_molecular_design_studio.job_dependencies import TERMINAL
+        if str(job.get("status") or "").lower() in TERMINAL:
+            return {"status": job.get("status"), "preserved": True}
+        job.update(cancel_requested=True, cancel_reason=reason)
+        jid = job["cluster_job_id"]
+        db.execute("INSERT OR IGNORE INTO job_cancellations VALUES (?,?,?,?)", (jid, job["owner_id"], job["project_id"], reason))
+        response = {"status": job["status"], "cancel_requested": True}
+        if not job.get("local_reference"):
+            submission = db.execute("SELECT command_id FROM submissions WHERE job_id=?", (jid,)).fetchone()
+            command = db.execute("SELECT status FROM commands WHERE id=?", (submission["command_id"],)).fetchone() if submission and submission["command_id"] else None
+            if not command or command["status"] in {"queued", "cancelled", "failed"}:
+                if submission and submission["command_id"]:
+                    db.execute("UPDATE commands SET status='cancelled' WHERE id=? AND status='queued'", (submission["command_id"],))
+                db.execute("UPDATE submissions SET cancelled=1 WHERE job_id=?", (jid,))
+                job.update(status="cancelled", wait_reason="Cancelled before the workstation accepted this job.")
+                response["status"] = "cancelled"
+            else:
+                job["wait_reason"] = "Cancellation requested; waiting for the workstation to confirm acceptance."
+        else:
+            existing = db.execute("SELECT id,status FROM commands WHERE job_id=? AND kind='cancel' AND status IN ('queued','claimed') ORDER BY created_at,id LIMIT 1", (jid,)).fetchone()
+            command_id = existing["id"] if existing else str(uuid.uuid4())
+            if not existing:
+                db.execute("INSERT INTO commands(id,node_id,job_id,kind,payload,owner_id,project_id,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                           (command_id, job["node_id"], jid, "cancel", encoded({"local_reference": job["local_reference"], "reason": reason}),
+                            job["owner_id"], job["project_id"], stamp(self.clock())))
+            response.update(command_id=command_id, status=existing["status"] if existing else "queued", node_id=job["node_id"])
+        db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(job), jid))
+        return response
+
+    def _cancel_dependency_tree(self, db, root, *, reason):
+        from mn_molecular_design_studio.job_dependencies import descendants
+        rows = self._dependency_rows(db, root["owner_id"], root["project_id"])
+        selected = descendants(rows, [root])
+        response, requested, preserved = {}, [], []
+        for job in selected:
+            job = json.loads(self._job(db, job["cluster_job_id"])["payload"])
+            result = self._queue_dependency_cancel(db, job, reason if job["cluster_job_id"] == root["cluster_job_id"] else "Upstream job cancelled: " + root["cluster_job_id"])
+            if job["cluster_job_id"] == root["cluster_job_id"]:
+                response = result
+            (preserved if result.get("preserved") else requested).append(job["cluster_job_id"])
+        return {**response, "cancelled_jobs": requested, "preserved_jobs": preserved,
+                "downstream_count": sum(value != root["cluster_job_id"] for value in requested)}
+
+    def _reconcile_dependency_cancellations(self, db, scopes):
+        from mn_molecular_design_studio.job_dependencies import descendants, TERMINAL
+        for owner, project in scopes:
+            roots = {row["job_id"] for row in db.execute("SELECT job_id FROM job_cancellations WHERE owner_id=? AND project_id=?", (owner, project))}
+            if not roots:
+                continue
+            rows = self._dependency_rows(db, owner, project)
+            seeds = [row for row in rows if row["cluster_job_id"] in roots]
+            for job in descendants(rows, seeds):
+                if str(job.get("status") or "").lower() not in TERMINAL:
+                    job = json.loads(self._job(db, job["cluster_job_id"])["payload"])
+                    self._queue_dependency_cancel(db, job, job.get("cancel_reason") or "An upstream job was cancelled")
+
+    @staticmethod
+    def _dependency_rows(db, owner, project):
+        fields = ("run_id", "task_group", "status", "parent_run_id", "parent_task_group", "campaign_id", "batch_parent_run_id", "distributed_campaign_id",
+                  "pipeline_parent_node_id", "parent_node_id", "organizer_node_id", "upstream_run_id", "upstream_task_group",
+                  "upstream_node_id", "dependency_origin_node", "dependency_refs")
+        projection = ",".join("'" + field + "',json_extract(payload,'$." + field + "')" for field in fields)
+        projection += ",'source_job',json_extract(payload,'$.request_summary.source_job')"
+        rows = []
+        for raw in db.execute("SELECT id,node_id,owner_id,project_id,json_object(" + projection + ") AS lineage FROM jobs WHERE owner_id=? AND project_id=?", (owner, project)):
+            row = json.loads(raw["lineage"])
+            row.update(cluster_job_id=raw["id"], node_id=raw["node_id"], owner_id=raw["owner_id"], project_id=raw["project_id"])
+            row["request_summary"] = {"source_job": row.pop("source_job")}
+            rows.append(row)
+        return rows
 
     def cancel_pending_artifact_transfers(self, jid, user):
         """Cancel queued output downloads without changing the scientific job."""
@@ -1022,10 +1102,9 @@ class Store:
                         db.execute("DELETE FROM jobs WHERE id=?", (existing["id"],))
                     db.execute("UPDATE jobs SET local_ref=? WHERE id=?", (local_ref, row["job_id"]))
                     if job.get("cancel_requested"):
-                        db.execute("INSERT INTO commands(id,node_id,job_id,kind,payload,owner_id,project_id,created_at) VALUES (?,?,?,?,?,?,?,?)",
-                                   (str(uuid.uuid4()), node_id, row["job_id"], "cancel", encoded({"local_reference": local_ref}),
-                                    row["owner_id"], row["project_id"], stamp(self.clock())))
+                        self._queue_dependency_cancel(db, job, job.get("cancel_reason") or "Cancelled during workstation acceptance")
                 db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(job), row["job_id"]))
+                self._reconcile_dependency_cancellations(db, {(job["owner_id"], job["project_id"])})
             elif row["kind"] == "purge" and not error:
                 # The owning workstation has already removed the run directory
                 # and run-derived Database rows. Keep this completed command so

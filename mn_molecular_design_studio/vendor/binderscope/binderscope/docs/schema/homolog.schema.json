@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binderscope.local/schema/homolog.schema.json",
+  "title": "Homolog blob (HOM)",
+  "description": "data/homolog.json: conservation and specificity data. Every per-position array and every aligned sequence (map) has one entry per entry of resis, in the same order, so a residue number finds its column through resis. Field meaning, producers and consumers are in docs/data_contract.md section 5. Which species, labels and keys the pages show is decided by profile.specificity (HOM.species, show, subject and kind are the legacy way and are still read).",
+  "type": "object",
+  "required": ["resis", "seq", "cons", "ident", "grade", "cover", "n_orth", "orth", "par"],
+  "properties": {
+    "schema": { "type": "string", "const": "binderscope.homolog/1" },
+    "resis": { "$ref": "common.schema.json#/$defs/resi_list", "description": "Target residues, UniProt numbering, ascending. Equal to the campaign target.resi (the union of the runs' constructs)." },
+    "seq": { "$ref": "common.schema.json#/$defs/aa_sequence", "description": "Reference (human) residue at each entry of resis, one letter." },
+    "cons": {
+      "type": "array",
+      "items": { "type": "number", "minimum": 0, "maximum": 1 },
+      "description": "Conservation per position, 0..1: 1 - (Shannon entropy of the ortholog column / log2 20)."
+    },
+    "ident": {
+      "type": "array",
+      "items": { "type": "number", "minimum": 0, "maximum": 1 },
+      "description": "Share of ortholog sequences, among those with a residue in the column, that carry the reference residue."
+    },
+    "grade": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1, "maximum": 9 },
+      "description": "ConSurf-style grade, 1 variable to 9 conserved, computed from the orthologs only (rank of cons * max(cover, 0.3) in nine bins)."
+    },
+    "cover": {
+      "type": "array",
+      "items": { "type": "number", "minimum": 0, "maximum": 1 },
+      "description": "Share of orthologs with a residue (not a gap) in the column."
+    },
+    "n_orth": { "type": "integer", "minimum": 0, "description": "Number of ortholog sequences that went into cons, ident, grade and cover." },
+    "orth": {
+      "type": "array",
+      "description": "Ortholog sequences aligned to the reference. The pages pick their panel from here through profile.specificity.species (by organism name or by 'acc:<accession>').",
+      "items": {
+        "type": "object",
+        "required": ["acc", "org", "ident", "map"],
+        "properties": {
+          "acc": { "type": "string", "description": "UniProt accession." },
+          "org": { "type": "string", "description": "Organism name (as in UniProt OS) or a clade label." },
+          "ident": { "type": "number", "minimum": 0, "maximum": 1, "description": "Identity of the whole alignment to the reference." },
+          "map": { "type": "string", "description": "Aligned residue per entry of resis, one letter, '-' for a gap. Length = len(resis)." },
+          "extra": { "type": "boolean", "description": "Entry added by hand after the panel was built (kept out of n_orth)." },
+          "gene": { "type": "string" },
+          "label": { "type": "string" },
+          "key": { "type": "string" },
+          "taxon": { "type": "integer" },
+          "reviewed": { "type": "boolean" },
+          "length": { "type": "integer" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "par": {
+      "type": "array",
+      "description": "Paralogs (related proteins of the same organism) aligned to the reference. Empty for targets without a paralog panel (viruses).",
+      "items": {
+        "type": "object",
+        "required": ["acc", "name", "gene", "cov", "map"],
+        "properties": {
+          "acc": { "type": "string" },
+          "name": { "type": "string", "description": "Display name of the paralog." },
+          "gene": { "type": "string", "description": "Gene symbol; the pages key paralogs by it." },
+          "cov": { "type": "number", "minimum": 0, "maximum": 1, "description": "Share of the aligned region covered by the paralog alignment." },
+          "ident_igv": { "type": "number", "minimum": 0, "maximum": 1, "description": "LEGACY name. Identity over the aligned reference region. Same quantity as ident_ref." },
+          "ident_ref": { "type": "number", "minimum": 0, "maximum": 1, "description": "NEW generic name for ident_igv: identity over the aligned reference region." },
+          "map": { "type": "string", "description": "Aligned residue per entry of resis, '-' for a gap. Length = len(resis)." },
+          "label": { "type": "string" },
+          "key": { "type": "string" },
+          "length": { "type": "integer" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "species": {
+      "type": "array",
+      "description": "LEGACY panel selection: [[organism name or 'acc:<accession>', label, key], ...]. profile.specificity.species is the new place; the exporter writes this mirror for old pages.",
+      "items": {
+        "type": "array",
+        "prefixItems": [{ "type": "string" }, { "type": "string" }, { "type": "string" }],
+        "minItems": 3,
+        "maxItems": 3
+      }
+    },
+    "show": { "$ref": "common.schema.json#/$defs/string_list", "description": "LEGACY. Keys shown in the map's specificity block." },
+    "subject": { "type": "string", "description": "LEGACY. Name of the protein the conservation is about (default: the target)." },
+    "kind": { "type": "string", "enum": ["host", "virus"], "description": "LEGACY. virus removes the paralog and decoy sections." },
+    "note": { "type": "string", "description": "Free text: where the sequences came from." },
+    "consurf": {
+      "type": "object",
+      "description": "NEW. Optional ConSurf-DB overlay (academic, non-commercial use; off unless the user turns it on). grade: ConSurf grade per entry of resis (1 variable to 9 conserved), null where ConSurf has none.",
+      "properties": {
+        "source": { "type": "string" },
+        "pdb": { "type": "string" },
+        "chain": { "type": "string" },
+        "retrieved": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "grade": { "type": "array", "items": { "type": ["integer", "null"], "minimum": 1, "maximum": 9 } },
+        "licence": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "generated": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": true
+}

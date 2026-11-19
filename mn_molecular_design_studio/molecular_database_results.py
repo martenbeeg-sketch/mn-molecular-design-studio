@@ -774,12 +774,41 @@ def save_run_selection(run_dir, user, molecule_ids, *, database=None, group_id=N
     result_source_keys = []
     selected_model_by_key = {(row["candidate_id"], row["model_id"]): row
                              for row in selected_candidate_models or []}
+    from mn_molecular_design_studio.molecular_database_ingest import (
+        _read, _record, _register_candidate_target, _run_target_reference, _target_sequence_record,
+        _target_structure_path, _validated_target_structure,
+    )
+    run_inputs, run_metadata = (_read(selected / filename) for filename in ("input.json", "metadata.json"))
+    input_target = _target_sequence_record(run_inputs, run_metadata, selected)
+    target_path = _target_structure_path(run_inputs, selected)
+    target_record = None
+    if target_path:
+        try:
+            target_record = _validated_target_structure(target_path, run_inputs, run_metadata, selected,
+                                                       expected_record=input_target)
+        except (OSError, ValueError, KeyError, TypeError):
+            target_path = None
+    reference = _run_target_reference(database, user, run_project_id, run_inputs, run_metadata, path=target_path)
+    selected_keys = set(selected_model_by_key)
+    selected_keys.update((str(candidate.get("candidate_id") or ""), _candidate_model_id(candidate))
+                         for candidate, _, _ in result_selections.values())
+    target_contexts = {}
+    for candidate_key in selected_keys:
+        candidate = candidates_by_key.get(candidate_key)
+        record = _record(candidate, selected) if candidate else None
+        if record:
+            target_contexts[candidate_key] = _register_candidate_target(database, user, destination_project,
+                selected, run_inputs, run_metadata, candidate, record,
+                source_key=_id("selected-target-", _json([group_id, candidate_key])),
+                origin={"run_id": run_id, "task_group": task_group, "run_dir": str(selected)},
+                reference=reference, fallback_record=input_target or target_record)
     for selection_id, (candidate, identity_record, preview) in result_selections.items():
         candidate_id = str(candidate.get("candidate_id") or "")
         model_id = _candidate_model_id(candidate)
         accepted_row = selected_model_by_key.get((candidate_id, model_id), {})
         generator_engine, prediction_engine = _candidate_engine_provenance(candidate)
         provenance = {
+            **target_contexts.get((candidate_id, model_id), {}),
             "type": "explicit_results_selection",
             "saved_selection": True,
             "collection_kind": "curated",
@@ -886,6 +915,7 @@ def save_run_selection(run_dir, user, molecule_ids, *, database=None, group_id=N
                 candidate = candidates_by_key.get((candidate_id, model_id), {})
                 generator_engine, prediction_engine = _candidate_engine_provenance(candidate)
                 provenance = {
+                    **target_contexts.get((candidate_id, model_id), {}),
                     "type": "explicit_results_selection", "saved_selection": True,
                     "collection_kind": "curated", "owner_id": owner_id, "project_id": run_project_id,
                     "task_group": task_group, "run_id": run_id, "candidate_id": candidate_id,

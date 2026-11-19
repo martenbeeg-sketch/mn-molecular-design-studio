@@ -56,6 +56,7 @@ include-package-data = true
 include = ["mn_molecular_design_studio*"]
 
 [tool.setuptools.package-data]
+"mn_molecular_design_studio" = ["vendor/binderscope/LICENSE", "vendor/binderscope/PROVENANCE.md", "vendor/binderscope/SOURCE_MANIFEST.json", "vendor/binderscope/binderscope/docs/schema/*.json", "vendor/binderscope/binderscope/scripts/*.py", "vendor/binderscope/binderscope/viewer/**/*"]
 "mn_molecular_design_studio.engine.workflow_engine.vendor.ligand_runtime" = ["scripts/*.py"]
 "mn_molecular_design_studio.engine.workflow_engine.workflows.qc_ovo" = ["LICENSE", "PROVENANCE.md", "*.json"]
 "mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_oracle_runtime" = ["LICENSE-APACHE", "PROVENANCE.md"]
@@ -93,6 +94,7 @@ include = ["mn_molecular_design_studio*"]
   "components/molecule_sketcher/*",
   "components/molecule_table/*",
   "components/complex_analysis/*",
+  "components/binderscope_inspector/*",
 ]
 
 [tool.pytest.ini_options]

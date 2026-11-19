@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import tempfile
 import uuid
 from pathlib import Path
@@ -89,6 +90,24 @@ def install(app, current_user, admin_user):
     def create_project(payload: dict = Body(...), user=Depends(current_user), store=Depends(coordinator)):
         from mn_molecular_design_studio.workspace import create_project
         return call(create_project, payload.get("name"), payload.get("description", ""), payload.get("color", "#ef5350"), owner_id=user["id"])
+
+    @router.post("/projects/{project_id}/name")
+    def rename_project(project_id: str, payload: dict = Body(...), user=Depends(current_user), store=Depends(coordinator)):
+        from mn_molecular_design_studio.entity_names import NameConflictError, rename_project
+        if (not {"name", "expected_revision"} <= set(payload) or set(payload) - {"name", "expected_revision", "properties", "aliases", "expected_source_revision"}
+                or not isinstance(payload.get("expected_revision"), str)
+                or (payload.get("expected_source_revision") is not None and not isinstance(payload["expected_source_revision"], str))):
+            raise HTTPException(422, "Supply a name and its saved base revision.")
+        try:
+            return rename_project(user, project_id, payload["name"], expected_revision=payload["expected_revision"],
+                                  properties=payload.get("properties"), aliases=payload.get("aliases", []),
+                                  expected_source_revision=payload.get("expected_source_revision"))
+        except NameConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @router.get("/jobs")
     def jobs(query: str = "", project_id: str | None = None, node_id: str | None = None,
@@ -336,13 +355,15 @@ def install(app, current_user, admin_user):
         return {
             "node_id": config.identity(), "snapshot": snapshot, "epoch": replica.epoch,
             "reference_probes": store.reference_probes(),
-            "replication_features": ["complex-review-annotation.v1"],
+            "replication_features": ["complex-review-annotation.v1", "entity-names.v1", "entity-properties.v1"],
         }
 
     @router.get("/node/peer/records")
     def peer_records(
         response: Response, since: int = Query(0, ge=0), limit: int = Query(500, ge=1, le=500),
         include_molecular: bool = Query(True), include_review_annotations: bool = Query(False),
+        include_entity_names: bool = Query(False),
+        include_entity_properties: bool = Query(False),
         actor=Depends(node), replica=Depends(peer_replica),
     ):
         response.headers["Cache-Control"] = "no-store"
@@ -350,6 +371,8 @@ def install(app, current_user, admin_user):
         return call(
             replica.export, since, limit, include_molecular=include_molecular and sharing_enabled,
             include_review_annotations=include_review_annotations and sharing_enabled,
+            include_entity_names=include_entity_names and sharing_enabled,
+            include_entity_properties=include_entity_properties and sharing_enabled,
         )
 
     @router.post("/node/peer/records")
@@ -360,7 +383,7 @@ def install(app, current_user, admin_user):
                 record for record in records
                 if not isinstance(record, dict)
                 or record.get("kind") not in {
-                    "molecule_group", "molecule_entry", "external_library", "complex_review_annotation",
+                    "molecule_group", "molecule_entry", "external_library", "complex_review_annotation", "entity_name",
                 }
             ]
         return {"accepted":call(replica.receive, records)}
@@ -421,5 +444,21 @@ def install(app, current_user, admin_user):
     def finish(command_id: str, payload: dict = Body(...), actor=Depends(node), store=Depends(coordinator)):
         call(store.finish, actor["id"], command_id, payload.get("lease_token"), payload.get("response"), payload.get("error"))
         return {"status": "ok"}
+
+    @router.post("/node/projects/lifecycle/{method}")
+    def project_lifecycle(method: str, payload: dict = Body(...), actor=Depends(node)):
+        from mn_molecular_design_studio.auth import list_users
+        from mn_molecular_design_studio.project_lifecycle import PROTOCOL, ProjectNode
+        if method not in {"inspect", "begin", "execute", "finish", "abort"}:
+            raise HTTPException(404, "Unknown project lifecycle action.")
+        user = next((row for row in list_users() if row["id"] == payload.get("actor_id") and not row.get("disabled")), None)
+        if user is None or user.get("role") != "admin":
+            raise HTTPException(403, "An active synchronized administrator is required.")
+        arguments = {key: value for key, value in payload.items() if key != "actor_id"}
+        try:
+            result = call(getattr(ProjectNode(), method), user, **arguments)
+        except (OSError, sqlite3.Error, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"node_id": config.identity(), "protocol": PROTOCOL, "result": result}
 
     app.include_router(router)

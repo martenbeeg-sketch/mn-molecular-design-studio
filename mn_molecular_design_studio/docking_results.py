@@ -219,29 +219,41 @@ def _nearby_residue_visualizations(
     ]
 
 
+def _cif_has_protein(text: str) -> bool:
+    import gemmi
+
+    try:
+        block = gemmi.cif.read_string(text).sole_block()
+        structure = gemmi.make_structure_from_block(block)
+        if not structure or not any(len(residue) for chain in structure[0] for residue in chain):
+            raise ValueError("The saved mmCIF has no atomic coordinates.")
+        return any("polypeptide" in value.casefold() for value in block.find_values("_entity_poly.type")) or sum(
+            residue.name in _AMINO_ACIDS for chain in structure[0] for residue in chain) >= 5
+    except RuntimeError as exc:
+        raise ValueError("Could not read the saved mmCIF coordinates.") from exc
+
+
 def pose_visualizations(
     pose_text: str,
     pose_name: str,
     receptor_text: str | None = None,
     receptor_name: str = "",
     *,
-    include_pocket_sidechains: bool = True,
+    include_pocket_sidechains: bool = False,
 ) -> list[StructureVisualization]:
     """Return Mol* structures for a full complex or a ligand pose plus receptor."""
     suffix = Path(pose_name).suffix.casefold()
     if suffix in {".cif", ".mmcif"}:
-        # Use one common PDB path for complex splitting so predicted CIFs render
-        # with the same protein/ligand styling as docking poses.
-        from mn_molecular_design_studio.docking_preparations import pdb_text
-        converted = pdb_text(pose_text)
-        if not any(line.startswith(("ATOM  ", "HETATM")) for line in converted.splitlines()):
-            raise ValueError("Could not convert this prediction structure for the Database viewer.")
-        pose_text = converted
-        suffix = ".pdb"
+        if _cif_has_protein(pose_text):
+            return [StructureVisualization(pdb=pose_text, color="uniform", color_params={"value": _PROTEIN_COLOR},
+                representation_type="cartoon")]
 
     ligand_text = pdbqt_to_pdb(pose_text) if suffix == ".pdbqt" else pose_text
     protein_residues, ligand_atoms = _protein_residue_and_ligand_counts(ligand_text)
     if suffix != ".pdbqt" and protein_residues >= 5 and ligand_atoms > 0:
+        if not include_pocket_sidechains:
+            return [StructureVisualization(pdb=pose_text, color="uniform", color_params={"value": _PROTEIN_COLOR},
+                representation_type="cartoon")]
         protein_pdb = _protein_only_pdb(pose_text)
         ligand_pdb = _ligand_only_pdb(pose_text)
         nearby_residues = _nearby_residue_visualizations(protein_pdb, ligand_pdb) if include_pocket_sidechains else []
@@ -264,12 +276,18 @@ def pose_visualizations(
     if not receptor_text:
         return [StructureVisualization(pdb=ligand_text, color="uniform", color_params={"value": "0xe08b3e"}, representation_type="ball-and-stick")]
 
-    if Path(receptor_name).suffix.casefold() == ".pdbqt":
+    receptor_suffix = Path(receptor_name).suffix.casefold()
+    if receptor_suffix in {".cif", ".mmcif"}:
+        receptor_pdb = receptor_text
+        receptor_has_protein = _cif_has_protein(receptor_text)
+    elif receptor_suffix == ".pdbqt":
         receptor_pdb = pdbqt_to_pdb(receptor_text)
+        receptor_has_protein = any(line.startswith("ATOM  ") for line in receptor_pdb.splitlines())
     else:
         receptor_pdb = _protein_only_pdb(receptor_text)
+        receptor_has_protein = any(line.startswith(("ATOM  ", "HETATM")) for line in receptor_pdb.splitlines())
     structures = []
-    if any(line.startswith("ATOM  ") for line in receptor_pdb.splitlines()):
+    if receptor_has_protein:
         nearby_residues = _nearby_residue_visualizations(receptor_pdb, ligand_text) if include_pocket_sidechains else []
         structures.append(StructureVisualization(
             pdb=receptor_pdb,

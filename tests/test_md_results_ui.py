@@ -9,6 +9,8 @@ from mn_molecular_design_studio.md_results_ui import (
     _endpoint_rows,
     _finite_pairs,
     _read_json_artifact,
+    _recorded_occupancy_rows,
+    _render_recorded_occupancies,
     _safe_artifact_path,
     load_md_study_manifest,
     render_md_results,
@@ -19,12 +21,26 @@ class FakeStreamlit:
     def __init__(self):
         self.calls = []
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
     def __getattr__(self, name):
         def record(*args, **kwargs):
             self.calls.append((name, args, kwargs))
             if name == "selectbox":
                 options = args[1]
                 return options[0]
+            if name == "expander":
+                return self
+            if name == "columns":
+                return [self] * (args[0] if isinstance(args[0], int) else len(args[0]))
+            if name == "multiselect":
+                return kwargs.get("default", [])
+            if name == "slider":
+                return args[3]
             return None
 
         return record
@@ -34,6 +50,44 @@ def _json(path: Path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload))
     return path
+
+
+def test_saved_occupancy_table_keeps_all_residues_and_low_occupancy_without_changing_report():
+    import copy
+
+    structural = {"contacts": {"residues": [
+        {"residue": f"PHE{index} · chain A", "hydrophobic_occupancy": 0.9897}
+        for index in range(20)] + [
+        {"residue": "SER277 · chain A", "top_ligand_atom": "O2", "contact_occupancy": 0.9991,
+         "hydrogen_bond_occupancy": 0.5024, "water_bridge_occupancy": 0.09, "salt_bridge_occupancy": 0},
+        {"residue": "SER277 · chain B", "contact_occupancy": 0.2, "hydrogen_bond_occupancy": float("inf")},
+        {"residue": "INVALID", "contact_occupancy": True}]}}
+    original = copy.deepcopy(structural)
+    rows = _recorded_occupancy_rows(structural)
+    assert len(rows) == 22
+    serine = next(row for row in rows if row["Residue"] == "SER277 · chain A")
+    assert serine["Ligand atom (representative)"] == "O2"
+    assert serine["Geometric contact (%)"] == pytest.approx(99.91)
+    assert serine["Hydrogen bond (%)"] == pytest.approx(50.24)
+    assert serine["Water bridge (%)"] == pytest.approx(9)
+    assert serine["Salt bridge (%)"] == 0
+    assert serine["Hydrophobic (%)"] is None
+    other_chain = next(row for row in rows if row["Residue"] == "SER277 · chain B")
+    assert other_chain["Hydrogen bond (%)"] is None
+    assert structural == original
+    st = FakeStreamlit()
+    _render_recorded_occupancies(st, structural)
+    assert next(args[0] for name, args, _ in st.calls if name == "dataframe") == rows
+    assert "not limited by the diagram" in json.dumps(st.calls, default=str)
+
+
+def test_saved_occupancies_with_only_geometric_data_do_not_claim_classified_analysis():
+    rows = _recorded_occupancy_rows({"interaction_network": {"nodes": [
+        {"id": "ALA1", "contact_occupancy": 0}]}})
+    assert rows == [{"Residue": "ALA1", "Ligand atom (representative)": None, "Geometric contact (%)": 0}]
+    st = FakeStreamlit()
+    _render_recorded_occupancies(st, {"contacts": {"residues": [{"residue": "INVALID", "contact_occupancy": 75}]}})
+    assert not st.calls
 
 
 def _study_manifest():
@@ -137,6 +191,9 @@ def test_manifest_renderer_shows_study_lineage_replica_analysis_and_separate_end
     assert "Interface residue pairs" in rendered or "Residue pairs" in rendered
     production_choices = [call for call in st.calls if call[0] == "selectbox" and call[1][0] == "Production result"]
     assert production_choices and production_choices[0][1][1][0].startswith("prod-1")
+    occupancies = next(call[1][0] for call in st.calls if call[0] == "dataframe" and "Hydrogen bond (%)" in str(call[1][0]))
+    assert occupancies[0]["Hydrogen bond (%)"] == 40
+    assert occupancies[0]["Hydrophobic (%)"] == 50
 
 
 def test_safe_artifact_resolution_rejects_parent_traversal_and_external_symlinks(tmp_path):
@@ -196,6 +253,7 @@ def test_legacy_result_fallback_shows_direct_analysis_and_endpoint(tmp_path):
         "md_result": {
             "analytics": {
                 "rmsd": {"time_ps": [0, 1000], "backbone_rmsd_angstrom": [0, float("inf")], "ligand_rmsd_angstrom": [1, 2]},
+                "structural_dynamics": {"contacts": {"residues": [{"residue": "SER277 · chain A", "water_bridge_occupancy": 0.09}]}},
             },
         },
         "mmgbsa": {"status": "not_requested"},
@@ -207,6 +265,8 @@ def test_legacy_result_fallback_shows_direct_analysis_and_endpoint(tmp_path):
     assert any(call[0] == "line_chart" for call in st.calls)
     assert any(call[0] == "dataframe" for call in st.calls)
     assert "not_requested" in json.dumps(st.calls, default=str)
+    occupancies = next(call[1][0] for call in st.calls if call[0] == "dataframe" and "Water bridge (%)" in str(call[1][0]))
+    assert occupancies[0]["Water bridge (%)"] == 9
 
 
 def test_preloaded_manifest_uses_validated_loader_and_job_scoped_widget_keys():

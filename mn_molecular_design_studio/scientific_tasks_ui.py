@@ -34,6 +34,10 @@ def _prediction_sampling(kind, key, *, seed_default=0):
 
 def render_task_setup(prefix):
     """Return a new graph only on an explicit create action; never overwrite drafts on selection."""
+    with st.expander("Molecular dynamics analysis", expanded=True):
+        st.caption("Saved MD run → MD Analysis → Results. Select an exact production segment, configure sampling, and run analysis through the normal scheduler without copying its trajectory.")
+        if st.button("Create MD analysis pipeline", key=prefix + "-create-md-analysis"):
+            return new_graph("md_analysis")
     with st.expander("Create pipeline by scientific objective", expanded=True):
         task = st.selectbox("Scientific objective", [*TASKS, "blank"],
                             format_func=lambda key: "Blank canvas / custom workflow" if key == "blank" else

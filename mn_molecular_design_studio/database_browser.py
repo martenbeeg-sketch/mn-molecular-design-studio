@@ -7,19 +7,51 @@ import socket
 from functools import lru_cache
 from pathlib import PurePosixPath
 
+from mn_molecular_design_studio.database_browser_labels import descriptive_target_name, readable_name
+from mn_molecular_design_studio.md_browser import MD_FIELDS
+
 
 _MEMBER_FIELDS = ("design_target_molecule_id", "target_molecule_id", "design_target_name", "target_name",
+                  "studio_naming", "native_candidate_id",
                   "target_identity_type", "output_kind", "source_to_prediction_components", "protein_chains",
-                  "target_chains", "binder_chains")
+                  "target_chains", "binder_chains", "source_stage", "stage", "source_tool", "workflow_role",
+                  "generator_engine", "prediction_engine", "acceptance_status", "validation_acceptance.status",
+                  "validation_acceptance.policy", "distributed_campaign.validated_acceptance", "distributed_campaign.validation_required",
+                  "distributed_campaign.campaign_id")
 _SOURCE_FIELDS = ("target_molecule_id", "target_id", "design_target_molecule_id", "run_id", "task_group", "run_dir",
+                  "target_pdb_id",
+                  "target_receptor",
                   "_replica_node", "source_node", "source_node_id", "workstation", "source_workstation", "tool",
-                  "source_tool", "campaign_id", "campaign_name", "parent_campaign_run_dir", "pipeline_parent_run_dir",
+                  "source_tool", "studio_run_id", "organizer_node_id", "pipeline_parent_node_id",
+                  "campaign_id", "campaign_name", "parent_campaign_run_dir", "pipeline_parent_run_dir",
                   "input_role", "collection_kind", "candidate_id", "target_name", "design_target_name", "status")
 _TARGET_INPUT_ROLES = {"target", "receptor", "modeled_target", "sequence_defined_target", "target_ligand"}
+_OBSERVATION_FIELDS = (*_SOURCE_FIELDS, "source_molecule_id", "source_structure_id", "source_reference_kind",
+    "source_structure_digest", "structure_digest", "content_sha256", "portable_sha256", "model_id", "model_index",
+    "target_structure_digest", "target_artifact_sha256", "legacy_run_id", "row.replicate", "row.compound_id",
+    "workflow_role", "workflow", "workflow_id", "generator_engine", "prediction_engine", "source_stage", "saved_selection", "pipeline_refold_input",
+    "acceptance_decision", "acceptance_status", "acceptance_stage", "validation_acceptance", "distributed_campaign", "calculation_recorded",
+    "candidate.candidate_id", "candidate.model_id", "candidate.stage", "candidate.source_tool",
+    "candidate.raw_metadata.validation_acceptance", "candidate.raw_metadata.distributed_campaign",
+    "candidate.raw_metadata.pipeline_refold_input", "candidate.raw_metadata.workflow_role",
+    "candidate.raw_metadata.design_representation", "design_representation_role", *MD_FIELDS)
 
 
 def _projection(column, fields):
     return "json_extract(" + column + "," + ",".join("'$." + field + "'" for field in fields) + ")"
+
+
+def _expanded_projection(fields, values):
+    result = {}
+    for field, value in zip(fields, values):
+        if value is None:
+            continue
+        target = result
+        parts = field.split(".")
+        for part in parts[:-1]:
+            target = target.setdefault(part, {})
+        target[parts[-1]] = value
+    return result
 
 
 def _component_identity(component):
@@ -95,9 +127,10 @@ def _run_reference(provenance):
 
 
 def _campaign_reference(provenance, node, owner, project):
+    node = str(provenance.get("organizer_node_id") or provenance.get("pipeline_parent_node_id") or node)
     for field in ("parent_campaign_run_dir", "pipeline_parent_run_dir"):
         if directory := str(provenance.get(field) or ""):
-            path = PurePosixPath(directory)
+            path = PurePosixPath("/" + directory.removeprefix("runs:///")) if directory.startswith("runs:///") else PurePosixPath(directory)
             if path.is_absolute() and path.name and path.parent.name:
                 return (node, path.parent.name, path.name, owner, project)
     if campaign_id := str(provenance.get("campaign_id") or ""):
@@ -124,10 +157,16 @@ def build_browser_index(database, user, *, project_id="", scope="all", methods=N
     evidence_runs = {}
     evidence_inputs = set()
     target_names = {}
+    target_references = {}
+    target_reference_names = {}
+    unreferenced_targets = set()
+    pdb_md_contexts = {}
     hostname = socket.gethostname().split(".")[0].casefold()
     group_references = {group_id: _run_reference(group["origin"]) for group_id, group in groups.items()}
     with database.connection() as connection:
         connection.execute("BEGIN")
+        from mn_molecular_design_studio.entity_names import visible_records
+        entity_names = visible_records(connection, groups)
         members = connection.execute(
             "SELECT m.id,m.components,m.created_at,mm.components AS member_components,mm.group_id,mm.name," +
             _projection("mm.metadata", _MEMBER_FIELDS) + " AS metadata_fields,"
@@ -144,12 +183,25 @@ def build_browser_index(database, user, *, project_id="", scope="all", methods=N
                 "id": row["id"], "name": row["name"], "names": set(),
                 "components": json.loads(row["components"]), "created_at": row["created_at"],
                 "group_ids": set(), "run_keys": set(), "linked_to": set(), "metadata_links": set(),
-                "component_roles": {}, "target_names": set(), "import_names": set(), "output_record": False,
+                "component_roles": {}, "component_roles_by_group": {}, "target_names": set(), "import_names": set(), "output_record": False,
                 "target_record": False, "member_names": {},
                 "metadata_links_by_group": {},
+                "member_receipts": {}, "has_coordinates": False,
             })
             metadata = dict(zip(_MEMBER_FIELDS, json.loads(row["metadata_fields"])))
-            _member_roles(molecule, json.loads(row["member_components"]), metadata)
+            receipt = {key: metadata[key] for key in ("source_stage", "stage", "source_tool", "workflow_role",
+                       "generator_engine", "prediction_engine", "acceptance_status", "design_target_molecule_id") if metadata.get(key) is not None}
+            for field in ("validation_acceptance", "distributed_campaign"):
+                nested = {key.split(".", 1)[1]: value for key, value in metadata.items()
+                          if key.startswith(field + ".") and value is not None}
+                if nested:
+                    receipt[field] = nested
+            molecule["member_receipts"][row["group_id"]] = receipt
+            group_roles = {"component_roles": {}}
+            _member_roles(group_roles, json.loads(row["member_components"]), metadata)
+            molecule["component_roles_by_group"][row["group_id"]] = group_roles["component_roles"]
+            for identity, roles in group_roles["component_roles"].items():
+                molecule["component_roles"].setdefault(identity, set()).update(roles)
             molecule["output_record"] |= bool(metadata.get("output_kind")) or groups[row["group_id"]].get("collection_kind") == "generated"
             molecule["target_record"] |= bool(metadata.get("target_identity_type")) and not metadata.get("output_kind")
             if (groups[row["group_id"]].get("collection_kind") == "generated"
@@ -158,12 +210,17 @@ def build_browser_index(database, user, *, project_id="", scope="all", methods=N
                 identity = _component_identity(molecule["components"][0])
                 if identity and "target" not in molecule["component_roles"].get(identity, set()):
                     molecule["component_roles"].setdefault(identity, set()).add("binder")
+                    group_roles["component_roles"].setdefault(identity, set()).add("binder")
             if metadata.get("target_identity_type"):
                 molecule["target_names"].add(row["name"])
             if groups[row["group_id"]]["import_method"] in {"user_uploads", "agent_inputs"} and not metadata.get("output_kind"):
                 molecule["import_names"].add(row["name"])
             molecule["names"].add(row["name"])
+            naming = metadata.get("studio_naming") or {}
+            molecule["names"].update(naming.get("native_names") or [])
             molecule["member_names"][row["group_id"]] = row["name"]
+            molecule.setdefault("member_naming", {})[row["group_id"]] = {
+                **naming, "native_candidate_id": metadata.get("native_candidate_id") or naming.get("native_candidate_id") or ""}
             molecule["group_ids"].add(row["group_id"])
             links = {value for value in (metadata["design_target_molecule_id"], metadata["target_molecule_id"])
                      if isinstance(value, str) and value}
@@ -181,6 +238,7 @@ def build_browser_index(database, user, *, project_id="", scope="all", methods=N
                                                     ("molecule_structures", "context", "NULL", "id")):
             projections.append((table, connection.execute(
                 "SELECT " + id_column + " AS evidence_id,molecule_id,group_id," + run_column + " AS recorded_run_id,"
+                + ("namespace" if table == "molecule_observations" else "NULL") + " AS evidence_namespace,"
                 + _projection(column, _SOURCE_FIELDS) + " AS provenance_fields "
                 "FROM " + table + " WHERE molecule_id IN (SELECT value FROM json_each(?)) "
                 "AND group_id IN (SELECT value FROM json_each(?))", (ids_json, accessible_json),
@@ -218,6 +276,9 @@ def build_browser_index(database, user, *, project_id="", scope="all", methods=N
         run["molecule_ids"].add(molecule_id)
         run["group_ids"].add(group_id)
         molecule = molecules[molecule_id]
+        logical = provenance.get("studio_run_id") or origin.get("studio_run_id")
+        if isinstance(logical, str) and logical.strip():
+            run.setdefault("logical_run_ids", set()).add(logical)
         if provenance.get("input_role") in _TARGET_INPUT_ROLES:
             for component in molecule["components"]:
                 identity = _component_identity(component)
@@ -234,6 +295,7 @@ def build_browser_index(database, user, *, project_id="", scope="all", methods=N
                 identity = _component_identity(molecule["components"][0])
                 if identity:
                     molecule["component_roles"].setdefault(identity, set()).add("binder")
+                    molecule["component_roles_by_group"][group_id].setdefault(identity, set()).add("binder")
         run["updated_at"] = max(run["updated_at"], group.get("updated_at") or "")
         if tool := str(provenance.get("tool") or provenance.get("source_tool") or ""):
             run["tools"].add(tool)
@@ -254,14 +316,32 @@ def build_browser_index(database, user, *, project_id="", scope="all", methods=N
 
     for table, rows in projections:
         for row in rows:
-            provenance = dict(zip(_SOURCE_FIELDS, json.loads(row["provenance_fields"])))
+            if table == "molecule_structures":
+                molecules[row["molecule_id"]]["has_coordinates"] = True
+            values = json.loads(row["provenance_fields"])
+            provenance = dict(zip(_SOURCE_FIELDS, values))
             provenance["run_id"] = row["recorded_run_id"] or provenance["run_id"]
             evidence_runs[(table, row["evidence_id"])] = add_run(row["molecule_id"], row["group_id"], provenance, table)
+            pdb = str(provenance.get("target_pdb_id") or "").upper()
+            if pdb and str(row["evidence_namespace"] or "").startswith("md.") and row["molecule_id"] in visible_ids:
+                reference = pdb_md_contexts.setdefault(pdb, {"molecule_ids": set(), "group_ids": set(), "run_keys": set()})
+                reference["molecule_ids"].add(row["molecule_id"])
+                reference["group_ids"].add(row["group_id"])
+                reference["run_keys"].add(evidence_runs[(table, row["evidence_id"])])
             if _is_input(index, row["molecule_id"], row["group_id"], provenance, table):
                 evidence_inputs.add((table, row["evidence_id"]))
             molecules[row["molecule_id"]]["linked_to"].update(value for value in
                 (provenance["target_molecule_id"], provenance["target_id"], provenance["design_target_molecule_id"])
                 if isinstance(value, str) and value in molecules)
+            target = provenance.get("target_molecule_id") or provenance.get("target_id")
+            pdb = provenance.get("target_pdb_id")
+            if isinstance(target, str) and target in molecules and isinstance(pdb, str) and len(pdb) == 4 and pdb.isalnum():
+                target_references.setdefault(target, set()).add(pdb.upper())
+                if isinstance(provenance.get("target_receptor"), str) and provenance["target_receptor"]:
+                    target_reference_names.setdefault(pdb.upper(), set()).add(provenance["target_receptor"])
+            elif (table == "molecule_observations" and isinstance(target, str) and target in molecules and not pdb
+                    and groups[row["group_id"]].get("collection_kind") not in {"inputs", "intermediate"}):
+                unreferenced_targets.add(target)
     for molecule_id, molecule in molecules.items():
         for group_id in sorted(molecule["group_ids"]):
             group = groups[group_id]
@@ -279,8 +359,27 @@ def build_browser_index(database, user, *, project_id="", scope="all", methods=N
                 molecule["component_roles"].setdefault(identity, set()).add("target")
                 molecule["target_record"] = True
                 molecule["target_names"].update(molecule["import_names"])
-    return {"molecules": molecules, "runs": runs, "groups": groups,
-            "visible_ids": visible_ids, "evidence_runs": evidence_runs, "evidence_inputs": evidence_inputs}
+    index = {"molecules": molecules, "runs": runs, "groups": groups,
+            "visible_ids": visible_ids, "evidence_runs": evidence_runs, "evidence_inputs": evidence_inputs,
+            "entity_names": entity_names}
+    index["target_references"] = target_references
+    index["target_reference_names"] = target_reference_names
+    index["unreferenced_targets"] = unreferenced_targets
+    index["pdb_md_contexts"] = pdb_md_contexts
+    from mn_molecular_design_studio.entity_names import component_id, target_names as canonical_target_names
+    for molecule in molecules.values():
+        if len(molecule["components"]) != 1 or molecule.get("output_record"):
+            continue
+        identity = _component_identity(molecule["components"][0])
+        if molecule.get("component_roles", {}).get(identity, set()) & {"binder", "designed_binder", "design"}:
+            continue
+        labels = canonical_target_names(index, component_id(molecule["components"][0]), molecule["group_ids"])
+        if labels:
+            molecule["canonical_name"] = " / ".join(sorted({label["name"] for label in labels}))
+            molecule["name"] = molecule["canonical_name"]
+            for label in labels:
+                molecule["names"].update([label["name"], *label["aliases"]])
+    return index
 
 
 def molecular_subjects(index, *, individual_sequences=False):
@@ -308,7 +407,9 @@ def molecular_subjects(index, *, individual_sequences=False):
             subject["run_keys"].update(molecule["run_keys"])
             subject["updated_at"] = max(subject["updated_at"], molecule["created_at"])
     for subject in subjects.values():
-        subject["name"] = min(subject["names"], key=lambda value: (value.casefold(), value))
+        canonical = {index["molecules"][molecule_id]["canonical_name"] for molecule_id in subject["molecule_ids"]
+                     if index["molecules"][molecule_id].get("canonical_name")}
+        subject["name"] = " / ".join(sorted(canonical)) if canonical else min(subject["names"], key=lambda value: (value.casefold(), value))
     visible = index.get("visible_ids", set(index["molecules"]))
     return [subject for subject in subjects.values() if subject["molecule_ids"] & visible]
 
@@ -317,6 +418,13 @@ def component_subjects(index, *, role="all"):
     """Keep binding-target roles separate from designed components and input aliases."""
     subjects = {}
     linked_by_target = {}
+    runs_by_target = {}
+    output_runs = {}
+    for run_key, run in index["runs"].items():
+        for target_id in run.get("target_molecule_ids", set()):
+            runs_by_target.setdefault(target_id, set()).add(run_key)
+        for molecule_id in run.get("output_molecule_ids", set()):
+            output_runs.setdefault(molecule_id, set()).add(run_key)
     for molecule_id, molecule in index["molecules"].items():
         for target_id in molecule.get("linked_to", set()):
             linked_by_target.setdefault(target_id, set()).add(molecule_id)
@@ -328,7 +436,9 @@ def component_subjects(index, *, role="all"):
                 "id": _key(["component", identity]), "name": "", "names": set(), "preferred_names": set(),
                 "molecule_ids": set(), "direct_molecule_ids": set(), "group_ids": set(), "run_keys": set(),
                 "updated_at": "", "type": identity[0], "sequence": identity[2],
+                "identity": identity,
                 "target_record_ids": set(), "target_component_ids": set(), "designed_record_ids": set(), "target_names": set(),
+                "reference_names": set(),
             })
             subject["direct_molecule_ids"].add(molecule_id)
             subject["names"].update(molecule["names"])
@@ -339,11 +449,15 @@ def component_subjects(index, *, role="all"):
                 subject["target_component_ids"].add(molecule_id)
                 if molecule.get("target_record"):
                     subject["target_record_ids"].add(molecule_id)
-                    subject["target_names"].update(molecule.get("target_names", set()) | molecule.get("import_names", set()))
+                    subject["target_names"].update(molecule.get("target_names", set()))
             if len(molecule["components"]) == 1:
                 subject["preferred_names"].update(molecule["names"])
+                if not roles & {"binder", "designed_binder", "design"}:
+                    subject["reference_names"].update(molecule.get("import_names", set()))
             elif component.get("name"):
                 subject["preferred_names"].add(component["name"])
+                if roles & {"target", "receptor"} and not roles & {"binder", "designed_binder", "design"}:
+                    subject["reference_names"].add(component["name"])
     visible = index.get("visible_ids", set(index["molecules"]))
     visible_targets = set().union(*(index["molecules"][molecule_id].get("linked_to", set()) for molecule_id in visible)) if visible else set()
     for run in index["runs"].values():
@@ -369,7 +483,8 @@ def component_subjects(index, *, role="all"):
             subject["direct_molecule_ids"] = direct
         linked = set().union(*(linked_by_target.get(target_id, set()) for target_id in subject["target_record_ids"]))
         subject["target_run_keys"] = set()
-        for run_key, run in index["runs"].items():
+        for run_key in set().union(*(runs_by_target.get(target_id, set()) for target_id in anchors)):
+            run = index["runs"][run_key]
             targets = run.get("target_molecule_ids", set())
             if targets & anchors:
                 identities = {tuple(sorted(filter(None, map(_component_identity, index["molecules"][target]["components"]))))
@@ -382,16 +497,29 @@ def component_subjects(index, *, role="all"):
             molecule = index["molecules"][molecule_id]
             subject["group_ids"].update(molecule["group_ids"])
             subject["updated_at"] = max(subject["updated_at"], molecule["created_at"])
-        subject["run_keys"] = {key for key, run in index["runs"].items()
-                               if run.get("output_molecule_ids", set()) & subject["molecule_ids"]}
-        names = subject["target_names"] if is_target else subject["preferred_names"]
-        names = {name for name in names if name.strip().casefold() not in {
-            "idr_sequence_carrier", "sequence_input", "sequence-defined target", "target", "ligand"}}
+        subject["run_keys"] = set().union(*(output_runs.get(molecule_id, set()) for molecule_id in subject["molecule_ids"]))
+        if is_target:
+            names = {name for name in subject["target_names"] if descriptive_target_name(name)}
+            if not names:
+                names = {name for name in subject["reference_names"] if descriptive_target_name(name)}
+            if not names:
+                names = {name for name in subject["target_names"] if readable_name(name) and name.strip().casefold() != "sequence-defined target"}
+        else:
+            names = {name for name in subject["preferred_names"] if readable_name(name) and name.strip().casefold() != "sequence-defined target"}
         fallback = identity[0].replace("_", " ").title() + (" target" if is_target else "")
         if identity[1] == "sequence":
             fallback += f" · {len(identity[2])} {'aa' if identity[0] == 'protein' else 'nt'}"
-        fallback += " · " + identity[2][:16] + ("…" if len(identity[2]) > 16 else "")
+        if identity[0] == "small_molecule":
+            fallback = "Unnamed ligand"
         subject["name"] = min(names, key=lambda value: (value.casefold(), value)) if names else fallback
+        from mn_molecular_design_studio.entity_names import target_names
+        labels = target_names(index, subject["id"], subject["group_ids"])
+        subject["canonical_names"] = labels
+        if labels:
+            canonical = {label["name"] for label in labels}
+            subject["name"] = next(iter(canonical)) if len(canonical) == 1 else " / ".join(sorted(canonical))
+            for label in labels:
+                subject["names"].update([label["name"], *label["aliases"]])
         subject["names"].add(subject["name"])
         result.append(subject)
     return result
@@ -463,18 +591,55 @@ def browse_subjects(subjects, index, *, query="", sort="Most jobs"):
     return result
 
 
-def subject_results(database, index, subject, *, run_view=False, include_inputs=False):
+def includes_record(index, subject, molecule_id, group_id, run_key, context, *, run_view=False):
+    if subject.get("target_pdb_id") and str(context.get("target_pdb_id") or "").upper() != subject["target_pdb_id"]:
+        return False
+    if subject.get("without_pdb_reference") and context.get("target_pdb_id"):
+        return False
+    if run_view:
+        return run_key in subject["run_keys"]
+    if molecule_id in subject.get("direct_molecule_ids", subject["molecule_ids"]):
+        return True
+    targets = subject.get("target_record_ids", set())
+    target = context.get("target_molecule_id") or context.get("target_id") or context.get("design_target_molecule_id")
+    if run_key in subject.get("pdb_md_run_keys", set()) and context.get("study_id") and (
+        not target or isinstance(target, str) and target not in index["molecules"]
+    ):
+        return True
+    if target:
+        return isinstance(target, str) and target in targets
+    molecule = index["molecules"][molecule_id]
+    metadata_links = molecule.get("metadata_links_by_group", {}).get(group_id, set())
+    run_targets = index["runs"].get(run_key, {}).get("target_molecule_ids", set())
+    if metadata_links:
+        return bool(metadata_links & targets) and (not run_targets or bool(run_targets & targets))
+    if run_targets:
+        return run_key in subject.get("target_run_keys", set())
+    links = molecule.get("metadata_links", set())
+    return bool(links & targets) if len(links) == 1 else False
+
+
+def subject_results(database, index, subject, *, run_view=False, include_inputs=False, include_metrics=False):
     """Read individual evidence rows; never combine scores from different evaluations."""
-    from mn_molecular_design_studio.evaluations import evaluation_descriptor
+    from mn_molecular_design_studio.evaluations import PROJECTION_VERSION, evaluation_descriptor, model_identity
+    from mn_molecular_design_studio.database_outcomes import outcome_receipt
 
     molecule_ids = json.dumps(sorted(subject["molecule_ids"]))
     group_ids = json.dumps(sorted(subject["group_ids"] & index["groups"].keys()))
+    pdb_clause = " AND UPPER(COALESCE(json_extract(o.context,'$.target_pdb_id'),''))=?" if subject.get("target_pdb_id") else ""
+    pdb_parameters = (subject["target_pdb_id"],) if subject.get("target_pdb_id") else ()
     with database.connection() as connection:
         connection.execute("BEGIN")
         observations = connection.execute(
-            "SELECT id,molecule_id,group_id,namespace,run_id,context,created_at FROM molecule_observations "
-            "WHERE molecule_id IN (SELECT value FROM json_each(?)) "
-            "AND group_id IN (SELECT value FROM json_each(?)) ORDER BY created_at DESC,id", (molecule_ids, group_ids),
+            "SELECT o.id,o.molecule_id,o.group_id,o.namespace,o.run_id,o.created_at,"
+            "CASE WHEN e.projection_version=? THEN NULL ELSE o.context END AS context,e.descriptor," +
+            "CASE WHEN e.projection_version=? THEN " + _projection("o.context", _OBSERVATION_FIELDS) + " ELSE NULL END AS context_fields," +
+            ("o.metrics" if include_metrics else "NULL AS metrics") +
+            ",json_extract(o.metrics,'$.native_pass_filters','$.pass_filters') AS native_flags "
+            "FROM molecule_observations o LEFT JOIN molecule_evaluations e ON e.observation_id=o.id "
+            "WHERE o.molecule_id IN (SELECT value FROM json_each(?)) "
+            "AND o.group_id IN (SELECT value FROM json_each(?))" + pdb_clause + " ORDER BY o.created_at DESC,o.id",
+            (PROJECTION_VERSION, PROJECTION_VERSION, molecule_ids, group_ids, *pdb_parameters),
         ).fetchall()
         structures = connection.execute(
             "SELECT id,molecule_id,group_id,label,context,created_at FROM molecule_structures "
@@ -487,30 +652,31 @@ def subject_results(database, index, subject, *, run_view=False, include_inputs=
             (molecule_ids, group_ids),
         ).fetchall()
     evidence_runs = index["evidence_runs"]
+    source_contexts = {}
+    for row in sources:
+        source_contexts.setdefault((row["molecule_id"], row["group_id"],
+            evidence_runs.get(("molecule_sources", row["source_key"]))), []).append(json.loads(row["provenance"]))
     direct = subject.get("direct_molecule_ids", subject["molecule_ids"])
     targets = subject.get("target_record_ids", set())
 
     def included(molecule_id, group_id, run_key, context):
-        if run_view:
-            return run_key in subject["run_keys"]
-        if molecule_id in direct:
-            return True
-        target = context.get("target_molecule_id") or context.get("target_id") or context.get("design_target_molecule_id")
-        if target:
-            return isinstance(target, str) and target in targets
-        molecule = index["molecules"][molecule_id]
-        metadata_links = molecule.get("metadata_links_by_group", {}).get(group_id, set())
-        run_targets = index["runs"].get(run_key, {}).get("target_molecule_ids", set())
-        if metadata_links:
-            return bool(metadata_links & targets) and (not run_targets or bool(run_targets & targets))
-        if run_targets:
-            return run_key in subject.get("target_run_keys", set())
-        links = molecule.get("metadata_links", set())
-        return bool(links & targets) if len(links) == 1 else False
+        return includes_record(index, subject, molecule_id, group_id, run_key, context, run_view=run_view)
 
     def make_result(kind, evidence_id, molecule_id, group_id, run_key, context, created_at, **values):
         molecule = index["molecules"][molecule_id]
         run = index["runs"].get(run_key, {})
+        candidate_id = context.get("candidate_id") or (context.get("candidate") or {}).get("candidate_id") or ""
+        model_id = model_identity(context.get("model_id"), (context.get("candidate") or {}).get("model_id"))
+        candidates = [source for source in source_contexts.get((molecule_id, group_id, run_key), [])
+                      if candidate_id and source.get("candidate_id") == candidate_id
+                      and (not model_identity(source.get("model_id")) or model_identity(source.get("model_id")) == model_id)]
+        source = candidates[0] if len(candidates) == 1 else {}
+        member = molecule.get("member_receipts", {}).get(group_id) or {}
+        if kind != "Molecule":
+            member = {key: value for key, value in member.items()
+                      if key not in {"validation_acceptance", "distributed_campaign", "acceptance_status"}}
+        receipt = outcome_receipt(context, source=source, origin=index["groups"][group_id].get("origin"),
+            member=member, native_flags=values.pop("native_flags", None))
         return {"id": _key([kind, evidence_id]), "kind": kind, "molecule_id": molecule_id,
                 "group_id": group_id, "name": molecule.get("member_names", {}).get(group_id, molecule["name"]), "run_key": run_key,
                 "run_id": run.get("run_id") or context.get("run_id") or "",
@@ -518,6 +684,17 @@ def subject_results(database, index, subject, *, run_view=False, include_inputs=
                 "workstation": ", ".join(sorted(run.get("workstations", set()))),
                 "collection": index["groups"][group_id]["name"], "group_ids": {group_id}, "created_at": created_at,
                 "evaluation_id": "", "observation_id": "", "structure_ids": [],
+                "evaluation": {}, "metrics": {},
+                "receipt": receipt,
+                "md": _expanded_projection(MD_FIELDS, [context.get(field) if "." not in field else
+                    context.get("settings", {}).get("md_engine") for field in MD_FIELDS]),
+                "target_pdb_id": str(context.get("target_pdb_id") or "").upper(),
+                "source_molecule_id": context.get("source_molecule_id") or "",
+                "source_structure_id": context.get("source_structure_id") or "",
+                "source_reference_kind": context.get("source_reference_kind") or "",
+                "source_structure_digest": context.get("source_structure_digest") or "",
+                "structure_digest": context.get("structure_digest") or context.get("content_sha256")
+                                    or context.get("portable_sha256") or "",
                 "model": "", "status": "", "relation": ("Target reference / evaluation" if molecule_id in targets else
                     "Contains selected target" if targets and molecule_id in direct else
                     "Molecule / complex" if molecule_id in direct else "Recorded target link"),
@@ -530,26 +707,82 @@ def subject_results(database, index, subject, *, run_view=False, include_inputs=
     structures_by_molecule = {}
     for structure in prepared_structures:
         structures_by_molecule.setdefault(structure["molecule_id"], []).append(structure)
+
+    def retained_structure_ids(molecule_id, group_id, run_key, context):
+        candidate_id = context.get("candidate_id")
+        model_id = model_identity(context.get("model_id"), context.get("candidate_model_id"), context.get("source_model_id"))
+        return [structure["id"] for structure in structures_by_molecule.get(molecule_id, [])
+                if structure["group_id"] == group_id
+                and evidence_runs.get(("molecule_structures", structure["id"])) == run_key
+                and not _is_input(index, molecule_id, group_id, structure["context"], "molecule_structures")
+                and (not candidate_id or structure["context"].get("candidate_id") == candidate_id)
+                and (not model_id or model_identity(structure["context"].get("model_id"),
+                     structure["context"].get("candidate_model_id"), structure["context"].get("source_model_id")) == model_id)]
+
+    def recover_structure(row, context, evaluation):
+        from mn_molecular_design_studio.database_browser_labels import tool_label
+
+        digest = context.get("structure_digest") or context.get("content_sha256") or context.get("portable_sha256") or ""
+        if not isinstance(digest, str) or len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest.lower()):
+            return []
+        matches = []
+        for structure in structures_by_molecule.get(row["molecule_id"], []):
+            saved = structure["context"]
+            source_row, saved_row = context.get("row") or {}, saved.get("row") or {}
+            if not isinstance(source_row, dict) or not isinstance(saved_row, dict):
+                continue
+            checksum = saved.get("portable_sha256") or saved.get("content_sha256") or saved.get("sha256") or ""
+            if structure["group_id"] != row["group_id"] or not evaluation["run_id"] or saved.get("run_id") != evaluation["run_id"]:
+                continue
+            if str(checksum).lower() != digest.lower() or tool_label(saved.get("tool")) != tool_label(row["namespace"]):
+                continue
+            if saved.get("input_role") or ((saved.get("collection_kind") == "inputs" or
+                index["groups"][row["group_id"]].get("collection_kind") == "inputs") and
+                saved.get("database_structure_policy") not in ("best_docking_pose", "best_prediction", "bound_docking_complex")):
+                continue
+            pairs = [(context.get("legacy_run_id"), saved.get("legacy_run_id")),
+                     (context.get("target_pdb_id"), saved.get("target_pdb_id")),
+                     (source_row.get("replicate"), saved_row.get("replicate")),
+                     (source_row.get("compound_id"), saved_row.get("compound_id")),
+                     (context.get("target_structure_digest") or context.get("target_artifact_sha256"),
+                      saved.get("target_structure_digest") or saved.get("target_artifact_sha256")),
+                     (evaluation["model_id"], model_identity(saved.get("model_id"), saved.get("candidate_model_id"), saved.get("source_model_id")))]
+            if any(expected not in (None, "") and str(expected) != str(actual) for expected, actual in pairs):
+                continue
+            if context.get("target_molecule_id") and saved.get("target_molecule_id") and context["target_molecule_id"] != saved["target_molecule_id"]:
+                continue
+            if evaluation["candidate_id"] and saved.get("candidate_id") and evaluation["candidate_id"] != saved["candidate_id"]:
+                continue
+            matches.append(structure)
+        return matches if len(matches) == 1 else []
     for row in observations:
-        observation = {**dict(row), "context": json.loads(row["context"])}
+        context = (json.loads(row["context"]) if row["context"] is not None else
+                   _expanded_projection(_OBSERVATION_FIELDS, json.loads(row["context_fields"])))
+        observation = {**dict(row), "context": context}
         run_key = evidence_runs.get(("molecule_observations", row["id"]))
         if not include_inputs and ("molecule_observations", row["id"]) in index.get("evidence_inputs", set()):
             continue
         if not included(row["molecule_id"], row["group_id"], run_key, observation["context"]):
             continue
-        evaluation = evaluation_descriptor(observation)
+        evaluation = json.loads(row["descriptor"]) if row["context"] is None else evaluation_descriptor(observation)
         matches = [structure for structure in structures_by_molecule.get(row["molecule_id"], []) if
                    (structure["id"] == evaluation["representation_id"] if evaluation["representation_id"] else
                         structure["group_id"] == row["group_id"] and evaluation["run_id"]
                         and structure["context"].get("run_id") == evaluation["run_id"]
                         and (not evaluation["candidate_id"] or structure["context"].get("candidate_id") == evaluation["candidate_id"])
                         and (not evaluation["model_id"] or str(structure["context"].get("model_id", "")) == evaluation["model_id"]))]
+        recovered = not matches and bool(evaluation["representation_id"])
+        if recovered:
+            matches = recover_structure(row, context, evaluation)
         structure_ids = [structure["id"] for structure in matches]
         used_structures.update(structure_ids)
         covered.add((row["molecule_id"], row["group_id"], run_key))
         result.append(make_result("Evaluation", row["id"], row["molecule_id"], row["group_id"], run_key,
             observation["context"], row["created_at"], evaluation_id=evaluation["id"], observation_id=row["id"],
+            structure_link_status="Recovered by checksum and source context" if recovered and matches else "",
             structure_ids=structure_ids, tool=evaluation["evaluator"],
+            evaluation=evaluation, metrics=json.loads(row["metrics"]) if include_metrics else {},
+            native_flags=dict(zip(("native_pass_filters", "pass_filters"), json.loads(row["native_flags"]))),
             model=evaluation["model_id"] or evaluation["pose_id"], candidate=evaluation["candidate_id"], status=evaluation["status"],
             kind_label=evaluation["stage"] or "Evaluation"))
     for row in prepared_structures:
@@ -578,6 +811,7 @@ def subject_results(database, index, subject, *, run_view=False, include_inputs=
         group = index["groups"][row["group_id"]]
         result.append(make_result("Molecule", row["source_key"], row["molecule_id"], row["group_id"], run_key,
                                  context, group.get("updated_at", ""),
+                                 structure_ids=retained_structure_ids(row["molecule_id"], row["group_id"], run_key, context),
                                  kind_label="Input / reference" if is_input else "Output record" if run_key else "Imported molecule"))
     covered_members = {pair[:2] for pair in covered}
     for molecule_id in sorted(subject["molecule_ids"]):
@@ -592,6 +826,7 @@ def subject_results(database, index, subject, *, run_view=False, include_inputs=
             if included(molecule_id, group_id, run_key, {}):
                 result.append(make_result("Molecule", [molecule_id, group_id], molecule_id, group_id, run_key,
                     {}, molecule["created_at"],
+                    structure_ids=retained_structure_ids(molecule_id, group_id, run_key, {}),
                     kind_label="Input / reference" if is_input else "Output record" if run_key else "Saved molecule"))
     evidence_pairs = {(row["molecule_id"], row["run_key"]) for row in result if row["kind"] != "Molecule" and row["run_key"]}
     combined = {}

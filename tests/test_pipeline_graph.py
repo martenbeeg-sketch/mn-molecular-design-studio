@@ -938,6 +938,8 @@ def test_adapters_disable_hidden_downstream_pipelines_and_bind_existing_signatur
     from mn_molecular_design_studio.rfdiffusion3_input import ASSETS
     source_run, _ = design_source_factory()
     source={"run_dir":str(source_run),"candidates_jsonl":str(source_run/"artifacts/normalized_candidates/candidates.jsonl"),"target":{"target_pdb":str(ASSETS/"5o45_cropped.pdb"),"target_chains":["A"],"hotspots":"A54"}}
+    source["md_source"] = {"source_run_dir": str(source_run), "topology_path": str(source_run / "system.pdb"),
+        "trajectory_path": str(source_run / "production.xtc"), "source_segments": []}
     for kind,spec in graph.NODE_CATALOG.items():
         if not spec["workflow"]:continue
         p={f["name"]:f["default"] for f in spec["fields"]}

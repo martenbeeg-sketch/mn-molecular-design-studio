@@ -692,7 +692,7 @@ class Agent:
             # cannot safely be treated as a new submission.
             # Purging is idempotent: if a crash happens after deleting the run
             # but before acknowledging the command, retrying finishes cleanup.
-            if command["kind"] != "purge":
+            if command["kind"] not in {"purge", "cancel"}:
                 return {}, "Submission state is uncertain after an agent restart. Reconcile the existing local run before retrying."
         config.atomic_json(receipt, {"state": "accepting", "job_id": command["job_id"], "command_id": command["id"]})
         response, error = {}, None
@@ -715,8 +715,11 @@ class Agent:
                 source_job = resolve_job(command["payload"]["local_reference"])
                 response = md_source_options_for_job(source_job, actor)
             elif command["kind"] == "cancel":
-                from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import cancel_job
-                response = {"job": cancel_job(command["payload"]["local_reference"], reason="Cancelled through the shared workstation catalog")}
+                from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import resolve_job
+                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
+                job = resolve_job(command["payload"]["local_reference"], include_hidden=True)
+                cascade = stop_job(Path(job["run_dir"]), reason=command["payload"].get("reason") or "Cancelled through the shared workstation catalog")
+                response = {"job": resolve_job(command["payload"]["local_reference"], include_hidden=True), "cancellation": cascade}
             elif command["kind"] == "artifact":
                 response = self.artifact(command)
             elif command["kind"] == "collect_accepted_designs":

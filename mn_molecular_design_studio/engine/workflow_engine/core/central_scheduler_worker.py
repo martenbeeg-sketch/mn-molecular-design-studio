@@ -297,6 +297,11 @@ def _run_claimed_job(client, job: dict[str, Any], worker_id: str) -> None:
     cancellation_requested = False
     while process.poll() is None:
         time.sleep(1.0)
+        from mn_molecular_design_studio.job_dependencies import cancellation_requested as dependency_cancellation_requested
+        if dependency_cancellation_requested(run_dir, read_json(run_dir / "metadata.json")):
+            cancellation_requested = True
+            _terminate(process)
+            break
         now = time.monotonic()
         if now - last_heartbeat < HEARTBEAT_SECONDS:
             continue

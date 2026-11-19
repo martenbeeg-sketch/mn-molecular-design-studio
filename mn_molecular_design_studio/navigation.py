@@ -1,0 +1,88 @@
+"""Shared workspace navigation and project-scoped handoffs."""
+
+import streamlit as st
+
+
+WORKSPACE_PAGES = (
+    ("All tools", ":material/apps:", "All tools"),
+    ("Projects", ":material/folder_open:", "Projects"),
+    ("Pipelines", ":material/account_tree:", "Pipelines"),
+    ("My results", ":material/query_stats:", "My runs"),
+    ("Database", ":material/storage:", "Database"),
+    ("Data browser", ":material/folder_copy:", "Data Browser"),
+    ("Complex Analysis", ":material/biotech:", "Complex Analysis"),
+)
+
+
+def render_workspace_navigation(user, *, development=False):
+    st.markdown("""<style>
+        [data-testid="stSidebar"] { background: #f7f8f7; }
+        [data-testid="stSidebar"] [class*="st-key-nav-"] button {
+            min-height: 2.65rem; justify-content: flex-start; border: 0;
+            border-radius: 0.65rem; padding: 0.4rem 0.65rem;
+            text-align: left; box-shadow: none;
+        }
+        [data-testid="stSidebar"] [class*="st-key-nav-"] button p { text-align: left; }
+        [data-testid="stSidebar"] [class*="st-key-nav-"] [data-testid="stBaseButton-tertiary"] {
+            background: transparent; color: #46514b;
+        }
+        [data-testid="stSidebar"] [class*="st-key-nav-"] [data-testid="stBaseButton-tertiary"]:hover {
+            background: #edf1ee; color: #1f5d41;
+        }
+        [data-testid="stSidebar"] [class*="st-key-nav-"] [data-testid="stBaseButton-primary"] {
+            background: #e5ece7; color: #1c6342; font-weight: 600;
+        }
+        [data-testid="stSidebar"] [class*="st-key-nav-"] [data-testid="stBaseButton-primary"]:hover {
+            background: #dce7df; color: #174f35;
+        }
+    </style>""", unsafe_allow_html=True)
+    pages = list(WORKSPACE_PAGES)
+    if user.get("role") == "admin" and not development:
+        pages.append(("Users & access", ":material/manage_accounts:", "Users & access"))
+    pages.append(("Account", ":material/person:", "Account"))
+    for label, icon, page in pages:
+        current = st.session_state.get("page", "Projects")
+        active = current == page or (page == "My runs" and current == "Job details") or (
+            page == "All tools" and current == "Workflow setup"
+        )
+        if st.button(label, key="nav-" + label.lower().replace(" ", "-"), icon=icon,
+                     type="primary" if active else "tertiary", use_container_width=True):
+            st.session_state["page"] = page
+            if page == "All tools":
+                st.session_state.pop("selected_workflow", None)
+                st.session_state.pop("selected_workflow_group", None)
+            st.rerun()
+        if page == "All tools":
+            st.divider()
+
+
+def open_project_results(state, project_id):
+    state.update({
+        "page": "My runs", "results-project-filter": project_id,
+        "cluster-results-project": project_id, "results-search": "",
+        "results-status-filter": [], "results-tool-filter": [],
+        "cluster-results-query": "", "cluster-results-machine": "",
+        "cluster-results-status-filter": [], "results-page": 0,
+        "cluster-results-show-removed": False,
+        "cluster-results-page": 1, "results-selected-jobs": {},
+        "cluster-results-selected": {}, "cluster-results-reset-selection": True,
+    })
+    for key in list(state):
+        if str(key).startswith("results-row-select-") or key in {
+            "cluster-results-pending-remove-and-purge", "results-pending-remove-and-purge", "cluster-results-filter-state",
+            "results-filter-state", "results-export-data", "results-export-count",
+        }:
+            state.pop(key, None)
+
+
+def open_project_database(state, project_id):
+    for key in list(state):
+        if str(key).startswith(("molecular-preselect-", "database-results-", "database-outcomes-")) or (
+            str(key).startswith("database-browser-") and key != "database-browser-cache"
+        ):
+            state.pop(key, None)
+        elif str(key).startswith("molecular-method-"):
+            state[key] = True
+    state.update({"page": "Database", "molecular-project-filter": project_id,
+                  "database-browser-view": "Molecules", "molecular-scope": "All",
+                  "molecular-collection-view": "Library"})

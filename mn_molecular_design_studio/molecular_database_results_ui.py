@@ -406,6 +406,13 @@ def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> No
         st.caption("Molecular Database actions could not load for this run. Refresh the result page to try again.")
         return
 
+    try:
+        metadata = json.loads((run_path / "metadata.json").read_text())
+    except (OSError, ValueError):
+        metadata = {}
+    if (metadata.get("library_admission_review") or {}).get("status") == "not_admitted":
+        st.info("Results only — not admitted to Database. Admission review is pending. Existing analyses and native filter decisions are preserved; a completed calculation is not a passing decision.")
+
     _render_saved_run_collections(run_path, user, database)
 
     if not isinstance(records, list):

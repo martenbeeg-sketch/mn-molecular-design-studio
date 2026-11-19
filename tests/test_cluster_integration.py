@@ -220,6 +220,30 @@ def test_api_purge_removes_terminal_job_database_and_local_run_files(api_cluster
     assert client.get(f"/api/v1/cluster/jobs/{jid}").status_code == 404
 
 
+def test_project_lifecycle_rpc_requires_trusted_node_and_current_admin(api_cluster, monkeypatch):
+    client, store, origin, remote, actor, project, snapshot, needs = api_cluster
+    from mn_molecular_design_studio import auth, workspace
+    from mn_molecular_design_studio.project_lifecycle import PROTOCOL, ProjectUnavailableError
+    monkeypatch.setattr(auth, 'list_users', lambda: [actor, {'id': 'student', 'role': 'user', 'disabled': False}])
+    endpoint = '/api/v1/cluster/node/projects/lifecycle/'
+    payload = {'actor_id': actor['id'], 'project_id': project['id'], 'mode': 'delete', 'include_collections': True}
+    assert client.post(endpoint + 'inspect', json=payload).status_code == 401
+    headers = {'Authorization': 'Bearer ' + remote['node_token']}
+    assert client.post(endpoint + 'inspect', json={**payload, 'actor_id': 'student'}, headers=headers).status_code == 403
+    response = client.post(endpoint + 'inspect', json=payload, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()['protocol'] == PROTOCOL
+    operation_id = str(uuid.uuid4())
+    arguments = {'actor_id': actor['id'], 'plan_id': response.json()['result']['id'], 'operation_id': operation_id}
+    begin = client.post(endpoint + 'begin', json=arguments, headers=headers)
+    assert begin.status_code == 200, begin.text
+    with pytest.raises(ProjectUnavailableError):
+        workspace.validate_project_id(project['id'])
+    aborted = client.post(endpoint + 'abort', json={'actor_id': actor['id'], 'operation_id': operation_id}, headers=headers)
+    assert aborted.status_code == 200, aborted.text
+    assert workspace.validate_project_id(project['id']) == project['id']
+
+
 def test_api_purge_rejects_active_jobs_and_queues_remote_run_cleanup(api_cluster):
     client, store, origin, remote, actor, project, snapshot, _needs = api_cluster
     local_active_id = str(uuid.uuid4())

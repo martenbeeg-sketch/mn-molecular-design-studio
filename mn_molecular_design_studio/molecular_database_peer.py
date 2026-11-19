@@ -741,9 +741,12 @@ def apply_record(kind, key, value, author, *, database=None, connection=None):
             origin = {**raw_origin, "_replica_node": author, "_replica_group": original_group}
             exists = _owned_group(connection, group_id, author, original_group)
             if exists:
-                existing_owner = connection.execute("SELECT owner_id FROM molecule_groups WHERE id=?", (group_id,)).fetchone()[0]
+                existing_group = connection.execute("SELECT owner_id,origin FROM molecule_groups WHERE id=?", (group_id,)).fetchone()
+                existing_owner = existing_group["owner_id"]
                 if str(existing_owner) != str(group["owner_id"]):
                     raise PermissionError("Peer synchronization cannot transfer a molecular group to another owner.")
+                if _object_json(existing_group["origin"], "existing group origin").get("project_deleted"):
+                    return
             connection.execute("INSERT INTO molecule_groups VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,project_id=excluded.project_id,import_method=excluded.import_method,origin=excluded.origin,schema_json=excluded.schema_json,updated_at=excluded.updated_at",
                 (group_id, str(group["name"]).strip()[:250], str(group["owner_id"]), project_id, import_method, _json(origin), _json(schema), group["created_at"], group["updated_at"]))
             _reconcile_owner_qualified_observations(connection)
@@ -755,6 +758,9 @@ def apply_record(kind, key, value, author, *, database=None, connection=None):
         molecule, member, structures, observations, sources = _validate_entry(value, author, original_group, molecule_id)
         if not _owned_group(connection, group_id, author, original_group):
             raise ValueError("The source molecular group has not synchronized yet.")
+        group_origin = connection.execute("SELECT origin FROM molecule_groups WHERE id=?", (group_id,)).fetchone()[0]
+        if _object_json(group_origin, "existing group origin").get("project_deleted"):
+            return
         _, composition_fingerprint, molecule_type = _source_components(json.loads(molecule["components"]), "molecule")
         if molecule.get("type") != molecule_type:
             raise ValueError("Molecular type does not match its components.")
@@ -796,6 +802,8 @@ def apply_record(kind, key, value, author, *, database=None, connection=None):
         for row, context, digest in structures:
             current_structures.add(_id("peer-structure-", author + ":" + row["id"]))
             context.update(_replica_node=author, _replica_structure=row["id"], sha256=digest)
+            if context.get("design_representation_role") == "refolded_validation" and context.get("source_structure_id"):
+                context["source_structure_id"] = _id("peer-structure-", author + ":" + context["source_structure_id"])
             if context.get("target_structure_id"):
                 context["target_structure_id"] = _id("peer-structure-", author + ":" + context["target_structure_id"])
             structure_id = _id("peer-structure-", author + ":" + row["id"])
@@ -812,10 +820,15 @@ def apply_record(kind, key, value, author, *, database=None, connection=None):
         for row, context in observations:
             current_observations.add(_id("peer-score-", author + ":" + row["id"]))
             context.pop("target_path", None)
+            if context.get("target_structure_id"):
+                context["target_structure_id"] = _id("peer-structure-", author + ":" + context["target_structure_id"])
             has_owner_qualified_reference = _resolve_owner_qualified_structure(connection, context)
             if context.get("representation_id") and not has_owner_qualified_reference:
                 context["_replica_representation"] = context["representation_id"]
                 context["representation_id"] = _id("peer-structure-", author + ":" + context["representation_id"])
+            if (not has_owner_qualified_reference and context.get("design_representation_role") == "refolded_validation"
+                    and context.get("source_structure_id")):
+                context["source_structure_id"] = _id("peer-structure-", author + ":" + context["source_structure_id"])
             context.setdefault("source_node", author)
             context.update(_replica_node=author, _replica_observation=row["id"])
             connection.execute("INSERT OR REPLACE INTO molecule_observations VALUES (?,?,?,?,?,?,?,?)", (_id("peer-score-", author + ":" + row["id"]), molecule_id, group_id, row["namespace"], row["run_id"], row["metrics"], _json(context), row["created_at"]))
@@ -958,10 +971,16 @@ def receive_member_removal(database, user, author, payload):
             or not isinstance(records, list) or len(records) != len(set(ids)) + 1):
         raise ValueError("Invalid source membership-removal event.")
     replica_group = _id("peer-", author + ":" + group_id)
+    skip_group_policy = False
     with database.connection() as connection:
-        existing = connection.execute("SELECT id FROM molecule_groups WHERE id=?", (replica_group,)).fetchone()
+        existing = connection.execute("SELECT id,owner_id,project_id,origin FROM molecule_groups WHERE id=?", (replica_group,)).fetchone()
+        if existing:
+            deleted = _object_json(existing["origin"], "existing group origin").get("project_deleted")
+            has_locks = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_lifecycle_locks'").fetchone()
+            locked_project = has_locks and connection.execute("SELECT 1 FROM project_lifecycle_locks WHERE project_id=? AND state IN ('locked','deleted')", (existing["project_id"],)).fetchone()
+            skip_group_policy = bool(deleted or locked_project)
     if existing:
-        group = database.group(replica_group, user)
+        group = dict(existing) if skip_group_policy and user.get("role") == "admin" else database.group(replica_group, user)
         if user.get("role") != "admin" and group["owner_id"] != user["id"]:
             raise PermissionError("Only the group owner or an administrator can remove membership.")
     expected = {f"molecule_entry:{author}:{group_id}:{mid}" for mid in ids}
@@ -977,7 +996,7 @@ def receive_member_removal(database, user, author, payload):
             source_group = (record.get("value") or {}).get("group") or {}
             if user.get("role") != "admin" and source_group.get("owner_id") != user["id"]:
                 raise PermissionError("Only the group owner or an administrator can remove membership.")
-    return Replica().receive(records)
+    return Replica().receive([record for record in records if not skip_group_policy or record["key"] != group_key])
 
 
 def materialize_portable_structures(*, database=None, peer=None):

@@ -1,0 +1,2322 @@
+{
+ "schema": "binderscope.profile.keys/1",
+ "generated_from": "the registry of the text keys of a profile (docs/profile_spec.md); a key with <entry> stands for one key per entry of specificity.detail",
+ "keys": [
+  {
+   "key": "crumb.board.run",
+   "kind": "text",
+   "page": "board",
+   "description": "Board breadcrumb: run label (the bold part).",
+   "tokens": {
+    "run_source": "RAW.run.source, default BindCraft",
+    "n_runs": "number of runs"
+   }
+  },
+  {
+   "key": "crumb.board.sub",
+   "kind": "text",
+   "page": "board",
+   "description": "Board breadcrumb: muted tail.",
+   "tokens": {
+    "n_sample": "RAW.run.n_sample",
+    "n_families": "families shown",
+    "n_designs": "designs shown (accepted)"
+   }
+  },
+  {
+   "key": "badge.title.board",
+   "kind": "text",
+   "page": "board",
+   "description": "Tooltip of the data badge on the board.",
+   "tokens": {
+    "run_license": "RAW.run.license",
+    "run_credit": "RAW.run.credit"
+   }
+  },
+  {
+   "key": "features.footprint",
+   "kind": "text",
+   "page": "board",
+   "description": "Reviewer-model feature: coverage of the main known footprint.",
+   "tokens": {},
+   "note": "Only when profile.caps.footprints."
+  },
+  {
+   "key": "features.partner",
+   "kind": "text",
+   "page": "board",
+   "description": "Reviewer-model feature: clear of the partner subunit(s).",
+   "tokens": {},
+   "note": "Only when profile.caps.olig."
+  },
+  {
+   "key": "features.flag_region",
+   "kind": "text",
+   "page": "board",
+   "description": "Reviewer-model feature: few contacts in the flagged region.",
+   "tokens": {},
+   "note": "Only when profile.caps.flag_region."
+  },
+  {
+   "key": "features.monomer",
+   "kind": "text",
+   "page": "board",
+   "description": "Reviewer-model feature: pLDDT of the monomer model.",
+   "tokens": {},
+   "note": "Only when metrics esm_plddt exists."
+  },
+  {
+   "key": "features.rescore_pose",
+   "kind": "text",
+   "page": "board",
+   "description": "Reviewer-model feature: re-score pose matches the design.",
+   "tokens": {},
+   "note": "Only when profile.caps.complex_rmsd."
+  },
+  {
+   "key": "features.rest",
+   "kind": "text",
+   "page": "board",
+   "description": "Reviewer-model feature: clear of the removed regions of the chain.",
+   "tokens": {},
+   "note": "Only when profile.caps.rest_ctx."
+  },
+  {
+   "key": "features.cut",
+   "kind": "text",
+   "page": "board",
+   "description": "Reviewer-model feature: contacts away from cut ends.",
+   "tokens": {},
+   "note": "Only when profile.caps.rest_ctx."
+  },
+  {
+   "key": "board.check.fold",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, Fold row.",
+   "tokens": {
+    "plddt": "m.plddt, 2 decimals",
+    "ptm": "m.ptm, 2 decimals or an en dash when null"
+   }
+  },
+  {
+   "key": "board.check.interface",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, Interface row.",
+   "tokens": {
+    "ipsae": "m.ipsae, 2 decimals",
+    "min_ipae": "m.min_ipae, 1 decimal",
+    "iptm": "m.iptm, 2 decimals",
+    "ipae": "m.ipae_mean, 1 decimal"
+   }
+  },
+  {
+   "key": "board.check.consistency.label",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, name of the consistency row.",
+   "tokens": {}
+  },
+  {
+   "key": "board.check.consistency.ok",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, consistency row when the metric is within its limit.",
+   "tokens": {
+    "rmsd": "complex_rmsd or binder_rmsd, 1 decimal"
+   }
+  },
+  {
+   "key": "board.check.consistency.far",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, consistency row when the metric is above its limit.",
+   "tokens": {
+    "rmsd": "as above",
+    "note": "', although confident' when ipsae >= 0.6, else empty"
+   }
+  },
+  {
+   "key": "board.check.consistency.none",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, consistency row when the metric is missing.",
+   "tokens": {}
+  },
+  {
+   "key": "board.check.epitope",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, Epitope row.",
+   "tokens": {
+    "hot": "d.hot.length",
+    "hot_of": "hotspots of the design's run",
+    "epi_rec_pct": "round(100 * m.epi_rec)"
+   }
+  },
+  {
+   "key": "board.check.context.fail",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, Context row: substantial overlap with the partner.",
+   "tokens": {
+    "n3": "m.olig_n3"
+   }
+  },
+  {
+   "key": "board.check.context.warn",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, Context row: touching the partner.",
+   "tokens": {
+    "olig_min": "m.olig_min, 1 decimal"
+   }
+  },
+  {
+   "key": "board.check.context.flag",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, Context row: contacts in the flagged region.",
+   "tokens": {
+    "n": "m.stalk_n"
+   },
+   "note": "Only with profile.caps.flag_region."
+  },
+  {
+   "key": "board.check.context.pass",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, Context row: clear of the partner.",
+   "tokens": {
+    "olig_min": "m.olig_min, 0 decimals"
+   }
+  },
+  {
+   "key": "board.check.context.rest",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, Context row: overlap with the removed regions of the chain.",
+   "tokens": {
+    "n3": "m.rest_n3"
+   },
+   "note": "Only with profile.caps.rest_ctx."
+  },
+  {
+   "key": "board.check.context.cut",
+   "kind": "text",
+   "page": "board",
+   "description": "Focus panel, Context row: contacts next to a cut end.",
+   "tokens": {
+    "n": "m.cut_n"
+   },
+   "note": "Only with profile.caps.rest_ctx."
+  },
+  {
+   "key": "board.row.partner_gap",
+   "kind": "text",
+   "page": "board",
+   "description": "Compare table row: distance to the partner.",
+   "tokens": {},
+   "note": "Only with profile.caps.olig."
+  },
+  {
+   "key": "board.row.flag_region",
+   "kind": "text",
+   "page": "board",
+   "description": "Compare table row: contacts in the flagged region.",
+   "tokens": {},
+   "note": "Only with profile.caps.flag_region."
+  },
+  {
+   "key": "board.sib.iptm_title",
+   "kind": "text",
+   "page": "board",
+   "description": "Tooltip of the i_pTM column of the sequence table.",
+   "tokens": {}
+  },
+  {
+   "key": "board.div.note",
+   "kind": "text",
+   "page": "board",
+   "description": "Note under the diversity controls.",
+   "tokens": {}
+  },
+  {
+   "key": "board.focus.dashed",
+   "kind": "text",
+   "page": "board",
+   "description": "Caption of the focus viewer when a re-score places the binder elsewhere.",
+   "tokens": {
+    "rmsd": "m.complex_rmsd, 1 decimal"
+   },
+   "note": "Only with profile.caps.complex_rmsd."
+  },
+  {
+   "key": "board.focus.default",
+   "kind": "text",
+   "page": "board",
+   "description": "Caption of the focus viewer otherwise.",
+   "tokens": {}
+  },
+  {
+   "key": "board.demo.banner",
+   "kind": "text",
+   "page": "board",
+   "description": "Banner while the simulated reviewer runs (taste variant, no lab results).",
+   "tokens": {
+    "n": "decisions made so far"
+   }
+  },
+  {
+   "key": "board.lab.weighted_note",
+   "kind": "text",
+   "page": "board",
+   "description": "Note under the verdict bars of the lab panel.",
+   "tokens": {
+    "n_boltz": "RAW.run.n_boltz",
+    "base": "weighted binder share of all designs, 1 decimal"
+   },
+   "note": "Only with profile.caps.outcomes and profile.caps.weights."
+  },
+  {
+   "key": "board.lab.conclusion",
+   "kind": "text",
+   "page": "board",
+   "description": "Closing sentence of the lab panel.",
+   "tokens": {},
+   "note": "Dataset-specific conclusion; a new dataset writes its own or omits it."
+  },
+  {
+   "key": "crumb.map.title",
+   "kind": "text",
+   "page": "map",
+   "description": "Map breadcrumb: target (bold).",
+   "tokens": {
+    "run_name": "RAW.run.name",
+    "run_source": "RAW.run.source",
+    "n_runs": "number of runs"
+   }
+  },
+  {
+   "key": "crumb.map.sub",
+   "kind": "text",
+   "page": "map",
+   "description": "Map breadcrumb: muted tail.",
+   "tokens": {
+    "run_source": "RAW.run.source",
+    "n_designs": "designs shown",
+    "n_families": "families shown",
+    "n_sample": "RAW.run.n_sample"
+   }
+  },
+  {
+   "key": "badge.title.map",
+   "kind": "text",
+   "page": "map",
+   "description": "Tooltip of the data badge on the map.",
+   "tokens": {
+    "run_license": "RAW.run.license",
+    "run_credit": "RAW.run.credit"
+   }
+  },
+  {
+   "key": "map.stage.all.label",
+   "kind": "text",
+   "page": "map",
+   "description": "Filter strip, first stage label.",
+   "tokens": {}
+  },
+  {
+   "key": "map.stage.all.thr",
+   "kind": "text",
+   "page": "map",
+   "description": "Filter strip, first stage detail.",
+   "tokens": {
+    "n_families": "families",
+    "max_seq": "largest number of sequences on one backbone",
+    "n_sample": "RAW.run.n_sample",
+    "n_total": "RAW.run.n_total",
+    "n_designs": "designs"
+   }
+  },
+  {
+   "key": "map.stage.iface.thr",
+   "kind": "text",
+   "page": "map",
+   "description": "Filter strip, Interface confident detail.",
+   "tokens": {
+    "ipsae": "P.ipsae, 2 decimals",
+    "min_ipae": "P.min_ipae",
+    "iptm_b": "P.iptm_b, 2 decimals",
+    "ipae_norm": "P.ipae_norm, 2 decimals"
+   }
+  },
+  {
+   "key": "map.stage.pose.label",
+   "kind": "text",
+   "page": "map",
+   "description": "Filter strip, consistency stage label.",
+   "tokens": {}
+  },
+  {
+   "key": "map.stage.pose.thr",
+   "kind": "text",
+   "page": "map",
+   "description": "Filter strip, consistency stage detail.",
+   "tokens": {
+    "complex_rmsd": "P.complex_rmsd",
+    "binder_rmsd": "P.binder_rmsd"
+   }
+  },
+  {
+   "key": "map.stage.ctx.label",
+   "kind": "text",
+   "page": "map",
+   "description": "Filter strip, context stage label.",
+   "tokens": {},
+   "note": "Only with profile.caps.olig."
+  },
+  {
+   "key": "map.stage.ctx.thr",
+   "kind": "text",
+   "page": "map",
+   "description": "Filter strip, context stage detail.",
+   "tokens": {
+    "n3": "checks.context.partner.fail_n3"
+   }
+  },
+  {
+   "key": "map.stage.epi.label",
+   "kind": "text",
+   "page": "map",
+   "description": "Filter strip, epitope stage label.",
+   "tokens": {}
+  },
+  {
+   "key": "map.stage.epi.thr",
+   "kind": "text",
+   "page": "map",
+   "description": "Filter strip, epitope stage detail.",
+   "tokens": {
+    "hotspots": "P.hotspots",
+    "hot_of": "hotspots of the pooled target"
+   }
+  },
+  {
+   "key": "map.pool.epi",
+   "kind": "text",
+   "page": "map",
+   "description": "Picks panel, pool option 1.",
+   "tokens": {}
+  },
+  {
+   "key": "map.pool.pose",
+   "kind": "text",
+   "page": "map",
+   "description": "Picks panel, pool option 2.",
+   "tokens": {}
+  },
+  {
+   "key": "map.picks.summary",
+   "kind": "text",
+   "page": "map",
+   "description": "Picks panel, summary after the mode counts.",
+   "tokens": {
+    "n_bb": "distinct bb among picks",
+    "n_sc": "distinct sc among picks",
+    "n_modes": "distinct modes among picks"
+   }
+  },
+  {
+   "key": "map.strip.caption",
+   "kind": "text",
+   "page": "map",
+   "description": "Caption of the 1-D contact strip (contacts colouring).",
+   "tokens": {}
+  },
+  {
+   "key": "map.ramp.cons_caption",
+   "kind": "text",
+   "page": "map",
+   "description": "Caption of the conservation colour ramp.",
+   "tokens": {
+    "n_orth": "HOM.n_orth"
+   }
+  },
+  {
+   "key": "map.cons.title",
+   "kind": "text",
+   "page": "map",
+   "description": "Tooltip of the Conservation colour button.",
+   "tokens": {}
+  },
+  {
+   "key": "map.hint",
+   "kind": "text",
+   "page": "map",
+   "description": "Hint line at the bottom of the binding-mode map.",
+   "tokens": {}
+  },
+  {
+   "key": "map.table.refold_title",
+   "kind": "text",
+   "page": "map",
+   "description": "Tooltip of the Refold column of the table.",
+   "tokens": {},
+   "note": "Only when the data has binder_rmsd and no complex_rmsd."
+  },
+  {
+   "key": "map.table.spec_title",
+   "kind": "text",
+   "page": "map",
+   "description": "Tooltip of a specificity column of the table.",
+   "tokens": {
+    "subject": "specificity.subject",
+    "phrase": "the species or paralog phrase"
+   }
+  },
+  {
+   "key": "map.stats.clash_title",
+   "kind": "text",
+   "page": "map",
+   "description": "Tooltip of the Clash stat of the mode detail.",
+   "tokens": {
+    "n3": "checks.context.partner.fail_n3"
+   },
+   "note": "Only with profile.caps.olig."
+  },
+  {
+   "key": "map.stats.flag_label",
+   "kind": "text",
+   "page": "map",
+   "description": "Label of the flagged-region stat of the mode detail.",
+   "tokens": {},
+   "note": "Only with profile.caps.flag_region."
+  },
+  {
+   "key": "map.flag.partner",
+   "kind": "text",
+   "page": "map",
+   "description": "Warning icon tooltip: overlaps the partner.",
+   "tokens": {},
+   "note": "Only with profile.caps.olig."
+  },
+  {
+   "key": "map.flag.rest",
+   "kind": "text",
+   "page": "map",
+   "description": "Warning icon tooltip: overlaps the removed regions.",
+   "tokens": {},
+   "note": "Only with profile.caps.rest_ctx."
+  },
+  {
+   "key": "map.spec.species_title",
+   "kind": "text",
+   "page": "map",
+   "description": "Tooltip of a species bar in the mode detail specificity block.",
+   "tokens": {
+    "label": "species label",
+    "subject": "specificity.subject"
+   }
+  },
+  {
+   "key": "map.spec.focus_title",
+   "kind": "text",
+   "page": "map",
+   "description": "Tooltip of the focus-paralog bar.",
+   "tokens": {},
+   "note": "Only with specificity.paralogs.focus."
+  },
+  {
+   "key": "map.spec.note",
+   "kind": "text",
+   "page": "map",
+   "description": "Note under the specificity block of the mode detail.",
+   "tokens": {}
+  },
+  {
+   "key": "crumb.query.title",
+   "kind": "text",
+   "page": "query",
+   "description": "Query breadcrumb: target (bold).",
+   "tokens": {
+    "run_name": "RAW.run.name",
+    "run_source": "RAW.run.source",
+    "n_runs": "number of runs"
+   }
+  },
+  {
+   "key": "crumb.query.sub",
+   "kind": "text",
+   "page": "query",
+   "description": "Query breadcrumb: muted tail.",
+   "tokens": {
+    "run_source": "RAW.run.source",
+    "n_sample": "RAW.run.n_sample",
+    "n_designs": "designs in the project, rejected ones included",
+    "n_accepted": "accepted designs (the default pool)",
+    "n_rejected": "BindCraft-rejected designs that have a structure (the optional pool)",
+    "n_runs": "number of runs"
+   }
+  },
+  {
+   "key": "badge.title.query",
+   "kind": "text",
+   "page": "query",
+   "description": "Tooltip of the data badge on the query page.",
+   "tokens": {
+    "run_license": "RAW.run.license",
+    "run_credit": "RAW.run.credit"
+   }
+  },
+  {
+   "key": "query.funnel.first",
+   "kind": "text",
+   "page": "query",
+   "description": "First row of the query funnel.",
+   "tokens": {}
+  },
+  {
+   "key": "query.nl.placeholder",
+   "kind": "text",
+   "page": "query",
+   "description": "Placeholder of the natural-language box.",
+   "tokens": {}
+  },
+  {
+   "key": "query.recipe.target",
+   "kind": "text",
+   "page": "query",
+   "description": "Target label written into an exported recipe.",
+   "tokens": {}
+  },
+  {
+   "key": "query.rule.mem.fail",
+   "kind": "text",
+   "page": "query",
+   "description": "Reason a design fails the membrane rule.",
+   "tokens": {
+    "mem": "m.mem_excess, 0 decimals"
+   },
+   "note": "Generic wording; listed because the sentence says zone."
+  },
+  {
+   "key": "rules.groups",
+   "kind": "data",
+   "page": "query",
+   "description": "Order of the rule groups of the query page and of its funnel.",
+   "tokens": {}
+  },
+  {
+   "key": "rules.overrides",
+   "kind": "data",
+   "page": "query",
+   "description": "Per-rule overrides of the base catalogue of the query page: label, note and the numeric defaults (val, lo, hi, step, on). Keys are rule ids; a note may use tokens.",
+   "tokens": {
+    "n_orth": "HOM.n_orth",
+    "glycan_list": "target.glycan as 'N72, N159, ...'"
+   }
+  },
+  {
+   "key": "rules.extra",
+   "kind": "data",
+   "page": "query",
+   "description": "Rules added by the profile on top of the base catalogue. Fields: id, group, label, metric (key of design.m, or the expression unsat_density), op, val, lo, hi, step, dec, unit, on, note, rescue [title, text].",
+   "tokens": {}
+  },
+  {
+   "key": "specificity.rules",
+   "kind": "data",
+   "page": "query",
+   "description": "Query rules built from the specificity panel. expr says what the rule measures: species (identity fraction in one species of the panel), min_species, paralog (share of the epitope identical in one paralog), paralog_max_excl (the highest over all paralogs but one). nl: keywords and compiled text for the natural-language box.",
+   "tokens": {}
+  },
+  {
+   "key": "nl.examples",
+   "kind": "data",
+   "page": "query",
+   "description": "Example queries under the natural-language box: [{label, q}].",
+   "tokens": {}
+  },
+  {
+   "key": "nl.words",
+   "kind": "data",
+   "page": "query",
+   "description": "Words the natural-language box recognises beyond its built-in ones. epitope: extra words for \"on the intended epitope\"; off_epitope_exclude: words that cancel the off-epitope reading; glycan_named: word -> label of a named glycan site; partner and flag_region are handled by rules.extra[].nl.",
+   "tokens": {}
+  },
+  {
+   "key": "crumb.inspector.camp",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Inspector breadcrumb: campaign label.",
+   "tokens": {
+    "run_name": "RAW.run.name",
+    "run_source": "RAW.run.source",
+    "n_sample": "RAW.run.n_sample",
+    "n_runs": "number of runs"
+   }
+  },
+  {
+   "key": "badge.title.inspector",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the data badge on the inspector.",
+   "tokens": {
+    "run_license": "RAW.run.license",
+    "run_credit": "RAW.run.credit"
+   }
+  },
+  {
+   "key": "inspector.col.cons_title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the Conservation colour button.",
+   "tokens": {}
+  },
+  {
+   "key": "inspector.names",
+   "kind": "data",
+   "page": "inspector",
+   "description": "Display names of the inspector tags, for projects that label designs by hand. Other profiles label designs through design.label.",
+   "tokens": {}
+  },
+  {
+   "key": "inspector.order",
+   "kind": "data",
+   "page": "inspector",
+   "description": "Display order of the inspector designs when it differs from INS.order.",
+   "tokens": {},
+   "note": "Plain tags: the page filters it by the tags that exist."
+  },
+  {
+   "key": "inspector.id_strip",
+   "kind": "data",
+   "page": "inspector",
+   "description": "Regular expression (source) removed from the start of a design id to make the short label shown in the navigation.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.epi.ok.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Epitope finding, three or more hotspots touched.",
+   "tokens": {
+    "nh": "design.hot.length",
+    "hot_of": "hotspots of the design's run"
+   }
+  },
+  {
+   "key": "finding.epi.ok.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Epitope finding, detail.",
+   "tokens": {
+    "hot_list": "residues like 'Y56, E58'",
+    "mode": "design.mode",
+    "mode_name": "design.mode_name"
+   }
+  },
+  {
+   "key": "finding.epi.warn.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Epitope finding, one or two hotspots touched.",
+   "tokens": {
+    "nh": "design.hot.length",
+    "hot_of": "hotspots of the design's run"
+   }
+  },
+  {
+   "key": "finding.epi.warn.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Epitope finding, detail.",
+   "tokens": {
+    "hot_list": "residues like 'Y56, E58'"
+   }
+  },
+  {
+   "key": "finding.epi.warn.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Epitope finding, suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.epi.bad.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Epitope finding, no hotspot touched.",
+   "tokens": {
+    "domain_phrase": "frame.segments[].phrase of the domain holding the median contacted residue"
+   }
+  },
+  {
+   "key": "finding.epi.bad.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Epitope finding, detail.",
+   "tokens": {
+    "residues": "first six contacted residues, comma separated",
+    "more": "an ellipsis when there are more than six, else empty"
+   }
+  },
+  {
+   "key": "finding.epi.bad.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Epitope finding, suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.buns.density_note",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Sentence appended to the buried-polars finding when the density basis is used.",
+   "tokens": {},
+   "note": "Only with checks.physics.unsat_basis = per_1000_A2. Dataset-specific: a new dataset writes its own or omits it."
+  },
+  {
+   "key": "finding.pose.flip.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, a confident design whose re-score lands elsewhere.",
+   "tokens": {
+    "odd_list": "'<model> lands <r> Å away' for each disagreeing predictor, joined with ' and '"
+   },
+   "note": "Only with profile.caps.models (a re-score)."
+  },
+  {
+   "key": "finding.pose.flip.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, detail.",
+   "tokens": {
+    "ipsae": "metrics.ipsae, 2 decimals",
+    "af_clause": "' (<r> Å)' for the AF2 pose or empty",
+    "ind_list": "'<model> <r> Å' for each independent predictor, joined with ', '"
+   }
+  },
+  {
+   "key": "finding.pose.flip.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.pose.odd.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, some independent predictors disagree.",
+   "tokens": {
+    "nag": "predictors within 3 Å",
+    "n_ind": "independent predictors"
+   }
+  },
+  {
+   "key": "finding.pose.odd.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, detail.",
+   "tokens": {
+    "odd_list": "'<model> places the binder <r> Å away (ipSAE v)' joined with '; '",
+    "agree_clause": "'<models> reproduce(s) the design pose.' or 'No independent predictor reproduces the design pose.'"
+   }
+  },
+  {
+   "key": "finding.pose.odd.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.pose.ok.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, all independent predictors agree.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.pose.ok.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, detail.",
+   "tokens": {
+    "poses_list": "'<model> <r> Å' joined with ' · '",
+    "seed_spread": "metrics.seed_spread, 1 decimal"
+   }
+  },
+  {
+   "key": "finding.pose.mono.far.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, the binder alone is very different from its complex shape.",
+   "tokens": {
+    "rm": "metrics.binder_rmsd, 1 decimal"
+   },
+   "note": "Only with the monomer predictor and no complex_rmsd."
+  },
+  {
+   "key": "finding.pose.mono.far.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, detail.",
+   "tokens": {
+    "rm": "binder_rmsd",
+    "esm": "metrics.esm_plddt, rounded",
+    "ipsae": "metrics.ipsae, 2 decimals",
+    "one_model": "finding.pose.one_model"
+   }
+  },
+  {
+   "key": "finding.pose.mono.far.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.pose.mono.warn.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, the binder changes shape without the target.",
+   "tokens": {
+    "rm": "binder_rmsd"
+   }
+  },
+  {
+   "key": "finding.pose.mono.warn.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, detail.",
+   "tokens": {
+    "rm": "binder_rmsd",
+    "esm": "metrics.esm_plddt, rounded",
+    "one_model": "finding.pose.one_model"
+   }
+  },
+  {
+   "key": "finding.pose.mono.warn.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.pose.mono.ok.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, the binder refolds on its own.",
+   "tokens": {
+    "rm": "binder_rmsd"
+   }
+  },
+  {
+   "key": "finding.pose.mono.ok.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, detail.",
+   "tokens": {
+    "rm": "binder_rmsd",
+    "esm": "metrics.esm_plddt, rounded",
+    "one_model": "finding.pose.one_model"
+   }
+  },
+  {
+   "key": "finding.pose.mono.none.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding, no monomer model.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.pose.one_model",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Sentence saying that agreement between predictors cannot be checked.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.conf_if.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Low interface confidence finding.",
+   "tokens": {
+    "ipsae": "metrics.ipsae, 2 decimals",
+    "min_ipae": "metrics.min_ipae, 1 decimal"
+   },
+   "note": "Only with a PAE-derived min_ipae."
+  },
+  {
+   "key": "finding.conf_if.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Low interface confidence, detail.",
+   "tokens": {
+    "iptm": "metrics.iptm, 2 decimals"
+   }
+  },
+  {
+   "key": "finding.conf_if.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Low interface confidence, suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.pose.bc.warn.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding for BindCraft-only data: the binder moved between trajectory and prediction.",
+   "tokens": {
+    "hotspot_rmsd": "metrics.hotspot_rmsd, 1 decimal"
+   },
+   "note": "Only when caps.hotspot_rmsd and metrics.hotspot_rmsd is above checks.findings.hotspot_rmsd_warn (6 Å)."
+  },
+  {
+   "key": "finding.pose.bc.warn.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail of the BindCraft-only pose finding.",
+   "tokens": {
+    "hotspot_rmsd": "metrics.hotspot_rmsd, 1 decimal",
+    "binder_rmsd": "metrics.binder_rmsd, 1 decimal"
+   }
+  },
+  {
+   "key": "finding.pose.bc.warn.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Suggested next step of the BindCraft-only pose finding.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.pose.bc.ok.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Pose finding for BindCraft-only data: the placement is kept.",
+   "tokens": {
+    "hotspot_rmsd": "metrics.hotspot_rmsd, 1 decimal"
+   }
+  },
+  {
+   "key": "finding.pose.bc.ok.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail of the BindCraft-only pose finding.",
+   "tokens": {
+    "hotspot_rmsd": "metrics.hotspot_rmsd, 1 decimal",
+    "binder_rmsd": "metrics.binder_rmsd, 1 decimal"
+   }
+  },
+  {
+   "key": "finding.gly.text",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Sentence about the glycans of the target, appended to the glycan finding.",
+   "tokens": {
+    "glycan_list": "frame.glycan_sites as 'N72, N159, ...'"
+   }
+  },
+  {
+   "key": "finding.mem.text",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Noun phrase naming the membrane plane in the membrane finding.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.mem.noun",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Word for the full-length protein in the membrane finding.",
+   "tokens": {}
+  },
+  {
+   "key": "verdict.ctx_olig",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Verdict label when the partner overlap is the first bad finding.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.spec_orth.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Specificity finding (orthologs), detail.",
+   "tokens": {
+    "nc": "contacted residues with grade 7 to 9",
+    "n": "contacted residues in the alignment",
+    "n_orth": "HOM.n_orth",
+    "mg": "mean grade, 1 decimal",
+    "clauses": "concatenation of the finding.spec_orth.<entry>.some or .none texts of specificity.detail, in order"
+   }
+  },
+  {
+   "key": "finding.spec_orth.<entry>.some",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Specificity clause for one entry of profile.specificity.detail (a species key, or a group name): the entry differs from the target at contacted residues.",
+   "tokens": {
+    "list": "first five substitutions like Q52K, comma separated",
+    "more": "an ellipsis when there are more than five, else empty",
+    "items": "'<label> differs at <first four substitutions>' for each variant that differs, joined with '; '"
+   }
+  },
+  {
+   "key": "finding.spec_orth.<entry>.none",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Specificity clause for one entry of profile.specificity.detail: the entry has the same residue at every contacted residue.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.spec_orth.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Specificity finding, suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.spec_par.warn.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Specificity finding (paralogs): a non-focus paralog shares at least half of the epitope.",
+   "tokens": {
+    "label": "paralog label",
+    "id": "identical residues",
+    "n": "epitope residues"
+   }
+  },
+  {
+   "key": "finding.spec_par.warn.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail.",
+   "tokens": {
+    "label": "paralog label"
+   }
+  },
+  {
+   "key": "finding.spec_par.warn.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.spec_par.focus.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Specificity finding: the focus paralog shares at least 40% of the epitope.",
+   "tokens": {
+    "id": "identical residues",
+    "n": "epitope residues"
+   }
+  },
+  {
+   "key": "finding.spec_par.focus.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.spec_par.focus.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.spec_par.ok.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Specificity finding: the epitope differs from the paralogs.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.spec_par.ok.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail.",
+   "tokens": {
+    "label": "closest paralog",
+    "id": "identical residues",
+    "n": "epitope residues"
+   }
+  },
+  {
+   "key": "spec.ref_row",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Label of the reference row of the alignment grid.",
+   "tokens": {}
+  },
+  {
+   "key": "spec.species_title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Heading of the species section (and of its group row in the grid).",
+   "tokens": {}
+  },
+  {
+   "key": "spec.intro",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Introductory paragraph of the Specificity tab (HTML).",
+   "tokens": {}
+  },
+  {
+   "key": "spec.cons_note",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Note under the conservation bars (HTML).",
+   "tokens": {
+    "n_orth": "HOM.n_orth"
+   }
+  },
+  {
+   "key": "spec.par_note",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Note under the paralog bars.",
+   "tokens": {},
+   "note": "Only with profile.caps.paralog_panel."
+  },
+  {
+   "key": "spec.decoy.intro",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Text above the decoy co-fold button.",
+   "tokens": {
+    "ipsae": "metrics.ipsae, 2 decimals"
+   },
+   "note": "Only with profile.caps.decoy_cofold."
+  },
+  {
+   "key": "spec.paralog_ident_title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of a paralog bar: what the overall identity covers.",
+   "tokens": {
+    "name": "paralog name",
+    "gene": "gene symbol",
+    "pct": "round(100 * ident_ref)"
+   }
+  },
+  {
+   "key": "finding.ctx.frame.title.trim",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Frame finding for a design whose target is a removed-domain construct (design.ctx present).",
+   "tokens": {
+    "span": "'first–last' of the design's construct",
+    "len": "full-length length"
+   }
+  },
+  {
+   "key": "finding.ctx.frame.title.full",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Frame finding for a design on the full extracellular domain (design.ctx absent).",
+   "tokens": {
+    "span": "as above",
+    "len": "as above"
+   }
+  },
+  {
+   "key": "finding.ctx.frame.detail.trim",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail.",
+   "tokens": {
+    "a": "first residue of the removed range",
+    "b": "last residue"
+   }
+  },
+  {
+   "key": "finding.ctx.frame.detail.full",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail.",
+   "tokens": {
+    "gap_clause": "', and residues X–Y are missing from the structure' or empty"
+   }
+  },
+  {
+   "key": "finding.ctx.frame.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Frame finding (unsuffixed variant).",
+   "tokens": {
+    "span": "'first–last'",
+    "len": "full-length length"
+   }
+  },
+  {
+   "key": "finding.ctx.frame.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail (unsuffixed variant).",
+   "tokens": {
+    "before": "first - 1",
+    "removed_text": "'residues 1–149 and 343–760'",
+    "run_clause": "', and this run deleted residues X–Y and U–V from the construct' or empty"
+   }
+  },
+  {
+   "key": "finding.ctx.near.clash",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Removed-region finding, clash (below 3 A).",
+   "tokens": {}
+  },
+  {
+   "key": "finding.ctx.near.touch",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Removed-region finding, touching (3 to 4 A).",
+   "tokens": {
+    "d": "ctx.nearest, 1 decimal"
+   }
+  },
+  {
+   "key": "finding.ctx.near.close",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Removed-region finding, close (4 to 8 A).",
+   "tokens": {
+    "d": "ctx.nearest, 1 decimal"
+   }
+  },
+  {
+   "key": "finding.ctx.near.clear",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Removed-region finding, clear (8 A or more).",
+   "tokens": {
+    "d": "ctx.nearest, 1 decimal"
+   }
+  },
+  {
+   "key": "finding.ctx.near.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Removed-region finding, detail.",
+   "tokens": {
+    "bres": "binder residue like 'K27'",
+    "d": "ctx.nearest, 1 decimal",
+    "tres": "target residue like 'K189'"
+   }
+  },
+  {
+   "key": "finding.ctx.near.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Removed-region finding, suggested next step (for clash and touch).",
+   "tokens": {}
+  },
+  {
+   "key": "finding.ctx.cov.some.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Coverage finding, some contacted residues are buried in the full protein.",
+   "tokens": {
+    "count_phrase": "'2 epitope residues are' or '1 epitope residue is'"
+   }
+  },
+  {
+   "key": "finding.ctx.cov.none.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Coverage finding, none.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.ctx.cov.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Coverage finding, detail.",
+   "tokens": {
+    "all": "residues the removed region buries, comma separated",
+    "min_area": "checks.context.cover.min_area",
+    "tail": "finding.ctx.cov.tail.some or .none"
+   }
+  },
+  {
+   "key": "finding.ctx.cov.tail.some",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Coverage detail, contacted residues listed.",
+   "tokens": {
+    "list": "contacted residues that the removed region buries, comma separated"
+   }
+  },
+  {
+   "key": "finding.ctx.cov.tail.none",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Coverage detail, none contacted.",
+   "tokens": {
+    "n": "number of contacted residues"
+   }
+  },
+  {
+   "key": "finding.ctx.cov.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Coverage finding, suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.ctx.cut.some.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Cut-end finding, contacts near a cut.",
+   "tokens": {
+    "n": "number of contacted residues near a cut",
+    "s": "'s' when n > 1, else empty"
+   }
+  },
+  {
+   "key": "finding.ctx.cut.none.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Cut-end finding, clear.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.ctx.cut.detail.head",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Cut-end finding, first sentence.",
+   "tokens": {
+    "cuts": "'starts at residue 150 and ends at residue 342' for each cut end",
+    "first": "first residue"
+   }
+  },
+  {
+   "key": "finding.ctx.cut.detail.some",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Cut-end finding, contacts listed.",
+   "tokens": {
+    "k": "checks.context.cut.k",
+    "list": "contacted residues near a cut, comma separated"
+   }
+  },
+  {
+   "key": "finding.ctx.cut.detail.none",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Cut-end finding, nothing near a cut.",
+   "tokens": {
+    "k": "checks.context.cut.k"
+   }
+  },
+  {
+   "key": "finding.ctx.cut.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Cut-end finding, suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.ctx.olig.buried",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Partner finding, sentence about contacted residues buried at the partner interface.",
+   "tokens": {
+    "count_phrase": "'3 contacted residues are' or '1 contacted residue is'",
+    "runs": "residue ranges like '100–110, 150'"
+   }
+  },
+  {
+   "key": "finding.ctx.olig.bad.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Partner finding, overlap.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.ctx.olig.bad.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Partner finding, overlap, detail.",
+   "tokens": {
+    "n3": "octx.olig_n3",
+    "dm": "octx.olig_min, 1 decimal",
+    "bur_text": "finding.ctx.olig.buried or empty"
+   }
+  },
+  {
+   "key": "finding.ctx.olig.bad.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Partner finding, overlap, suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.ctx.olig.warn.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Partner finding, contact.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.ctx.olig.warn.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Partner finding, contact, detail.",
+   "tokens": {
+    "dm": "octx.olig_min, 1 decimal",
+    "n4_atoms": "'888 atoms' or '1 atom'",
+    "bur_text": "finding.ctx.olig.buried or empty"
+   }
+  },
+  {
+   "key": "finding.ctx.olig.warn.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Partner finding, contact, suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.ctx.olig.ok.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Partner finding, clear.",
+   "tokens": {
+    "dm0": "octx.olig_min, 0 decimals"
+   }
+  },
+  {
+   "key": "finding.ctx.olig.ok.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Partner finding, clear, detail.",
+   "tokens": {
+    "dm": "octx.olig_min, 1 decimal"
+   }
+  },
+  {
+   "key": "finding.ctx.flag.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Flagged-region finding.",
+   "tokens": {
+    "n": "residues contacted in the flagged region",
+    "s": "'s' when n > 1"
+   },
+   "note": "Only with profile.caps.flag_region."
+  },
+  {
+   "key": "finding.ctx.flag.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Flagged-region finding, detail.",
+   "tokens": {
+    "runs": "residue ranges like '100–110, 150'"
+   }
+  },
+  {
+   "key": "finding.ctx.flag.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Flagged-region finding, suggested next step (three or more residues).",
+   "tokens": {
+    "head_range": "range of the segment labelled Head, like '177–602'"
+   }
+  },
+  {
+   "key": "inspector.tool.ctx",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Viewer toggle: removed region.",
+   "tokens": {},
+   "note": "Only when a design carries ctx."
+  },
+  {
+   "key": "inspector.tool.olig",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Viewer toggle: partner subunit(s).",
+   "tokens": {},
+   "note": "Only with profile.caps.olig."
+  },
+  {
+   "key": "inspector.tool.fp",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Viewer toggle: known-complex partners.",
+   "tokens": {},
+   "note": "Only with profile.caps.footprints."
+  },
+  {
+   "key": "view.ctx.label",
+   "kind": "text",
+   "page": "inspector",
+   "description": "3D label on the removed region.",
+   "tokens": {}
+  },
+  {
+   "key": "view.ctx.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Hover tip on the removed region (HTML).",
+   "tokens": {}
+  },
+  {
+   "key": "view.olig.trace",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Hover tip of a partner CA trace.",
+   "tokens": {
+    "chain": "chain key from olig.neigh"
+   }
+  },
+  {
+   "key": "inspector.chip.model",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Chip next to the verdict: which model made the complex.",
+   "tokens": {
+    "method_short": "design method with the trailing 10-character id removed, or 'method not given'"
+   }
+  },
+  {
+   "key": "inspector.chip.model.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of that chip.",
+   "tokens": {
+    "method": "design.method or 'not given'"
+   }
+  },
+  {
+   "key": "inspector.chip.stand_in",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Chip on illustrative stand-in designs.",
+   "tokens": {},
+   "note": "Only when design.source_note is set."
+  },
+  {
+   "key": "inspector.method_names",
+   "kind": "data",
+   "page": "inspector",
+   "description": "Navigation label base from the design method: [[regex source, label], ...] tried in order; the default is the modality name.",
+   "tokens": {}
+  },
+  {
+   "key": "inspector.method_strip",
+   "kind": "data",
+   "page": "inspector",
+   "description": "Regular expression (source) removed from the end of a design method to shorten it.",
+   "tokens": {}
+  },
+  {
+   "key": "meter.plddt.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the binder pLDDT meter.",
+   "tokens": {}
+  },
+  {
+   "key": "meter.ipsae.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the ipSAE meter.",
+   "tokens": {},
+   "note": "Only with caps.ipsae."
+  },
+  {
+   "key": "meter.iptm.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the ipTM meter.",
+   "tokens": {}
+  },
+  {
+   "key": "meter.min_ipae.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the min iPAE meter.",
+   "tokens": {},
+   "note": "Only with a PAE-derived min_ipae."
+  },
+  {
+   "key": "meter.ipae_norm.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the i_pAE meter.",
+   "tokens": {},
+   "note": "Only with caps.ipae_norm and no ipSAE."
+  },
+  {
+   "key": "meter.rmsd.label",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Label of the complex RMSD meter.",
+   "tokens": {},
+   "note": "Only with caps.complex_rmsd."
+  },
+  {
+   "key": "meter.rmsd.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the complex RMSD meter.",
+   "tokens": {}
+  },
+  {
+   "key": "meter.brmsd.label",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Label of the binder RMSD meter.",
+   "tokens": {},
+   "note": "Only with caps.binder_rmsd."
+  },
+  {
+   "key": "meter.brmsd.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the binder RMSD meter.",
+   "tokens": {}
+  },
+  {
+   "key": "meter.olig.label",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Label of the partner gap meter.",
+   "tokens": {},
+   "note": "Only with caps.olig."
+  },
+  {
+   "key": "meter.olig.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the partner gap meter.",
+   "tokens": {}
+  },
+  {
+   "key": "meter.rest.label",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Label of the rest-of-protein gap meter.",
+   "tokens": {},
+   "note": "Only with caps.rest_ctx."
+  },
+  {
+   "key": "meter.rest.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the rest-of-protein gap meter.",
+   "tokens": {}
+  },
+  {
+   "key": "meter.sc.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the shape complementarity meter.",
+   "tokens": {}
+  },
+  {
+   "key": "meter.dg.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the interface energy meter.",
+   "tokens": {}
+  },
+  {
+   "key": "meter.unsat.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the unsatisfied polars meter.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.epi.fp.ok.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Footprint epitope finding, at the main pocket.",
+   "tokens": {
+    "nh": "hotspots touched",
+    "n_hot": "hotspots"
+   },
+   "note": "Only with caps.footprints."
+  },
+  {
+   "key": "finding.epi.fp.ok.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail.",
+   "tokens": {
+    "hot_clause": "'<hotspots> are in contact. ' or empty",
+    "cover_pct": "coverage of the best primary footprint",
+    "n_ov": "contacted residues inside it",
+    "n_fp": "footprint size",
+    "fp_name": "footprints.labels of that footprint",
+    "mode": "design.mode",
+    "mode_name": "design.mode_name",
+    "tail": "finding.epi.fp.tail",
+    "ctl": "finding.epi.fp.control or empty"
+   }
+  },
+  {
+   "key": "finding.epi.fp.warn.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Footprint epitope finding, partly at the pocket.",
+   "tokens": {
+    "nh": "hotspots touched",
+    "n_hot": "hotspots"
+   }
+  },
+  {
+   "key": "finding.epi.fp.warn.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail.",
+   "tokens": {
+    "hot_list": "hotspots in contact",
+    "cover_pct": "coverage",
+    "tail": "finding.epi.fp.tail",
+    "ctl": "finding.epi.fp.control or empty"
+   }
+  },
+  {
+   "key": "finding.epi.fp.warn.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.epi.fp.other.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Footprint epitope finding, at another known binder site.",
+   "tokens": {
+    "fp_name": "footprint label",
+    "n": "contacted residues inside it",
+    "of": "footprint size"
+   }
+  },
+  {
+   "key": "finding.epi.fp.other.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail.",
+   "tokens": {
+    "tail": "finding.epi.fp.tail",
+    "ctl": "finding.epi.fp.control or empty"
+   }
+  },
+  {
+   "key": "finding.epi.fp.new.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Footprint epitope finding, away from every known site.",
+   "tokens": {
+    "domain_lc": "frame segment label of the median contacted residue, lower case (N-terminal region keeps its capital)"
+   }
+  },
+  {
+   "key": "finding.epi.fp.new.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail.",
+   "tokens": {
+    "max_ov": "largest overlap with any footprint",
+    "tail": "finding.epi.fp.tail",
+    "ctl": "finding.epi.fp.control or empty"
+   }
+  },
+  {
+   "key": "finding.epi.fp.new.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Suggested next step.",
+   "tokens": {}
+  },
+  {
+   "key": "finding.epi.fp.tail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Sentence listing the overlap with every known footprint.",
+   "tokens": {
+    "shared": "'<name> 28/33, ...' for footprints with at least 5 residues, or 'none above 4'"
+   }
+  },
+  {
+   "key": "finding.epi.fp.control",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Sentence about a design the dataset labels a control.",
+   "tokens": {
+    "pdb": "PDB id in the design name, upper case",
+    "fp_name": "footprint label",
+    "n": "overlap",
+    "of": "footprint size"
+   }
+  },
+  {
+   "key": "footprints",
+   "kind": "data",
+   "page": "inspector",
+   "description": "Known-complex footprints: primary (the footprints that define the intended site), labels (display names) and the regular expression (source) that finds the PDB id in a control design name.",
+   "tokens": {},
+   "note": "Only with caps.footprints."
+  },
+  {
+   "key": "inspector.conf.predictors.sub",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Sub-heading of the Predictors block of the Confidence tab.",
+   "tokens": {}
+  },
+  {
+   "key": "inspector.conf.predictors.note",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Note under the Predictors block (HTML).",
+   "tokens": {}
+  },
+  {
+   "key": "inspector.conf.pae_note",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Sentence appended to the PAE note when only the nearest target residues are shown.",
+   "tokens": {
+    "nt": "number of target residues in the matrix"
+   },
+   "note": "Only with caps.has_pae and a cropped matrix."
+  },
+  {
+   "key": "inspector.iface.contrib_sub",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Sub-heading of the per-residue contribution block.",
+   "tokens": {}
+  },
+  {
+   "key": "inspector.iface.contrib_note",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Note under the per-residue contribution block.",
+   "tokens": {}
+  },
+  {
+   "key": "inspector.tab.sib",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Label of the fifth tab.",
+   "tokens": {}
+  },
+  {
+   "key": "inspector.sib.note",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Note under the sibling table.",
+   "tokens": {}
+  },
+  {
+   "key": "inspector.sib.diff_label",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Header of the last column of the sibling table.",
+   "tokens": {},
+   "note": "diff is measured against the family's first listed sequence (BindCraft has no native sequence)."
+  },
+  {
+   "key": "lab.card.base_rate",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Last sentence of the lab card for a design that did not bind although the checks passed.",
+   "tokens": {
+    "pct": "round(100 * n_binders_total / n_total)",
+    "nb": "RAW.run.n_binders_total",
+    "tot": "RAW.run.n_total"
+   },
+   "note": "Only with caps.outcomes."
+  },
+  {
+   "key": "inspector.similar.note",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Note under the Similar table (HTML). Dataset-specific counts.",
+   "tokens": {
+    "lab_clause": "'<b>N of these M</b> bound in the lab. ' or 'Press <b>Show lab results</b> to see how each of these did. '"
+   },
+   "note": "Only when families is false."
+  },
+  {
+   "key": "inspector.similar.try",
+   "kind": "text",
+   "page": "inspector",
+   "description": "What-to-try paragraph of the Similar tab.",
+   "tokens": {
+    "n_binders_sample": "RAW.run.n_binders_sample",
+    "n_sample": "RAW.run.n_sample",
+    "n_binders_total": "RAW.run.n_binders_total",
+    "n_total": "RAW.run.n_total"
+   }
+  },
+  {
+   "key": "inspector.struct_sub",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Subtitle of the Structure panel after the id and modality.",
+   "tokens": {},
+   "note": "Appended to \"<short id> · <modality>\". The value comes from target.span_label."
+  },
+  {
+   "key": "finding.conf_if.native.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Low interface confidence finding of a project judged by the design tool's own i_pTM and i_pAE (no re-score): title.",
+   "tokens": {
+    "iptm": "design i_pTM, 2 decimals, or –",
+    "ipae": "design i_pAE (PAE divided by 31), 2 decimals, or –"
+   },
+   "note": "Page default: 'Interface confidence is below the design tool's cut-off: i_pTM {iptm}, i_pAE {ipae}'. Only when the interface is judged natively and one of the two is outside its limit."
+  },
+  {
+   "key": "finding.conf_if.native.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail of that finding.",
+   "tokens": {
+    "iptm": "the limit of i_pTM in force",
+    "ipae": "the limit of i_pAE in force"
+   },
+   "note": "Page default: the tool's own filters ask for i_pTM of at least {iptm} and i_pAE (PAE divided by 31) of at most {ipae}; a weaker interface prediction means the contacts describe one possible pose."
+  },
+  {
+   "key": "finding.conf_if.native.fix",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Suggested next step of that finding.",
+   "tokens": {},
+   "note": "Page default: 'Treat the pose as a hypothesis until a second prediction reproduces it.'"
+  },
+  {
+   "key": "finding.ctx.olig.noun",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Noun for a contacted residue in the sentence about residues buried at the interface with the other subunit (singular; the page adds is or are).",
+   "tokens": {}
+  },
+  {
+   "key": "finding.ctx.sym.title",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Information finding: the binder overlaps its own copy on the other subunit of the assembly.",
+   "tokens": {},
+   "note": "Page default: 'Overlaps its own copy on the other subunit'. Only when octx.sym_n3 is above zero."
+  },
+  {
+   "key": "finding.ctx.sym.detail",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Detail of that finding.",
+   "tokens": {
+    "dm": "octx.sym_min, 1 decimal",
+    "n3": "octx.sym_n3, binder atoms within 3 Å of the copy"
+   },
+   "note": "Page default: the assembly repeats the binding site on its other subunit; placed on both, two copies would overlap (closest {dm} Å, {n3} atoms within 3 Å), so at most one binder fits per assembly."
+  },
+  {
+   "key": "finding.mem.clash",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Membrane finding when part of the binder crosses the membrane-side plane.",
+   "tokens": {
+    "mem": "finding.mem.text",
+    "noun": "finding.mem.noun"
+   },
+   "note": "Page default: 'Part of the binder crosses the {mem}. On the full-length {noun} it would clash with the membrane or the region that leads to it.'"
+  },
+  {
+   "key": "inspector.sib.diff_ref",
+   "kind": "text",
+   "page": "inspector",
+   "description": "What the Siblings tab compares each sequence with (completes: differs from the ...).",
+   "tokens": {}
+  },
+  {
+   "key": "finding.ctx.olig.confirm",
+   "kind": "text",
+   "page": "inspector",
+   "description": "What would confirm or refute the target check on the other subunit (a binder that overlaps it): the plain explanation shown when its card is opened.",
+   "tokens": {
+    "min_area": "checks.context.cover.min_area",
+    "k": "checks.context.cut.k"
+   },
+   "note": "Page default: one or two sentences naming the experiment (a prediction against the whole assembly, binding to a longer construct or the full-length protein, a glycan or membrane comparison) and what a similar or a weaker result means."
+  },
+  {
+   "key": "finding.ctx.near.confirm",
+   "kind": "text",
+   "page": "inspector",
+   "description": "What would confirm or refute the target check on the rest of the protein (a binder that collides with the part of the chain the construct leaves out): the plain explanation shown when its card is opened.",
+   "tokens": {
+    "min_area": "checks.context.cover.min_area",
+    "k": "checks.context.cut.k"
+   },
+   "note": "Page default: one or two sentences naming the experiment (a prediction against the whole assembly, binding to a longer construct or the full-length protein, a glycan or membrane comparison) and what a similar or a weaker result means."
+  },
+  {
+   "key": "finding.ctx.cut.confirm",
+   "kind": "text",
+   "page": "inspector",
+   "description": "What would confirm or refute the target check on the cut ends of the construct (contacts next to a cut): the plain explanation shown when its card is opened.",
+   "tokens": {
+    "min_area": "checks.context.cover.min_area",
+    "k": "checks.context.cut.k"
+   },
+   "note": "Page default: one or two sentences naming the experiment (a prediction against the whole assembly, binding to a longer construct or the full-length protein, a glycan or membrane comparison) and what a similar or a weaker result means."
+  },
+  {
+   "key": "finding.ctx.cov.confirm",
+   "kind": "text",
+   "page": "inspector",
+   "description": "What would confirm or refute the target check on epitope residues the rest of the protein would bury: the plain explanation shown when its card is opened.",
+   "tokens": {
+    "min_area": "checks.context.cover.min_area",
+    "k": "checks.context.cut.k"
+   },
+   "note": "Page default: one or two sentences naming the experiment (a prediction against the whole assembly, binding to a longer construct or the full-length protein, a glycan or membrane comparison) and what a similar or a weaker result means."
+  },
+  {
+   "key": "finding.gly.confirm",
+   "kind": "text",
+   "page": "inspector",
+   "description": "What would confirm or refute the target check on the distance to the N-glycans: the plain explanation shown when its card is opened.",
+   "tokens": {
+    "min_area": "checks.context.cover.min_area",
+    "k": "checks.context.cut.k"
+   },
+   "note": "Page default: one or two sentences naming the experiment (a prediction against the whole assembly, binding to a longer construct or the full-length protein, a glycan or membrane comparison) and what a similar or a weaker result means."
+  },
+  {
+   "key": "finding.mem.confirm",
+   "kind": "text",
+   "page": "inspector",
+   "description": "What would confirm or refute the target check on the membrane side: the plain explanation shown when its card is opened.",
+   "tokens": {
+    "min_area": "checks.context.cover.min_area",
+    "k": "checks.context.cut.k"
+   },
+   "note": "Page default: one or two sentences naming the experiment (a prediction against the whole assembly, binding to a longer construct or the full-length protein, a glycan or membrane comparison) and what a similar or a weaker result means."
+  },
+  {
+   "key": "meter.ptm.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the pTM meter (a project judged by the design tool's own scores).",
+   "tokens": {},
+   "note": "Page default: 'predicted TM score of the complex model'."
+  },
+  {
+   "key": "meter.hotspot_rmsd.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the hotspot RMSD meter.",
+   "tokens": {},
+   "note": "Page default: 'how far the binder sits from where the design trajectory put it (BindCraft Hotspot_RMSD; the runs did not enforce it)'. Only with caps.hotspot_rmsd."
+  },
+  {
+   "key": "meter.surf_hyd.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the surface hydrophobicity meter.",
+   "tokens": {},
+   "note": "Page default: 'share of the binder surface that is hydrophobic (BindCraft Surface_Hydrophobicity)'."
+  },
+  {
+   "key": "meter.unsat.own.tip",
+   "kind": "text",
+   "page": "inspector",
+   "description": "Tooltip of the unsatisfied-polars meter when it shows the design tool's own count.",
+   "tokens": {
+    "n": "the geometric count recomputed from the structure"
+   },
+   "note": "Page default: the tool's own count (Rosetta unsatisfied hydrogen bonds, mean of its models); the geometric count recomputed from the structure is {n}, the number the board tile shows as unsat (calc.)."
+  },
+  {
+   "key": "brand.name",
+   "kind": "data",
+   "page": "shared",
+   "description": "Wordmark in the header of every page.",
+   "tokens": {},
+   "note": "The refactored viewer inlines the Binderscope mark; this is the word next to it."
+  },
+  {
+   "key": "brand.titles",
+   "kind": "data",
+   "page": "shared",
+   "description": "Browser tab titles by page.",
+   "tokens": {}
+  },
+  {
+   "key": "badge",
+   "kind": "data",
+   "page": "shared",
+   "description": "The small badge in the header: class (mock = dashed grey, real = green, run = green) and text. Tooltips are text.badge.title.<page>.",
+   "tokens": {}
+  },
+  {
+   "key": "credit",
+   "kind": "data",
+   "page": "shared",
+   "description": "Credit line at the foot of every page (HTML) and its plain-text twin for exports. null = no credit line.",
+   "tokens": {}
+  },
+  {
+   "key": "target",
+   "kind": "data",
+   "page": "shared",
+   "description": "Identity of the target. label is the string written into exported recipes; span_label is the construct subtitle of the inspector; construct.label describes the construct in breadcrumbs.",
+   "tokens": {}
+  },
+  {
+   "key": "frame",
+   "kind": "data",
+   "page": "inspector",
+   "description": "Target frame strip of the inspector: where the construct sits in the full-length protein. segments: [{label, start, end, kind, phrase?}] with kind x (outside or unstructured), v, c, l (linker), b, s, h; phrase names the segment inside a sentence (finding.epi.bad.title). glycan_sites: N-glycosylation sites of the full protein (UniProt). native_range: extent of the mature chain, used to decide which ends of the construct are cuts.",
+   "tokens": {}
+  },
+  {
+   "key": "membrane",
+   "kind": "data",
+   "page": "inspector",
+   "description": "Presentation of the membrane exclusion plane. plane_radius: radius of the 3D disc of the inspector; plane_half_size: half side of the plane drawn on the query page; strip_shade: ranges of target residues shaded as membrane-side on the map strip (null: derive from the plane, residues whose CA lies within 12 A of it).",
+   "tokens": {}
+  },
+  {
+   "key": "view",
+   "kind": "data",
+   "page": "shared",
+   "description": "Camera and marker settings. query_fit_pad: share of the query viewer the target fills; inspector_focus: all (zoom to everything) or binder; inspector_zoom: zoom factor after the initial fit; map_size_metric: metric that sizes the map markers (ipsae or iptm).",
+   "tokens": {}
+  },
+  {
+   "key": "specificity",
+   "kind": "data",
+   "page": "shared",
+   "description": "Specificity panel. species: [{match, label, key, phrase?, table?, card?, optional?}]; match is an organism name or acc:<accession> (the entry of HOM.orth); phrase is the in-sentence name; table and card are the short column heads on the map table and hover card. show: keys of the map specificity block; headline: species of the headline finding; detail: entries whose differences the detail sentence names (a key, or {group, keys}); paralogs.focus: the paralog that gets its own bar and rule.",
+   "tokens": {}
+  },
+  {
+   "key": "predictors",
+   "kind": "data",
+   "page": "shared",
+   "description": "Names of the models. primary: the model that made the complex; rescore: independent co-folding re-scores; monomer: the binder-alone model; design_model_prefix: prefix of the pose entry that is the design model itself; colors: overlay colour per pose entry name.",
+   "tokens": {}
+  },
+  {
+   "key": "caps",
+   "kind": "data",
+   "page": "shared",
+   "description": "Capability flags. Every flag is written explicitly by the exporter; an absent flag means false. See profile_spec.md for what each one gates and which REAL branch it replaces.",
+   "tokens": {}
+  },
+  {
+   "key": "checks",
+   "kind": "data",
+   "page": "shared",
+   "description": "Interpretation settings of the checks and findings. See profile_spec.md section 5 for the full list and the REAL branches they replace.",
+   "tokens": {}
+  },
+  {
+   "key": "modes.notes",
+   "kind": "data",
+   "page": "map",
+   "description": "Mode notes the data does not carry. mode id -> note.",
+   "tokens": {}
+  },
+  {
+   "key": "reasons",
+   "kind": "data",
+   "page": "board",
+   "description": "Reason chips of the decision panel, keys 1 to 7: [[key, label], ...]. The key is stored in review events.",
+   "tokens": {}
+  },
+  {
+   "key": "flag_region",
+   "kind": "data",
+   "page": "shared",
+   "description": "Region of the target whose contacts are counted separately (m.stalk_n, octx.stalk): key, label, range. null = none.",
+   "tokens": {}
+  },
+  {
+   "key": "tips.board",
+   "kind": "data",
+   "page": "board",
+   "description": "\"What to try\" tips of the board page (HTML strings).",
+   "tokens": {}
+  },
+  {
+   "key": "tips.map",
+   "kind": "data",
+   "page": "map",
+   "description": "\"What to try\" tips of the map page (HTML strings).",
+   "tokens": {}
+  },
+  {
+   "key": "tips.inspector",
+   "kind": "data",
+   "page": "inspector",
+   "description": "\"What to try\" tips of the inspector page (HTML strings).",
+   "tokens": {}
+  },
+  {
+   "key": "tips.query",
+   "kind": "data",
+   "page": "query",
+   "description": "\"What to try\" tips of the query page (HTML strings).",
+   "tokens": {}
+  },
+  {
+   "key": "import",
+   "kind": "data",
+   "page": "board",
+   "description": "Import modal of the board. files: legacy file tree [[name, description, state]] (state ok, mu or miss) shown when the bundle has no manifest; files_extra: rows after the tree; cards: [{column, title, html, chips?, actions?, tag?}]. Descriptions may use tokens.",
+   "tokens": {
+    "n_accepted": "RAW.run.n_accepted",
+    "cols": "RAW.run.cols",
+    "n_scored": "RAW.run.n_scored",
+    "n_traj_pass": "RAW.run.n_traj_pass",
+    "n_traj": "RAW.run.n_traj",
+    "n_low": "n_traj - n_traj_pass",
+    "n_families": "families",
+    "run_source": "RAW.run.source",
+    "run_name": "RAW.run.name",
+    "run_credit": "RAW.run.credit",
+    "n_total": "RAW.run.n_total",
+    "n_boltz": "RAW.run.n_boltz",
+    "n_sample": "RAW.run.n_sample",
+    "first": "target.construct.first",
+    "last": "target.construct.last",
+    "len": "target.length",
+    "n_runs": "runs",
+    "n_designs": "accepted designs",
+    "n_rejected": "rejected designs"
+   }
+  },
+  {
+   "key": "common.check.context.tip",
+   "kind": "text",
+   "page": "shared",
+   "description": "Tooltip of the Context check name.",
+   "tokens": {},
+   "note": "Only with caps.olig."
+  }
+ ]
+}

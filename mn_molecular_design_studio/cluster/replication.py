@@ -24,6 +24,12 @@ _depth = ContextVar("studio_replication_lock", default=0)
 _importing = ContextVar("studio_replication_import", default=False)
 IDENTITY_KINDS = {"user", "membership", "project"}
 USER_FIELDS = ("id", "username", "display_name", "role", "password_hash", "must_change_password", "disabled", "created_at", "updated_at")
+MAX_MOLECULAR_RECORD_BYTES = 8 * 1024 * 1024
+MAX_METADATA_PAGE_BYTES = 16 * 1024 * 1024
+
+
+def metadata_record_limit(kind):
+    return MAX_MOLECULAR_RECORD_BYTES if kind == "molecule_entry" else 2 * 1024 * 1024
 
 
 def _merge_concurrent_review_values(previous_record, incoming_record):
@@ -273,44 +279,48 @@ class Replica:
             )
             return changed
 
-    def export(self, since=0, limit=500, *, include_molecular=True, include_review_annotations=True):
+    def export(self, since=0, limit=500, *, include_molecular=True, include_review_annotations=True, include_entity_names=True,
+               include_entity_properties=True):
         if type(since) is not int or since < 0 or type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("Invalid synchronization cursor.")
         if type(include_molecular) is not bool:
             raise ValueError("Invalid Molecular Database sharing setting.")
         if type(include_review_annotations) is not bool:
             raise ValueError("Invalid human review sharing setting.")
-        molecular_kinds = ("molecule_group", "molecule_entry", "external_library", "complex_review_annotation", "scientific_lineage_page")
+        if type(include_entity_names) is not bool:
+            raise ValueError("Invalid canonical name sharing setting.")
+        if type(include_entity_properties) is not bool:
+            raise ValueError("Invalid descriptive property sharing setting.")
+        molecular_kinds = ("molecule_group", "molecule_entry", "external_library", "complex_review_annotation", "scientific_lineage_page", "entity_name")
+        excluded = set(molecular_kinds) if not include_molecular else set()
+        if not include_review_annotations:
+            excluded.add("complex_review_annotation")
+        if not include_entity_names:
+            excluded.add("entity_name")
         with self.db() as db:
-            if include_molecular and include_review_annotations:
+            if not excluded and include_entity_properties:
                 rows = db.execute("SELECT * FROM records WHERE seq>? ORDER BY seq LIMIT ?", (since, limit)).fetchall()
                 cursor = rows[-1]["seq"] if rows else since
-            elif include_molecular:
-                rows = db.execute(
-                    "SELECT * FROM records WHERE seq>? AND kind!='complex_review_annotation' ORDER BY seq LIMIT ?",
-                    (since, limit),
-                ).fetchall()
-                if len(rows) < limit:
-                    last_seq = db.execute("SELECT coalesce(max(seq),?) FROM records", (since,)).fetchone()[0]
-                    cursor = max(since, int(last_seq))
-                else:
-                    cursor = rows[-1]["seq"]
             else:
                 rows = db.execute(
-                    "SELECT * FROM records WHERE seq>? AND kind NOT IN (?,?,?,?,?) ORDER BY seq LIMIT ?",
-                    (since, *molecular_kinds, limit),
+                    "SELECT * FROM records WHERE seq>? "
+                    + ("AND kind NOT IN (" + ",".join("?" for _ in excluded) + ") " if excluded else "")
+                    + ("AND (kind!='entity_name' OR json_extract(value,'$.kind') IN ('project','target')) " if not include_entity_properties else "")
+                    + "ORDER BY seq LIMIT ?",
+                    (since, *sorted(excluded), limit),
                 ).fetchall()
-                # When the filtered page is short, advance across the trailing
-                # excluded rows too. Otherwise a peer with no remaining job or
-                # identity records would repeatedly scan the molecular backlog.
                 if len(rows) < limit:
                     last_seq = db.execute("SELECT coalesce(max(seq),?) FROM records", (since,)).fetchone()[0]
                     cursor = max(since, int(last_seq))
                 else:
                     cursor = rows[-1]["seq"]
         records = []
+        page_bytes = 2
+        truncated = False
         for row in rows:
             value = json.loads(row['value'])
+            if row['kind'] == 'entity_name' and isinstance(value, dict) and not include_entity_properties:
+                value.pop('properties', None)
             # Older replicas may still have a pre-compaction job record. Strip
             # its full request and artifact manifests on export too, so it
             # cannot block the peer that first receives it or get re-gossiped
@@ -321,18 +331,30 @@ class Replica:
                 value.pop('artifacts', None)
                 if not include_molecular:
                     value.pop('scientific_lineage', None)
-            records.append(dict(key=row['key'], kind=row['kind'], author=row['author'],
-                                counter=row['counter'], value=value))
+            record = dict(key=row['key'], kind=row['kind'], author=row['author'], counter=row['counter'], value=value)
+            record_bytes = len(encoded(record).encode())
+            if record_bytes > metadata_record_limit(row['kind']):
+                raise ValueError("A metadata record exceeds its synchronization size limit.")
+            if records and page_bytes + record_bytes + 1 > MAX_METADATA_PAGE_BYTES:
+                truncated = True
+                break
+            records.append(record)
+            page_bytes += record_bytes + 1
+            last_included = row['seq']
+        if truncated:
+            cursor = last_included
         return {
             'epoch': self.epoch,
             'records': records,
             'cursor': cursor,
-            'more': len(rows) == limit,
+            'more': truncated or len(rows) == limit,
         }
 
     def receive(self, records):
         if not isinstance(records, list) or len(records) > 500:
             raise ValueError("Synchronize at most 500 metadata records per request.")
+        if len(encoded(records).encode()) > MAX_METADATA_PAGE_BYTES:
+            raise ValueError("The metadata page exceeds its synchronization size limit.")
         known = {n['id'] for n in Store().nodes()} | {config.identity()}
         accepted = 0
         capture_identity()
@@ -341,7 +363,7 @@ class Replica:
         # during peer catch-up. Reuse one connection for the page, while
         # apply_record still commits or rolls back each row independently.
         has_molecular_entries = any(
-            isinstance(record, dict) and record.get('kind') in {'molecule_group', 'molecule_entry', 'complex_review_annotation'}
+            isinstance(record, dict) and record.get('kind') in {'molecule_group', 'molecule_entry', 'complex_review_annotation', 'entity_name'}
             for record in records
         )
         if has_molecular_entries:
@@ -354,10 +376,10 @@ class Replica:
                 if not isinstance(record, dict) or set(record) != {'key','kind','author','counter','value'}:
                     raise ValueError("Invalid peer metadata record.")
                 key, kind, author, counter, value = (record[k] for k in ('key','kind','author','counter','value'))
-                if author not in known or kind not in IDENTITY_KINDS | {'job', 'scientific_lineage_page', 'molecule_group', 'molecule_entry', 'external_library', 'complex_review_annotation'} or not isinstance(key, str) or not key.startswith(kind + ':') or len(key) > 300 or type(counter) is not int or not 0 < counter < 2**62:
+                if author not in known or kind not in IDENTITY_KINDS | {'job', 'scientific_lineage_page', 'molecule_group', 'molecule_entry', 'external_library', 'complex_review_annotation', 'entity_name'} or not isinstance(key, str) or not key.startswith(kind + ':') or len(key) > 300 or type(counter) is not int or not 0 < counter < 2**62:
                     raise ValueError("Invalid metadata authority or version.")
-                if len(encoded(record)) > 2 * 1024 * 1024:
-                    raise ValueError("Metadata record exceeds 2 MB.")
+                if len(encoded(record).encode()) > metadata_record_limit(kind):
+                    raise ValueError("A metadata record exceeds its synchronization size limit.")
                 # Apply each record under the replica lock, then release it before
                 # moving to the next. A peer page can contain hundreds of entries;
                 # holding the lock for the full page blocked account reads and
@@ -376,7 +398,8 @@ class Replica:
                         # legacy rows may contain large artifact manifests that
                         # otherwise made an unchanged 50-row page take >15 seconds.
                         promote_candidate = (
-                            previous and incoming_local_reference and not previous['local_reference']
+                            previous and previous['value'] != 'null'
+                            and incoming_local_reference and not previous['local_reference']
                         )
                         old = json.loads(previous['value']) if previous and kind == 'complex_review_annotation' else None
                         incoming_base = value.get('_base_revision') if kind == 'complex_review_annotation' and isinstance(value, dict) else None
@@ -453,10 +476,11 @@ class Replica:
                                 continue
                         # Once accepted, execution-machine ownership outranks origin placeholders.
                         promote = kind == 'job' and value and value.get('local_reference') and not (old or {}).get('local_reference')
-                        if kind == 'job' and (old or {}).get('local_reference') and not (value or {}).get('local_reference'):
+                        if kind == 'job' and value is not None and (old or {}).get('local_reference') and not value.get('local_reference'):
                             continue
                         if previous and not promote and (counter, author) <= (previous['counter'], previous['author']):
-                            db.execute("DELETE FROM conflicts WHERE key=?", (key,))
+                            if kind != 'entity_name':
+                                db.execute("DELETE FROM conflicts WHERE key=?", (key,))
                             continue
                         try:
                             token = _importing.set(True)
@@ -487,6 +511,14 @@ class Replica:
 
     def _apply(self, kind, key, value, author, *, molecule_connection=None):
         identifier = key.split(':', 1)[1]
+        if kind == 'entity_name':
+            from mn_molecular_design_studio.entity_names import apply_record
+            from mn_molecular_design_studio.molecular_database import MolecularDatabase
+            context = nullcontext(molecule_connection) if molecule_connection is not None else MolecularDatabase().connection()
+            with context as connection:
+                with connection:
+                    apply_record(connection, key, value, author)
+            return
         if kind in {'molecule_group', 'molecule_entry', 'external_library', 'complex_review_annotation'}:
             from mn_molecular_design_studio.molecular_database_peer import apply_record
             apply_record(kind, key, value, author, connection=molecule_connection)
@@ -575,6 +607,14 @@ class Replica:
             if value is not None and (not isinstance(value, dict) or value.get('id') != identifier or not value.get('name')):
                 raise ValueError("Invalid project metadata.")
             org = workspace.load_organization()
+            previous = next((project for project in org.get('projects', []) if project.get('id') == identifier), {})
+            if previous.get('deleted_at') and (value is None or not value.get('deleted_at')):
+                raise ValueError("Deleted project identities cannot be resurrected by peer replay.")
+            lifecycle = previous.get('lifecycle') or {}
+            if lifecycle.get('status') in {'preparing', 'running', 'attention'} and (
+                not isinstance(value, dict) or (value.get('lifecycle') or {}).get('operation_id') != lifecycle.get('operation_id')
+            ):
+                raise ValueError("Peer metadata cannot clear an active project cleanup lock.")
             projects = [p for p in org.get('projects',[]) if p.get('id') != identifier]
             if value is not None:
                 projects.append(value)
@@ -651,6 +691,8 @@ def sync_peer(peer, snapshot, jobs=None):
     if share_molecular_database:
         from mn_molecular_design_studio.molecular_database_peer import capture
         capture(replica)
+        from mn_molecular_design_studio.entity_names import publish
+        publish()
     state = replica.state('peer:'+peer['id'], {'push':0, 'pull':0})
     job_rows = jobs if isinstance(jobs, list) else []
     responses = []
@@ -685,6 +727,18 @@ def sync_peer(peer, snapshot, jobs=None):
     elif not supports_review_annotations:
         state.setdefault(cursor_name, 0)
         state.setdefault(pull_cursor_name, 0)
+    supports_entity_names = "entity-names.v1" in response.get("replication_features", [])
+    if share_molecular_database and supports_entity_names:
+        cursor_name += "_entity_names_v1"
+        pull_cursor_name += "_entity_names_v1"
+        state.setdefault(cursor_name, 0)
+        state.setdefault(pull_cursor_name, 0)
+    supports_entity_properties = supports_entity_names and "entity-properties.v1" in response.get("replication_features", [])
+    if share_molecular_database and supports_entity_properties:
+        cursor_name += "_properties_v1"
+        pull_cursor_name += "_properties_v1"
+        state.setdefault(cursor_name, 0)
+        state.setdefault(pull_cursor_name, 0)
     # Independent durable cursors let a machine catch up after any length of outage.
     # A 500-row first-contact page can contain enough new job records to keep
     # the receiver in SQLite/index-trigger work past the HTTP timeout. Small
@@ -695,6 +749,8 @@ def sync_peer(peer, snapshot, jobs=None):
             state[cursor_name], limit=replication_page_size,
             include_molecular=share_molecular_database,
             include_review_annotations=supports_review_annotations,
+            include_entity_names=supports_entity_names,
+            include_entity_properties=supports_entity_properties,
         )
         if page['records']:
             transport.node_request('/peer/records', {'records':page['records']}, method='POST', base_url=peer['url'], timeout=15)
@@ -707,6 +763,8 @@ def sync_peer(peer, snapshot, jobs=None):
             '/peer/records?since='+str(state[pull_cursor_name])
             + ("&include_molecular=true" if share_molecular_database else "&include_molecular=false")
             + ("&include_review_annotations=true" if supports_review_annotations else "")
+            + ("&include_entity_names=true" if supports_entity_names else "")
+            + ("&include_entity_properties=true" if supports_entity_properties else "")
             + f"&limit={replication_page_size}",
             base_url=peer['url'], timeout=15,
         )

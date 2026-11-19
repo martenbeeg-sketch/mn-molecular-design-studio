@@ -177,8 +177,9 @@ def _initialize(connection: sqlite3.Connection) -> None:
         # be derived from durable run metadata without requiring job changes.
         connection.execute("UPDATE jobs SET metadata_mtime_ns=0")
     from mn_molecular_design_studio.logical_runs import IDENTITY_FIELDS
+    from mn_molecular_design_studio.job_dependencies import FIELDS
     connection.execute("CREATE TABLE IF NOT EXISTS catalog_projection (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-    revision = json.dumps([*IDENTITY_FIELDS, "database_analysis:v2"])
+    revision = json.dumps([*IDENTITY_FIELDS, *FIELDS, "database_analysis:v2", "dependencies:v1"])
     previous = connection.execute("SELECT value FROM catalog_projection WHERE key='run_identity'").fetchone()
     if previous is None or previous[0] != revision:
         connection.execute("UPDATE jobs SET metadata_mtime_ns=0")
@@ -443,6 +444,9 @@ def _job_payload(
     # every catalog response; some workflows retain large result summaries.
     from mn_molecular_design_studio.logical_runs import IDENTITY_FIELDS
     identity = {key: metadata[key] for key in IDENTITY_FIELDS if key in metadata}
+    from mn_molecular_design_studio.job_dependencies import FIELDS, projected_references
+    identity.update({key: metadata[key] for key in FIELDS if key in metadata})
+    identity["dependency_refs"] = projected_references(metadata, inputs, root=_results_root())
     for key in ("campaign_group_id", "campaign_group_name"):
         if not identity.get(key) and params.get(key):
             identity[key] = params[key]

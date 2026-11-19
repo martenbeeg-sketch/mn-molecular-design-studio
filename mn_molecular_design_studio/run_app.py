@@ -23,6 +23,11 @@ from urllib.request import Request, urlopen
 import pandas as pd
 import streamlit as st
 
+if os.environ.get("MDS_READ_ONLY_PREVIEW") == "1":
+    for module in ("binderscope_view", "binderscope_inspector", "binderscope_table", "data_browser_analyses",
+                   "data_browser_table", "binderscope_ui", "data_browser_ui"):
+        importlib.reload(importlib.import_module("mn_molecular_design_studio." + module))
+
 from mn_molecular_design_studio.cofolding_input import render_molecule_editor, prediction_settings_for
 from mn_molecular_design_studio import cofolding_results
 from mn_molecular_design_studio import ligand_compounds
@@ -244,6 +249,7 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "refolding.protenix_cli",
     "refolding.boltzgen_fold",
     "analysis.ipsae",
+    "analysis.binderscope",
     "analysis.rosetta",
     "analysis.validation_acceptance",
     "ligand.complex.prepare",
@@ -343,6 +349,7 @@ TOOL_WORKFLOW_CODE_VERSIONS = {
     "refolding.protenix_cli": ("Protenix 2.0.0", False),
     "refolding.boltzgen_fold": ("BoltzGen 0.3.2", True),
     "analysis.ipsae": ("ipSAE · version not pinned", False),
+    "analysis.binderscope": ("BinderScope c61ef9c · integrated source", False),
     "analysis.rosetta": ("PyRosetta · version not pinned", False),
 }
 
@@ -598,6 +605,9 @@ def _render_authentication_gate() -> dict:
 
 CURRENT_USER = _render_authentication_gate()
 st.session_state["_molecular_database_user"] = CURRENT_USER
+if os.environ.get("MDS_ANALYSIS_WORKSPACE") == "1":
+    st.info("Live analysis workspace · uses your real saved Database. Analyses run only after you confirm Queue; results attach to the selected designs.")
+    st.session_state.setdefault("page", "Data Browser")
 
 
 def search_jobs(**kwargs):
@@ -646,7 +656,7 @@ def _cancel_current_user_job(reference: str, *, reason: str) -> dict:
     return cancel_job(reference, reason=reason)
 
 if "page" not in st.session_state:
-    st.session_state["page"] = "All tools"
+    st.session_state["page"] = "Projects"
 
 # Same-tab View links in My results pass the job reference through the query
 # string. Consume it once so the detail view is selected without opening a tab.
@@ -657,45 +667,6 @@ if requested_job:
     del st.query_params["job_ref"]
 
 with st.sidebar:
-    st.markdown(
-        """
-        <style>
-        [data-testid="stSidebar"] {
-            background: #f7f8f7;
-        }
-        [data-testid="stSidebar"] [class*="st-key-nav-"] button {
-            min-height: 2.65rem;
-            justify-content: flex-start;
-            border: 0;
-            border-radius: 0.65rem;
-            padding: 0.4rem 0.65rem;
-            text-align: left;
-            box-shadow: none;
-        }
-        [data-testid="stSidebar"] [class*="st-key-nav-"] button p {
-            text-align: left;
-        }
-        [data-testid="stSidebar"] [class*="st-key-nav-"] [data-testid="stBaseButton-tertiary"] {
-            background: transparent;
-            color: #46514b;
-        }
-        [data-testid="stSidebar"] [class*="st-key-nav-"] [data-testid="stBaseButton-tertiary"]:hover {
-            background: #edf1ee;
-            color: #1f5d41;
-        }
-        [data-testid="stSidebar"] [class*="st-key-nav-"] [data-testid="stBaseButton-primary"] {
-            background: #e5ece7;
-            color: #1c6342;
-            font-weight: 600;
-        }
-        [data-testid="stSidebar"] [class*="st-key-nav-"] [data-testid="stBaseButton-primary"]:hover {
-            background: #dce7df;
-            color: #174f35;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
     st.markdown("### 🧬 Molecular Design Studio")
     st.caption(f"{CURRENT_USER['display_name']} · {str(CURRENT_USER['role']).title()}")
     if is_development_mode() and not cluster_config.is_worker():
@@ -706,37 +677,8 @@ with st.sidebar:
         st.rerun()
     st.divider()
 
-    if st.button(
-        "All tools",
-        key="nav-all-tools",
-        icon=":material/apps:",
-        type="primary" if st.session_state["page"] in {"All tools", "Workflow setup"} else "tertiary",
-        use_container_width=True,
-    ):
-        st.session_state["page"] = "All tools"
-        st.session_state.pop("selected_workflow", None)
-        st.session_state.pop("selected_workflow_group", None)
-        st.rerun()
-
-    st.divider()
-    for label, icon, page in (
-        ("My results", ":material/query_stats:", "My runs"),
-        ("Complex Analysis", ":material/biotech:", "Complex Analysis"),
-        ("Database", ":material/storage:", "Database"),
-        ("Pipelines", ":material/account_tree:", "Pipelines"),
-        ("Projects", ":material/folder_open:", "Projects"),
-        *(([("Users & access", ":material/manage_accounts:", "Users & access")] if CURRENT_USER.get("role") == "admin" and not is_development_mode() else [])),
-        ("Account", ":material/person:", "Account"),
-    ):
-        if st.button(
-            label,
-            key=f"nav-{label.lower().replace(' ', '-')}",
-            icon=icon,
-            type="primary" if st.session_state["page"] == page or (page == "My runs" and st.session_state["page"] == "Job details") else "tertiary",
-            use_container_width=True,
-        ):
-            st.session_state["page"] = page
-            st.rerun()
+    from mn_molecular_design_studio.navigation import render_workspace_navigation
+    render_workspace_navigation(CURRENT_USER, development=is_development_mode())
 
     if CURRENT_USER.get("role") == "admin":
         st.divider()
@@ -758,7 +700,7 @@ if cluster_config.enabled():
     execution_selector(
         CURRENT_USER,
         str(st.session_state.get("studio-session-token") or "development-mode"),
-        refresh_nodes=st.session_state.get("page") not in {"My runs", "Complex Analysis"},
+        refresh_nodes=st.session_state.get("page") not in {"Projects", "Database", "Data Browser", "My runs", "Complex Analysis"},
     )
 
 
@@ -811,6 +753,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "sequence.foundry_mpnn": "Protein Sequence Design",
         "sequence.pipeline": "Protein Sequence Design",
         "analysis.ipsae": "ipSAE & Structure Analysis",
+        "analysis.binderscope": "BinderScope",
         "analysis.rosetta": "Rosetta Structure Scoring",
         "ligand.docking.vina": "Molecular Docking",
         "ligand.docking.autodock_gpu": "Molecular Docking",
@@ -1410,7 +1353,8 @@ def _parse_amino_acid_bias(text: str) -> dict[str, float]:
     return bias
 
 
-def _studio_projects() -> list[dict]:
+def _studio_projects(*, include_archived=False) -> list[dict]:
+    from mn_molecular_design_studio.project_lifecycle import project_writable
     organization = load_organization(STUDIO_WORKSPACE)
     projects = organization.get("projects")
     if not isinstance(projects, list):
@@ -1422,6 +1366,8 @@ def _studio_projects() -> list[dict]:
             if isinstance(project, dict)
             and project.get("id")
             and project.get("name")
+            and not project.get("deleted_at")
+            and (include_archived or project_writable(project))
             and (CURRENT_USER.get("role") == "admin" or str(project.get("id")) in visible_ids)
         ],
         key=lambda project: str(project.get("name", "")).casefold(),
@@ -4113,12 +4059,13 @@ def _render_cofolding_header(title: str, description: str) -> None:
     )
 
 
-def _submit_cofolding_job(schema: dict, workflow_id: str, parameters: dict, project_id: str, settings: dict, label: str) -> None:
+def _submit_cofolding_job(schema: dict, workflow_id: str, parameters: dict, project_id: str, settings: dict, label: str) -> dict | None:
     parameters = dict(parameters)
     source_job = parameters.pop("source_job", None)
     database_source = parameters.pop("database_source", None)
     interface_clustering_collection = parameters.pop("interface_clustering_collection", None)
     foldseek_collection = parameters.pop("foldseek_collection", None)
+    binderscope_collection = parameters.pop("binderscope_collection", None)
     collection_policy = parameters.pop("_database_collection_policy", None)
     payload = {
         "schema_version": schema["schema_version"], "workflow": workflow_id,
@@ -4133,9 +4080,11 @@ def _submit_cofolding_job(schema: dict, workflow_id: str, parameters: dict, proj
         payload["interface_clustering_collection"] = interface_clustering_collection
     if foldseek_collection:
         payload["foldseek_collection"] = foldseek_collection
+    if binderscope_collection:
+        payload["binderscope_collection"] = binderscope_collection
     if collection_policy:
         payload["database_collection_policy"] = collection_policy
-    if workflow_id in {"library.prepare", "library.centroids", "design.kejia_idr", "design.peptide_trap"}:
+    if workflow_id in {"library.prepare", "library.centroids", "design.kejia_idr", "design.peptide_trap", "analysis.binderscope"}:
         # These are CPU workflows. Pin their scheduler request explicitly so
         # a default GPU allocation cannot be inferred from a generic request.
         payload["resources"] = {"gpu_device": "none"}
@@ -4147,10 +4096,11 @@ def _submit_cofolding_job(schema: dict, workflow_id: str, parameters: dict, proj
         return
     result = _post_local_api("/api/v1/workflows", payload)
     mark_studio_job(result, project_id=project_id or None, owner_id=str(CURRENT_USER["id"]),
-                    allow_private_source=bool((database_source or interface_clustering_collection or foldseek_collection) and not project_id))
+                    allow_private_source=bool((database_source or interface_clustering_collection or foldseek_collection or binderscope_collection) and not project_id))
     st.session_state["last_submitted_job"] = result["job"]
     job = result.get("job", {})
     st.success(f"{label} job queued · Job {job.get('job_code') or job.get('run_id') or 'submitted'}")
+    return result
 
 
 @st.fragment
@@ -4379,6 +4329,10 @@ def _render_workflow_setup() -> None:
             submit=_submit_cofolding_job,
             source_job_options=_analysis_source_job_options,
         )
+        return
+    if workflow_id == "analysis.binderscope":
+        from mn_molecular_design_studio.binderscope_ui import render_setup
+        render_setup(schema, user=CURRENT_USER, project_selector=_render_project_selector, submit=_submit_cofolding_job)
         return
     if workflow_id in {"design.rfd4_proteina", "refolding.rfd4_proteina"}:
         from mn_molecular_design_studio import rfd4_proteina_ui
@@ -7966,7 +7920,7 @@ def _render_job_details() -> None:
     elif raw_title in surface_titles:
         output_summary = ("Output files", str(job_metrics.get("artifact_count", 0)))
     elif raw_title == "visual_pipeline" and job_metrics.get("surface_analysis_count") and not details.get("candidate_count"):
-        output_summary = ("Surface analyses", str(job_metrics["surface_analysis_count"]))
+        output_summary = ("Linked analyses", str(job_metrics["surface_analysis_count"]))
     summary_values = (
         ("Status", str(job.get("status", "unknown")).replace("_", " ").title()),
         ("Tool", display_tool_label(job)),
@@ -8212,6 +8166,9 @@ def _render_job_details() -> None:
     is_generator_tool=str(job.get('tool')) in generator_input.TOOLS.values()
 
     with results_tab:
+        if analysis_tool == "binderscope":
+            from mn_molecular_design_studio.binderscope_ui import render_job_result
+            render_job_result(run_dir)
         if analysis_tool == "validation_acceptance":
             acceptance = result_metrics.get("validation_acceptance") if isinstance(result_metrics.get("validation_acceptance"), dict) else {}
             st.subheader("Validation & Acceptance results")
@@ -8262,13 +8219,18 @@ def _render_job_details() -> None:
             if surface_nodes:
                 snapshot = read_json(run_dir / "graph_snapshot.json")
                 node_labels = {node["id"]: node["data"].get("label", node["id"]) for node in snapshot.get("nodes", [])}
-                st.subheader("Protein surface analysis")
+                st.subheader("Pipeline analyses")
                 analysis_tabs = st.tabs([node_labels.get(node_id, node_id) for node_id, _analysis in surface_nodes])
                 for analysis_tab, (node_id, analysis) in zip(analysis_tabs, surface_nodes):
                     with analysis_tab:
                         try:
                             child_reference = f"{analysis.get('task_group') or 'detection'}/{analysis.get('run_id') or ''}"
                             child_details = _inspect_current_user_job(child_reference)
+                            if analysis.get("kind") == "md_analysis":
+                                from mn_molecular_design_studio.md_results_ui import render_md_results
+                                render_md_results(st, child_details["job"]["run_dir"], child_details.get("result") or {},
+                                    key_prefix=f"pipeline-md-{run_id}-{node_id}")
+                                continue
                             from mn_molecular_design_studio import surface_ui
                             importlib.reload(surface_ui)
                             surface_ui.render_surface_analysis_results(
@@ -8278,7 +8240,7 @@ def _render_job_details() -> None:
                                 child_details.get("input") if isinstance(child_details.get("input"), dict) else {},
                             )
                         except (AutomationError, OSError, ValueError) as exc:
-                            st.warning(f"Could not load the completed surface-analysis step: {exc}")
+                            st.warning(f"Could not load the completed analysis step: {exc}")
         if surface_tool is not None:
             from mn_molecular_design_studio import surface_ui
             importlib.reload(surface_ui)
@@ -9889,7 +9851,7 @@ def _render_legacy_database() -> None:
 
 def _render_database() -> None:
     from mn_molecular_design_studio import database_ui
-    database_ui.render_database(CURRENT_USER, _studio_projects())
+    database_ui.render_database(CURRENT_USER, _studio_projects(include_archived=True))
 
 
 def _render_account() -> None:
@@ -10018,38 +9980,42 @@ def _render_user_access() -> None:
 
 
 def _render_projects() -> None:
-    st.title("Projects")
-    organization = load_organization(STUDIO_WORKSPACE)
-    st.subheader(organization.get("name", "Molecular Design Studio"))
-    st.caption("Projects group jobs from different tools around a shared target or research question.")
-    last_created = st.session_state.pop("projects-last-created", None)
-    if last_created:
-        st.success(f"Project created: {last_created}")
-    if st.button("New project", icon=":material/add:", type="primary", key="projects-new"):
-        _render_project_dialog()
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    from mn_molecular_design_studio.navigation import open_project_database, open_project_results
+    from mn_molecular_design_studio.projects import load_project_jobs
+    from mn_molecular_design_studio.projects_ui import render_projects
+    from mn_molecular_design_studio.job_dependencies import request_cancellation
 
-    projects = _studio_projects()
-    if not projects:
-        st.info("No projects yet. Create a project to group jobs from multiple tools.")
-        return
+    def load_inventory():
+        remote_catalog = None
+        if cluster_config.enabled():
+            from mn_molecular_design_studio.cluster.ui import catalog
+            remote_catalog = lambda: catalog(CURRENT_USER, str(st.session_state.get("studio-session-token") or "development-mode"), include_hidden=True)
+        snapshot = load_project_jobs(search_jobs, remote_catalog=remote_catalog,
+                                     local_node_id=cluster_config.identity(), local_node_name=cluster_config.load()["name"])
+        return {**snapshot, "collections": MolecularDatabase().groups(CURRENT_USER, scope="all")}
 
-    for start in range(0, len(projects), 3):
-        columns = st.columns(3, gap="medium")
-        for column, project in zip(columns, projects[start : start + 3]):
-            with column:
-                color = str(project.get("color") or "#75817b")
-                if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
-                    color = "#75817b"
-                st.markdown(f'<span style="color:{color};font-size:1.4rem">●</span>', unsafe_allow_html=True)
-                st.markdown(f"**{project['name']}**")
-                st.caption(project.get("description") or "No description")
-                try:
-                    count = search_jobs(project_id=str(project["id"]), limit=1)["total"]
-                except Exception:
-                    count = "—"
-                st.caption(f"{count} job{'s' if count != 1 else ''} · Created {_job_submitted_label(project.get('created_at'))}")
-                st.divider()
-    st.caption(f"Project metadata is stored in the Studio workspace at `{STUDIO_WORKSPACE}`. Job files remain in the Results folder configured in Settings.")
+    def results(project_id):
+        open_project_results(st.session_state, project_id)
+        st.rerun()
+
+    def database(project_id):
+        open_project_database(st.session_state, project_id)
+        st.rerun()
+
+    from mn_molecular_design_studio.project_lifecycle import archive_project, runtime_coordinator
+    def archive(project_id, archived):
+        archive_project(CURRENT_USER, project_id, archived)
+        st.session_state.pop("projects-inventory", None)
+        st.rerun()
+
+    from mn_molecular_design_studio.entity_names import rename_project
+    render_projects(CURRENT_USER, _studio_projects(include_archived=True), load_inventory=load_inventory,
+                    on_create=_render_project_dialog, on_results=results, on_database=database,
+                    physical_purge=True, on_archive=archive, coordinator=runtime_coordinator(),
+                    on_rename=lambda project_id, name, **kwargs: rename_project(CURRENT_USER, project_id, name, **kwargs),
+                    on_cancel=lambda row: request_cancellation(
+                        row, CURRENT_USER, token=str(st.session_state.get("studio-session-token") or "")))
 
 
 def _render_settings() -> None:
@@ -10160,6 +10126,10 @@ elif page == "Job details":
     _render_job_details()
 elif page == "Database":
     _render_database()
+elif page == "Data Browser":
+    from mn_molecular_design_studio.data_browser_ui import render_data_browser
+    render_data_browser(CURRENT_USER, _studio_projects(include_archived=True),
+                        workflow_schema=workflow_schema, submit=_submit_cofolding_job)
 elif page == "Complex Analysis":
     from mn_molecular_design_studio.complex_analysis_ui import initialize_workspace_view, render_complex_analysis_workspace
     initialize_workspace_view(st.session_state)

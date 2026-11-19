@@ -13,6 +13,7 @@ from pathlib import Path
 import streamlit as st
 
 from mn_molecular_design_studio import molecule_imports as imports
+from mn_molecular_design_studio.database_browser_labels import analysis_status, tool_label
 from mn_molecular_design_studio.molecular_database import MolecularDatabase, IMPORT_METHODS
 from mn_molecular_design_studio.molecular_database_ingest import sync_workspace_async as sync_workspace, workspace_sync_running
 from mn_molecular_design_studio.output_vocabulary import PREFIX, field_label
@@ -459,11 +460,39 @@ def _structure_text(path, context):
     return path.read_text(errors="replace")
 
 
-def render_details(database, user, record):
+def render_details(database, user, record, *, properties_outcome=None):
     from mn_molecular_design_studio.evaluations import evaluation_descriptor
+    design_context = record.get("_design_evaluations")
+    outcome_context = record.get("_outcome_context")
     evaluation = record.get("selected_evaluation") or {}
     history = {evaluation_descriptor(obs)["id"]: evaluation_descriptor(obs) for obs in record.get("observations", [])}
-    if history:
+    if design_context is not None:
+        from mn_molecular_design_studio.database_browser import load_result_record
+        from mn_molecular_design_studio.database_design_evaluations import evaluation_label
+
+        linked = {row["evaluation_id"]: row for row in design_context["results"]}
+        current = evaluation.get("id") or ""
+        options = list(linked)
+        if current not in linked:
+            options.insert(0, "")
+        if linked:
+            with st.expander("Models & calculation history", expanded=outcome_context is None):
+                choice = st.selectbox("Evaluation", options, index=options.index(current) if current in options else 0,
+                    format_func=lambda value: evaluation_label(linked[value]) if value else "Selected original structure / record",
+                    key=design_context["key"])
+                st.caption("Each calculation keeps its own model, settings and scores. Choosing another calculation does not replace the original result scores.")
+            if choice and choice != current:
+                selected = load_result_record(database, user, linked[choice], **design_context["filters"])
+                if selected is None:
+                    st.warning("This evaluation is no longer accessible. Refresh or choose another evaluation.")
+                    return
+                record = selected
+                evaluation = record.get("selected_evaluation") or {}
+        if outcome_context is None:
+            st.caption(f"{design_context['analysis_count']:,} connected post-analyses. Open Design analyses for their recorded scores.")
+        if design_context["unresolved"]:
+            st.caption(f"{design_context['unresolved']:,} evaluations have an unresolved target/structure link and are not attached here. They remain in result history.")
+    elif history:
         current = (record.get("selected_evaluation") or {}).get("id")
         options = list(history)
         choice = st.selectbox("Evaluation", options, index=options.index(current) if current in options else 0,
@@ -475,8 +504,9 @@ def render_details(database, user, record):
                 record = selected[0]
         evaluation = record.get("selected_evaluation") or {}
         st.caption("Scores and structure belong to this evaluation. Target: " + (evaluation.get("target_id") or "unspecified in historical result"))
-    st.markdown("**" + html.escape(record["name"]) + "**")
-    st.caption(record["id"])
+    st.markdown("**" + html.escape((properties_outcome or {}).get("display_name") or record["name"]) + "**")
+    if outcome_context is None:
+        st.caption(record["id"])
     sequence_reference = (record.get("metadata") or {}).get("sequence_source_reference") or {}
     if sequence_reference.get("pdb_id"):
         st.caption("Sequence reference: PDB " + str(sequence_reference["pdb_id"]) + " · "
@@ -490,14 +520,15 @@ def render_details(database, user, record):
             st.session_state["molecular-preselect-molecule"] = reference_id
             st.rerun()
     linked_target = (record.get("metadata") or {}).get("design_target_molecule_id")
-    if linked_target:
+    if linked_target and outcome_context is None:
         target_rows = database.list_molecules(user, molecule_ids=[linked_target], collection="all", limit=1)["items"]
         if target_rows:
-            st.caption("Design target: " + str((record.get("metadata") or {}).get("design_target_name") or target_rows[0]["name"]) + " · " + linked_target)
+            st.caption("Design target: " + target_rows[0]["name"] + " · " + linked_target)
     source_workstation = _remote_source_workstation(record.get("origin"))
     if source_workstation:
         st.caption("Synced from " + source_workstation)
-    molecule_tab, scores_tab = st.tabs(["This molecule", "Group scores"])
+    molecule_tab, scores_tab = st.tabs(["This molecule", "Evaluation details" if outcome_context is not None else
+                                      f"Design analyses ({design_context['analysis_count']})" if design_context is not None else "Group scores"])
     with molecule_tab:
         structures = record["structures"]
         references = [item for item in record.get("representations") or []
@@ -570,13 +601,13 @@ def render_details(database, user, record):
                     elif policy == "bound_docking_complex":
                         representations = [StructureVisualization(
                             pdb=_structure_text(path, structure_context), color="chain-id",
-                            representation_type="cartoon+ball-and-stick")]
+                            representation_type="cartoon")]
                     else:
                         # Ordinary protein structures stay in cartoon form; the
                         # specialized pose path above splits a ligand complex so
                         # multiple PDBQT poses cannot pile up in the viewer.
                         representations = [StructureVisualization(pdb=_structure_text(path, structure_context), color="chain-id", representation_type="ball-and-stick" if record["type"] == "small_molecule" else "cartoon")]
-                    molstar_custom_component(representations, key="database-molstar-" + structure["id"], height=310, show_controls=False, show_structure_tools=False)
+                    molstar_custom_component(representations, key="database-molstar-native-" + structure["id"], height=310, show_controls=False, show_structure_tools=False)
                 from mn_molecular_design_studio.bound_docking import is_bound_pose
                 if is_bound_pose(structure):
                     from mn_molecular_design_studio.workspace import load_organization
@@ -633,6 +664,23 @@ def render_details(database, user, record):
                 st.caption(str(exc))
         elif source_workstation:
             st.info(f"No structure file is attached to this synced Database record. Its source is {source_workstation}; the structure must be indexed on that workstation before it can be opened here.")
+        if outcome_context is not None:
+            st.caption(outcome_context["kind"] + " · " + outcome_context["eligibility"]
+                       + " · " + outcome_context["acceptance_level"] + f" · {outcome_context['source_runs']:,} originating runs")
+            st.markdown("#### Original result scores")
+            _render_original_result_scores(outcome_context)
+            st.markdown("#### Downstream evaluations")
+            inventory = outcome_context.get("analysis_inventory", {})
+            tools = list(dict.fromkeys(["ipSAE", "Biotite", "PEP-Patch", *sorted(inventory)]))
+            st.dataframe([{"Analysis": label, "Status": analysis_status(inventory, label),
+                "Other models": inventory.get(label, {}).get("other_structure", 0),
+                "Failed / unavailable": inventory.get(label, {}).get("failed", 0),
+                "Unknown status": inventory.get(label, {}).get("unknown", 0)} for label in tools],
+                hide_index=True, use_container_width=True)
+            st.caption("— means no verified linked result in SQL, not proof that the analysis never ran. Other models keep separate scores.")
+            if design_context is not None:
+                with st.expander("Analysis scores & provenance"):
+                    _render_design_analysis_scores(design_context, compact=True)
         for component in record["components"]:
             st.markdown(f"<p class='database-label'>{html.escape(component['chain'])} · {TYPE_LABELS[component['type']]}{(' · ' + html.escape(component['role'])) if component.get('role') else ''}</p>", unsafe_allow_html=True)
             if component.get("smiles"):
@@ -663,102 +711,8 @@ def render_details(database, user, record):
                     st.rerun()
                 except (ValueError, OSError, PermissionError) as exc:
                     st.error(str(exc))
-        with st.expander("Edit name, notes, tags, and properties"):
-            group_id = record["groups"][0]["id"]
-            group = database.group(group_id, user)
-            editable = not group["read_only"] and (user.get("role") == "admin" or group["owner_id"] == user["id"])
-            with st.form("database-notes-" + record["id"]):
-                molecule_name = st.text_input("Name", value=record["name"], disabled=not editable, key="database-edit-name-" + record["id"])
-                tags = st.text_input("Tags", value=str(record.get("metadata", {}).get("tags") or ""), disabled=not editable, key="database-edit-tags-" + record["id"])
-                notes = st.text_area("Notes", value=str(record.get("metadata", {}).get("notes") or ""), disabled=not editable, key="database-edit-notes-" + record["id"])
-                properties = {}
-                metadata = record.get("metadata") or {}
-                schema_fields = {field["name"]: field for field in group["schema"].get("fields", [])}
-                computed_fields = {name for name, field in schema_fields.items() if field.get("formula")}
-                for property_name, value in metadata.items():
-                    if property_name in {"tags", "notes"} or property_name in computed_fields:
-                        continue
-                    property_key = hashlib.sha1(property_name.encode("utf-8")).hexdigest()[:12]
-                    field = schema_fields.get(property_name) or {}
-                    if field.get("type") == "number":
-                        try:
-                            number_value = float(value) if value not in (None, "") else None
-                        except (TypeError, ValueError):
-                            number_value = None
-                        properties[property_name] = st.number_input(
-                            property_name, value=number_value, disabled=not editable,
-                            key=f"database-edit-schema-{record['id']}-{property_key}",
-                        )
-                    elif field.get("type") == "boolean":
-                        normalized = value
-                        if isinstance(value, str):
-                            normalized = True if value.casefold() in {"true", "1", "yes"} else False if value.casefold() in {"false", "0", "no"} else None
-                        options = [None, True, False]
-                        properties[property_name] = st.selectbox(
-                            property_name, options, index=options.index(normalized) if normalized in options else 0,
-                            disabled=not editable, format_func=lambda item: "(unset)" if item is None else str(item),
-                            key=f"database-edit-schema-{record['id']}-{property_key}",
-                        )
-                    elif field.get("type") == "category" and field.get("choices"):
-                        options = ["", *field["choices"]]
-                        properties[property_name] = st.selectbox(
-                            property_name, options, index=options.index(value) if value in options else 0,
-                            disabled=not editable, key=f"database-edit-schema-{record['id']}-{property_key}",
-                        )
-                    elif isinstance(value, bool):
-                        options = [None, True, False]
-                        properties[property_name] = st.selectbox(
-                            property_name, options, index=options.index(value), disabled=not editable,
-                            format_func=lambda item: "(unset)" if item is None else str(item),
-                            key=f"database-edit-property-{record['id']}-{property_key}",
-                        )
-                    elif isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
-                        properties[property_name] = st.number_input(
-                            property_name, value=float(value), disabled=not editable,
-                            key=f"database-edit-property-{record['id']}-{property_key}",
-                        )
-                    elif isinstance(value, str):
-                        if len(value) > 120:
-                            properties[property_name] = st.text_area(property_name, value=value, height=90, disabled=not editable,
-                                key=f"database-edit-property-{record['id']}-{property_key}")
-                        else:
-                            properties[property_name] = st.text_input(property_name, value=value, disabled=not editable,
-                                key=f"database-edit-property-{record['id']}-{property_key}")
-                    else:
-                        st.caption(f"{property_name}: structured source value is preserved as read-only JSON.")
-                for field in group["schema"].get("fields", []):
-                    if field.get("formula") or field["name"] in {"tags", "notes"} or field["name"] in properties:
-                        continue
-                    label = field["name"]
-                    value = metadata.get(label)
-                    field_key = hashlib.sha1(label.encode("utf-8")).hexdigest()[:12]
-                    if field.get("type") == "number":
-                        properties[label] = st.number_input(label, value=float(value) if value is not None else None, disabled=not editable,
-                            key=f"database-edit-schema-{record['id']}-{field_key}")
-                    elif field.get("type") == "boolean":
-                        properties[label] = st.selectbox(label, [None, True, False], index=[None, True, False].index(value) if value in [None, True, False] else 0, disabled=not editable,
-                            key=f"database-edit-schema-{record['id']}-{field_key}")
-                    elif field.get("type") == "category" and field.get("choices"):
-                        options = ["", *field["choices"]]
-                        properties[label] = st.selectbox(label, options, index=options.index(value) if value in options else 0, disabled=not editable,
-                            key=f"database-edit-schema-{record['id']}-{field_key}")
-                    else:
-                        properties[label] = st.text_input(label, value=str(value or ""), disabled=not editable,
-                            key=f"database-edit-schema-{record['id']}-{field_key}")
-                st.markdown("**Add a property**")
-                new_property_name = st.text_input("Property name", disabled=not editable, key="database-add-property-name-" + record["id"])
-                new_property_value = st.text_input("Property value", disabled=not editable, key="database-add-property-value-" + record["id"])
-                if st.form_submit_button("Save", disabled=not editable):
-                    try:
-                        updates = {"tags": tags, "notes": notes, **properties}
-                        if new_property_name.strip():
-                            if new_property_name.strip() in metadata:
-                                raise ValueError("That property already exists. Edit it above instead.")
-                            updates[new_property_name.strip()] = new_property_value
-                        database.update_metadata(user, group_id, record["id"], updates, name=molecule_name)
-                        st.rerun()
-                    except ValueError as exc:
-                        st.error(str(exc))
+        from mn_molecular_design_studio.entity_properties_ui import render_record_properties
+        render_record_properties(database, user, record, outcome=properties_outcome, key_prefix="database-record")
         with st.expander("History and sources"):
             for source in record["sources"]:
                 st.write(source.get("tool") or source.get("type") or "Import")
@@ -777,10 +731,15 @@ def render_details(database, user, record):
                 if source.get("parents"):
                     st.json(source["parents"])
     with scores_tab:
+        if design_context is not None:
+            if outcome_context is None:
+                _render_design_analysis_scores(design_context)
+            st.markdown("**Selected evaluation scores**")
         if not record["observations"]:
             st.caption("No scores recorded yet.")
         else:
-            st.caption("The sheet uses one selected evaluation. All recorded runs remain available here.")
+            st.caption("These scores belong only to the selected evaluation." if design_context is not None else
+                       "The sheet uses one selected evaluation. All recorded runs remain available here.")
             common_rows = []
             for observation in record["observations"]:
                 output = observation.get("normalized_output") or {}
@@ -801,6 +760,58 @@ def render_details(database, user, record):
             with st.expander("Calculation context"):
                 observation = st.selectbox("Run", range(len(record["observations"])), format_func=lambda index: record["observations"][index]["namespace"] + " · " + record["observations"][index]["run_id"], key="database-context-" + record["id"])
                 st.json(record["observations"][observation]["context"])
+
+
+def _render_original_result_scores(context):
+    st.caption("Each producing-tool evaluation retains its original values, model and settings. Different runs are not averaged or overwritten by an analysis.")
+    if context["original_count"] > len(context["originals"]):
+        st.caption("Showing up to 20 source evaluations. Use Original scores page in the left filters for more.")
+    for result in context["originals"]:
+        with st.expander(result["tool"] + " · " + result["run_id"] + " · original result",
+                         expanded=len(context["originals"]) <= 3):
+            st.caption("Source filter decision: " + result.get("receipt", {}).get("state", "Needs review") + " · "
+                       + result.get("receipt", {}).get("acceptance_level", "Not recorded"))
+            _render_evaluation_measurements(result)
+
+
+def _render_design_analysis_scores(context, *, compact=False):
+    count = context["analysis_count"] + context.get("validation_count", 0)
+    if not count:
+        st.caption("No verified post-analysis results are linked to this design in the selected target context.")
+        return
+    st.caption("Recorded analyses of this exact design. Other structures and sequence-only checks are labelled separately.")
+    if count > len(context["analyses"]):
+        st.caption("Showing up to 20 analyses. Use Analysis scores page in the left filters for more.")
+    for result in context["analyses"]:
+        title = tool_label(result["tool"]) + " · " + result["structure_relation"]
+        if not compact:
+            title += " · " + result["run_id"]
+        if result.get("receipt", {}).get("role") == "design_validation" or result.get("receipt", {}).get("design_refold"):
+            title += " · Design refolding / validation"
+        with st.expander(title, expanded=not compact and len(context["analyses"]) <= 3):
+            _render_evaluation_measurements(result)
+
+
+def _render_evaluation_measurements(result, *, compact=False):
+    evaluation = result.get("evaluation") or {}
+    st.caption("Model / pose: " + (result["model"] or "not recorded") + " · version: "
+               + (evaluation.get("engine_version") or evaluation.get("image_digest") or "not recorded"))
+    if result["metrics"]:
+        st.dataframe([{"Metric": key, "Value": json.dumps(value, ensure_ascii=False)}
+                      for key, value in sorted(result["metrics"].items())], hide_index=True, use_container_width=True,
+                     column_order=["Value", "Metric"] if compact else None,
+                     column_config={"Value": st.column_config.TextColumn(width="small")} if compact else None)
+    else:
+        st.caption("No scores were recorded for this source. Missing measurements are not zero.")
+    with st.popover("Scientific context", use_container_width=True):
+        st.caption("Source structure: " + (evaluation.get("representation_id") or evaluation.get("source_structure_digest") or "not recorded"))
+        st.caption("Calculation digest: " + (evaluation.get("calculation_structure_digest") or "not recorded")
+                   + " · target: " + (evaluation.get("target_id") or "not recorded"))
+        st.caption("Target revision: " + (evaluation.get("target_revision") or "not recorded"))
+        st.caption("Scientific settings: " + (evaluation.get("parameters_digest") or "not recorded"))
+        st.caption("Analysed chains — binder: " + (", ".join(evaluation.get("binder_chains") or []) or "not recorded")
+                   + " · target: " + (", ".join(evaluation.get("target_chains") or []) or "not recorded"))
+        st.caption("Execution status: " + (result["status"] or "not recorded") + ". This is not a filter acceptance decision.")
 
 
 @st.dialog("Create molecule group", width="small")
@@ -843,6 +854,8 @@ def render_column_dialog(user, group_id):
 
 
 def render_database(user, projects):
+    from mn_molecular_design_studio.entity_properties_ui import render_notice
+    render_notice()
     database = MolecularDatabase()
     errors = st.session_state.pop("molecular-indexing-errors", [])
     if workspace_sync_running(user, database=database):
@@ -1004,6 +1017,9 @@ def render_database(user, projects):
                 plot = st.checkbox("Compare candidates", key="molecular-plot")
             st.markdown(f'<div class="database-collection-heading">{html.escape(group_name)}</div>', unsafe_allow_html=True)
             if active_group:
+                from mn_molecular_design_studio.entity_properties_ui import render_folder_properties
+                render_folder_properties(database, user, {}, {"id": "collection:" + active_group["id"], "label": active_group["name"],
+                    "entity": {"kind": "dataset", "group_id": active_group["id"]}}, projects, key_prefix="database-collection")
                 badges = [_collection_section(active_group), f"{active_group['molecule_count']:,} molecules",
                           "Project collection" if active_group.get("project_id") else "Personal collection"]
                 if source := _remote_source_workstation(active_group.get("origin")):

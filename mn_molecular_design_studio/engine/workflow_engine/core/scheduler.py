@@ -330,6 +330,9 @@ def queued_worker_runs(root: Path | None = None) -> list[Path]:
             continue
         if _pid_alive(metadata.get("worker_pid")):
             continue
+        from mn_molecular_design_studio.job_dependencies import guard_execution
+        if not guard_execution(run_dir.resolve()):
+            continue
         pending.append(
             (
                 str(metadata.get("created_at") or run_dir.name),
@@ -615,6 +618,17 @@ class WorkerScheduler:
     def _refresh_active(self) -> None:
         for key, worker in list(self.active.items()):
             return_code = worker.process.poll()
+            from mn_molecular_design_studio.job_dependencies import cancellation_requested, TERMINAL
+            metadata = read_json(worker.run_dir / "metadata.json")
+            if return_code is None and cancellation_requested(worker.run_dir, metadata):
+                from mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler_worker import _terminate
+                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import _stop_run_docker_containers
+                _terminate(worker.process)
+                _stop_run_docker_containers(worker.run_dir)
+                metadata = read_json(worker.run_dir / "metadata.json")
+                if str(metadata.get("status") or "").lower() not in TERMINAL:
+                    update_status(worker.run_dir, "cancelled", cancel_reason="Recorded cancellation request")
+                return_code = worker.process.poll()
             if return_code is None:
                 continue
             self.active.pop(key, None)

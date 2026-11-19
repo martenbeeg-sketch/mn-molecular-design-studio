@@ -7,16 +7,22 @@ import math
 from pathlib import Path
 
 
-def register_receptor(database, user, path, *, project_id="", name="Docking receptor"):
+def register_receptor(database, user, path, *, project_id="", name="Docking receptor", reference=None):
     """Store one portable receptor snapshot, shared by all poses in its frame."""
     from mn_molecular_design_studio import molecule_imports
     from mn_molecular_design_studio.molecular_database import _id
     from mn_molecular_design_studio.molecular_database_ingest import _find_original_group
+    from mn_molecular_design_studio.target_registration import reference_context, saved_reference_context
 
     path = Path(path)
     content = path.read_bytes()
+    reference = reference if isinstance(reference, dict) else {}
+    target_reference = reference_context(reference,
+        saved_reference_context(database, user, project_id, path=path,
+            structure_id=str(reference.get("target_source_structure_id") or ""),
+            molecule_id=str(reference.get("target_source_molecule_id") or "")), path=path)
     record = molecule_imports.parse_structure(content, path.name, include_ligands=False)[0]
-    record.update(name=name, files=[])
+    record.update(name=name, files=[], metadata={**(record.get("metadata") or {}), **target_reference})
     molecule, group, matched = _find_original_group(database, user["id"], project_id, record)
     if not matched:
         group = database.create_group(user, "Docking targets", project_id=project_id, import_method="tool_output",
@@ -28,8 +34,8 @@ def register_receptor(database, user, path, *, project_id="", name="Docking rece
     stored = database._store_file(path.name, content)
     structure = database.attach_structure(group, molecule,
         {"path": str(stored), "label": "Docking receptor · pose coordinate frame", "dimensions": 3,
-         "portable": True, "portable_sha256": digest, "database_structure_policy": "docking_receptor"})
-    return {"target_molecule_id": molecule, "target_structure_id": structure, "target_path": str(stored),
+         "portable": True, "portable_sha256": digest, "database_structure_policy": "docking_receptor"}, context=target_reference)
+    return {**target_reference, "target_molecule_id": molecule, "target_structure_id": structure, "target_path": str(stored),
             "target_structure_digest": digest, "target_variant_sha256": digest}
 
 
@@ -230,7 +236,7 @@ def _resolve_pose_receptor(database, user, structure):
     raise ValueError("The saved docking pose has no linked receptor structure or coordinate frame.")
 
 
-def prepare_bound_inputs(database, user, molecule_id, *, structure_id=None):
+def prepare_bound_inputs(database, user, molecule_id, *, structure_id=None, persist=True):
     """Stage PDB + matching SDF for the selected evaluation, without starting MD."""
     from rdkit import Chem
     from mn_molecular_design_studio.auth import user_input_root
@@ -286,13 +292,20 @@ def prepare_bound_inputs(database, user, molecule_id, *, structure_id=None):
     complex_content_digest = hashlib.sha256(complex_bytes).hexdigest()
     digest = hashlib.sha256((complex_text + Chem.MolToMolBlock(ligand)).encode()).hexdigest()
     folder = user_input_root(user["id"]) / "bound_complexes" / digest
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / "complex.pdb").write_text(complex_text)
-    with Chem.SDWriter(str(folder / "ligand.sdf")) as writer:
-        writer.write(ligand)
+    if persist:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "complex.pdb").write_text(complex_text)
+        with Chem.SDWriter(str(folder / "ligand.sdf")) as writer:
+            writer.write(ligand)
     context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
     ligand_selection = {"chain": chain, "residue_key": f"{chain}:1", "ccd": "LIG",
                         "smiles": str(smiles)}
+    source_group = database.group(structure["group_id"], user)
+    source_origin = source_group.get("origin") or {}
+    from mn_molecular_design_studio.cluster.config import identity
+    source_owner = {"source_structure_owner_node": source_origin.get("_replica_node") or identity(),
+        "source_structure_owner_group_id": source_origin.get("_replica_group") or structure["group_id"],
+        "source_structure_owner_structure_id": context.get("_replica_structure") or structure["id"]}
     payload = {"molecule_id": molecule_id, "structure_id": structure["id"], "name": record["name"],
                "complex_pdb": str(folder / "complex.pdb"), "ligand_sdf": str(folder / "ligand.sdf"),
                "ligand_key": f"LIG|{chain}|1|_", "source_pose": structure["id"],
@@ -307,8 +320,14 @@ def prepare_bound_inputs(database, user, molecule_id, *, structure_id=None):
                "ligand_canonical_isomeric_smiles": ligand_provenance["source_canonical_isomeric_smiles"],
                "pose_atom_mapping": ligand_provenance["atom_mapping"],
                "reconstruction_method": ligand_provenance["reconstruction_method"],
-               "source_pose_context": context}
-    (folder / "provenance.json").write_text(json.dumps(payload, indent=2))
+               "source_pose_context": context,
+               "database_bound_source": {"schema": "studio.bound-pose-source.v1",
+                   **source_owner,
+                   "molecule_id": molecule_id, "structure_id": structure["id"], "group_id": structure["group_id"],
+                   "pose_digest": hashlib.sha256(pose.read_bytes()).hexdigest(),
+                   "complex_digest": complex_content_digest}}
+    if persist:
+        (folder / "provenance.json").write_text(json.dumps(payload, indent=2))
     return payload
 
 
@@ -327,7 +346,9 @@ def register_bound_complex(database, user, molecule_id, *, structure_id=None):
     database.group(group_id, user, write=True)
     complex_bytes = Path(prepared["complex_pdb"]).read_bytes()
     stored = database._store_file("bound-docking-complex.pdb", complex_bytes)
+    from mn_molecular_design_studio.target_registration import reference_context
     context = {
+        **reference_context(prepared["source_pose_context"]),
         "database_structure_policy": "bound_docking_complex",
         "target_molecule_id": (prepared["source_pose_context"] or {}).get("target_molecule_id") or "",
         "source_pose_structure_id": prepared["source_pose"],

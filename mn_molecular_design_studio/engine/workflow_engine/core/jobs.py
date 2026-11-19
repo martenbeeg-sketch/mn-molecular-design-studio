@@ -42,6 +42,7 @@ GPU_TOOL_KEYWORDS = (
     "rfdiffusion",
 )
 _PROCESS_RESOURCE_LOCKS: dict[str, Path] = {}
+_CANCELLING_RUNS = ContextVar("studio_cancelling_runs", default=None)
 
 
 def utc_now() -> str:
@@ -767,11 +768,45 @@ def _stop_run_docker_containers(run_dir: Path) -> list[str]:
     return stopped
 
 
-def stop_job(run_dir: Path, reason: str = "Stopped by user") -> None:
+def stop_job(run_dir: Path, reason: str = "Stopped by user") -> dict:
+    """Cancel this execution and its recorded local descendants, retaining results."""
+    from mn_molecular_design_studio.job_dependencies import TERMINAL, descendants, identity, local_rows
+    run_dir = Path(run_dir).expanduser().resolve()
+    seen = _CANCELLING_RUNS.get()
+    if seen is not None:
+        if str(run_dir) not in seen and str(read_json(run_dir / "metadata.json").get("status") or "").lower() not in TERMINAL:
+            seen.add(str(run_dir))
+            _stop_single_job(run_dir, reason)
+        return {}
+    token = _CANCELLING_RUNS.set(set())
+    try:
+        rows = local_rows(runs_root().resolve())
+        roots = [row for row in rows if row["run_dir"] == str(run_dir)]
+        selected = descendants(rows, roots) if roots else []
+        targets = [run_dir, *[Path(row["run_dir"]) for row in selected if row["run_dir"] != str(run_dir)]]
+        cancelled, preserved = [], []
+        for target in targets:
+            if str(read_json(target / "metadata.json").get("status") or "").lower() in TERMINAL:
+                preserved.append(str(target))
+                continue
+            stop_job(target, reason=reason if target == run_dir else "Upstream job cancelled: " + (identity(roots[0]) if roots else run_dir.name))
+            cancelled.append(str(target))
+        return {"cancelled_runs": cancelled, "preserved_runs": preserved}
+    finally:
+        _CANCELLING_RUNS.reset(token)
+
+
+def _stop_single_job(run_dir: Path, reason: str) -> None:
     """Stop a queued/running job and mark it cancelled without deleting artifacts."""
     from mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler import cancel_scheduled_run
 
     initial_metadata = read_json(run_dir / "metadata.json")
+    from mn_molecular_design_studio.job_dependencies import TERMINAL
+    if str(initial_metadata.get("status") or "").lower() in TERMINAL:
+        return
+    initial_metadata.update(status="cancelled", cancel_requested_at=utc_now(), cancel_reason=reason)
+    write_json(run_dir / "cancellation_request.json", {"requested_at": initial_metadata["cancel_requested_at"], "reason": reason})
+    write_json(run_dir / "metadata.json", initial_metadata)
     if str(initial_metadata.get("job_type") or "") in {"bindcraft2_campaign", "rfd4_proteina_campaign"}:
         from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import cancel_distributed_campaign
 
@@ -837,6 +872,8 @@ def prepare_job_for_resume(run_dir: Path) -> None:
     """Return a stopped job to the queue without discarding its artifacts."""
     _release_resource_lock(run_dir)
     metadata = read_json(run_dir / "metadata.json")
+    metadata.pop("cancel_requested_at", None)
+    (run_dir / "cancellation_request.json").unlink(missing_ok=True)
     metadata.pop("completed_at", None)
     metadata.pop("worker_error", None)
     metadata.pop("worker_exception_type", None)
@@ -1054,6 +1091,10 @@ def delete_job_run(task_group: str, run_id: str) -> Path:
     root = runs_root().resolve()
     run_dir = (root / task_group / run_id).resolve()
     run_dir.relative_to(root)
+    from mn_molecular_design_studio.project_lifecycle import require_mutable_project
+    project_metadata = read_json_raw(run_dir / "metadata.json")
+    if project_metadata.get("project_id"):
+        require_mutable_project(project_metadata["project_id"])
     if not run_dir.exists():
         raise FileNotFoundError(f"Job run does not exist: {task_group}/{run_id}")
     if not run_dir.is_dir():

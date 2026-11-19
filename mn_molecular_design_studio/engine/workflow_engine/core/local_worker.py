@@ -42,6 +42,9 @@ def _restore_worker_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
 
 def run_worker_job(run_dir: Path) -> int:
     run_dir = run_dir.expanduser().resolve()
+    from mn_molecular_design_studio.job_dependencies import guard_execution
+    if not guard_execution(run_dir):
+        return 0
     request = read_json(run_dir / "worker_request.json")
     kind = str(request.get("kind") or "").strip()
     if not kind:
@@ -310,6 +313,9 @@ def spawn_worker_for_run(run_dir: Path) -> subprocess.Popen | None:
     leases. The local service remains available through the explicit local mode.
     """
     run_dir = run_dir.expanduser().resolve()
+    from mn_molecular_design_studio.job_dependencies import guard_execution
+    if not guard_execution(run_dir):
+        return None
     if not (run_dir / "worker_request.json").is_file():
         raise FileNotFoundError(f"Queued worker job has no worker_request.json: {run_dir}")
     from mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler import (

@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binderscope.local/schema/manifest.schema.json",
+  "title": "Bundle manifest",
+  "description": "data/manifest.json: records how a bundle was made so that it can be audited, reproduced and merged: tool version, source folders, hashes of the input files, run settings, thresholds, the date and licence notes. Written by the export module. docs/data_contract.md section 6.",
+  "type": "object",
+  "required": ["schema", "tool", "created", "bundle", "sources", "runs", "caps"],
+  "properties": {
+    "schema": { "type": "string", "const": "binderscope.manifest/1" },
+    "tool": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "description": "binderscope" },
+        "package": { "type": "string", "description": "binder-review" },
+        "version": { "type": "string" },
+        "git_commit": { "type": ["string", "null"] },
+        "python": { "type": "string" },
+        "platform": { "type": "string" },
+        "command": { "type": "string", "description": "Command line that produced the bundle, with paths relative to the working directory." },
+        "libraries": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Versions of numpy, scipy, gemmi, tmtools and the other libraries that shaped the numbers." }
+      },
+      "additionalProperties": true
+    },
+    "created": { "$ref": "common.schema.json#/$defs/timestamp", "description": "Date (and time) the bundle was written." },
+    "bundle": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string", "minLength": 8, "description": "Stable id of this bundle: the sha256 of the sorted source hashes and the profile, first 16 hex characters. Review events refer to it." },
+        "name": { "type": "string", "description": "Folder name, e.g. mytarget." },
+        "title": { "type": "string" },
+        "pages": {
+          "type": "object",
+          "description": "Page file names relative to the bundle root.",
+          "properties": {
+            "index": { "type": "string" },
+            "board": { "type": "string" },
+            "inspector": { "type": "string" },
+            "map": { "type": "string" },
+            "query": { "type": "string" }
+          },
+          "additionalProperties": { "type": "string" }
+        },
+        "data": {
+          "type": "object",
+          "description": "Data file names relative to the bundle root, by blob.",
+          "properties": {
+            "campaign": { "type": "string" },
+            "inspect": { "type": "string" },
+            "homolog": { "type": "string" },
+            "profile": { "type": "string" },
+            "manifest": { "type": "string" }
+          },
+          "additionalProperties": { "type": "string" }
+        },
+        "files": {
+          "type": "array",
+          "description": "Every file of the bundle with its size and sha256.",
+          "items": {
+            "type": "object",
+            "required": ["path", "bytes", "sha256"],
+            "properties": {
+              "path": { "type": "string" },
+              "bytes": { "type": "integer", "minimum": 0 },
+              "sha256": { "$ref": "common.schema.json#/$defs/sha256" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "profile": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sha256": { "$ref": "common.schema.json#/$defs/sha256" }
+      },
+      "additionalProperties": true
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "uniprot": { "type": "string" },
+        "reference_pdb": { "type": "string", "description": "PDB id or name of the reference structure; empty when none was given." },
+        "reference_given": { "type": "boolean", "description": "false when no full-length reference structure was given: the construct was the frame and the checks that need the rest of the protein did not run (caps_off says which)." },
+        "organism": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "sources": {
+      "type": "array",
+      "description": "Every input file that went into the bundle, with its hash. Paths are file and folder names only: the exporter cuts every absolute path to its last component, so the folders of the machine that built the bundle are not recorded.",
+      "items": {
+        "type": "object",
+        "required": ["role", "path", "sha256", "size"],
+        "properties": {
+          "role": { "type": "string", "description": "settings, csv, xlsx, accepted_structure, rejected_structure, target_structure, reference_structure, note, ..." },
+          "path": { "type": "string" },
+          "sha256": { "$ref": "common.schema.json#/$defs/sha256" },
+          "size": { "type": "integer", "minimum": 0 },
+          "run": { "type": "string", "description": "Run id the file belongs to; absent for shared files." },
+          "count": { "type": "integer", "description": "For folders summarised in one entry: number of files." }
+        },
+        "additionalProperties": true
+      }
+    },
+    "reference": {
+      "type": "array",
+      "description": "Public reference data used (UniProt entries, SIFTS, AlphaFold DB, ConSurf-DB) with url, retrieval date and hash, copied from data/reference/manifest.json. Only accessions and ids were ever sent to the network.",
+      "items": {
+        "type": "object",
+        "required": ["id", "source"],
+        "properties": {
+          "id": { "type": "string" },
+          "source": { "type": "string" },
+          "url": { "type": "string" },
+          "retrieved": { "$ref": "common.schema.json#/$defs/timestamp" },
+          "sha256": { "$ref": "common.schema.json#/$defs/sha256" },
+          "bytes": { "type": "integer" },
+          "optional": { "type": "boolean" },
+          "licence": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "runs": {
+      "type": "array",
+      "description": "Per run: reader, tool version, settings as read, the filter set, counts and the warnings the reader raised. The same settings and counts as campaign runs[], plus provenance.",
+      "items": {
+        "type": "object",
+        "required": ["id", "reader"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "reader": { "type": "string" },
+          "experimental": { "type": "boolean" },
+          "tool_version": { "type": ["string", "null"] },
+          "source_dir": { "type": "string" },
+          "settings": { "type": "object", "additionalProperties": true },
+          "settings_raw": { "type": "object", "additionalProperties": true, "description": "The settings file as read, unchanged." },
+          "target": { "type": "object", "additionalProperties": true },
+          "filters": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "filter_set": { "type": "object", "additionalProperties": true, "description": "Only for a run judged by the thresholds it recorded itself: source, n_rules, unevaluated (recorded thresholds on metrics Binderscope does not carry), unlimited (infinite thresholds: no limit) and a note." },
+          "counts": { "type": "object", "additionalProperties": true, "description": "n_designs, n_accepted, n_rejected, n_families, funnel counts with their status." },
+          "epoch": { "type": "object", "additionalProperties": true },
+          "warnings": { "$ref": "common.schema.json#/$defs/string_list" },
+          "notes": { "$ref": "common.schema.json#/$defs/string_list" },
+          "annotations": { "type": "object", "additionalProperties": true, "description": "What the reader worked out or found beside the run: the campaign modality (and the per-design counts behind it when they disagree), the scaffold it was built on, and what the xlsx files added - highlighted rows, sample names, notes." }
+        },
+        "additionalProperties": true
+      }
+    },
+    "caps": {
+      "type": "object",
+      "description": "The capability flags of the profile as exported (copy of profile.caps), so tools can read what a bundle carries without opening the blobs.",
+      "additionalProperties": { "type": "boolean" }
+    },
+    "caps_off": {
+      "type": "object",
+      "description": "Why a context flag of caps (copy of profile.caps_off) is false, for the flags that compare a design with something outside the construct (olig, rest_ctx, glycan, membrane). Absent when none is off. A false flag in caps alone cannot say whether the check did not run or ran on nothing, and a reader deciding whether to trust a campaign needs to know which: no_reference means no full-length reference structure was given, so the check could not run and a design without a finding there was not tested; reference_lacks means a reference was given but holds nothing for the check, so it had nothing to test; profile means the profile switched the flag off. note is the specific reason in words.",
+      "propertyNames": { "enum": ["olig", "rest_ctx", "glycan", "membrane"] },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["why", "note"],
+        "properties": {
+          "why": { "type": "string", "enum": ["no_reference", "reference_lacks", "profile"] },
+          "note": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "description": "Thresholds that shaped numbers and verdicts: the check presets, the context thresholds, the diversity cut distances and the near-miss rule, as used (copy of profile.checks and diversity defaults).",
+      "properties": {
+        "checks": { "type": "object", "additionalProperties": true },
+        "context": { "type": "object", "additionalProperties": true },
+        "filters": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+        "diversity": { "type": "object", "additionalProperties": true },
+        "near_miss": { "type": "object", "additionalProperties": true },
+        "interface": { "type": "object", "additionalProperties": true, "description": "Distance cut-offs of the interface analysis: contact 4.5 A, hydrogen bond 3.5 A, salt bridge 4.0 A, ..." },
+        "placement": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "How the designs were placed on the reference chain: mode (interface, whole or core, as chosen), fit (the target frame's name for it: interface, all or core), the weights of the interface fit (iface_full: CA this close to a binder atom weigh 1, in A; iface_decay: width of the Gaussian beyond it; iface_floor: the smallest weight; iface_cutoff: residues near the binder that deviate more than this are left out of the refit; iface_min_n: fewer residues near the binder than this and the whole-target fit is used), the weights from which a residue counts as near the binder (near_weight) and in the RMSD near the interface (report_weight), and warn_rmsd (A, the RMSD near the interface above which a warning is written).",
+          "properties": {
+            "mode": { "type": "string", "enum": ["interface", "whole", "core"] },
+            "fit": { "type": "string", "enum": ["interface", "all", "core"] },
+            "iface_full": { "type": "number" },
+            "iface_decay": { "type": "number" },
+            "iface_floor": { "type": "number" },
+            "iface_cutoff": { "type": "number" },
+            "iface_min_n": { "type": "integer" },
+            "near_weight": { "type": "number" },
+            "report_weight": { "type": "number" },
+            "warn_rmsd": { "type": "number" }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "counts": {
+      "type": "object",
+      "properties": {
+        "designs": { "type": "integer" },
+        "accepted": { "type": "integer" },
+        "rejected": { "type": "integer" },
+        "families": { "type": "integer" },
+        "runs": { "type": "integer" },
+        "inspected": { "type": "integer" }
+      },
+      "additionalProperties": true
+    },
+    "validation": {
+      "type": "object",
+      "description": "Result of the cross-checks run at build time: counts against the CSVs, recomputed against reported metrics (agreement), anything that did not match. Mismatches are listed, never hidden.",
+      "properties": {
+        "counts_match_csv": { "type": ["boolean", "null"] },
+        "mismatches": { "type": "array", "items": { "type": "string" } },
+        "metric_agreement": {
+          "type": "object",
+          "description": "metric -> {n, mean_abs_diff, max_abs_diff, r}: recomputed value in m against the tool's own column in src.",
+          "additionalProperties": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "additionalProperties": true
+    },
+    "licences": {
+      "type": "array",
+      "description": "Licence notes that travel with the bundle.",
+      "items": {
+        "type": "object",
+        "required": ["item", "status"],
+        "properties": {
+          "item": { "type": "string", "description": "BindCraft output, 3Dmol.js, UniProt, PDB 1ABC, ConSurf-DB, ..." },
+          "status": { "type": "string", "enum": ["included", "excluded", "optional-off", "optional-on"] },
+          "terms": { "type": "string" },
+          "credit": { "type": "string" },
+          "url": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "description": "What left the machine while building: accessions, PDB ids, gene names and taxon ids only; never a binder sequence or a design id.",
+      "properties": {
+        "network_requests": { "type": "integer" },
+        "binder_sequences_sent": { "type": "boolean", "const": false },
+        "design_ids_sent": { "type": "boolean", "const": false }
+      },
+      "additionalProperties": true
+    },
+    "warnings": { "$ref": "common.schema.json#/$defs/string_list" },
+    "notes": { "$ref": "common.schema.json#/$defs/string_list" }
+  },
+  "additionalProperties": true
+}

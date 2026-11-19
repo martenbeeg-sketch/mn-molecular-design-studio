@@ -1,0 +1,1245 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binderscope.local/schema/profile.schema.json",
+  "title": "Target profile",
+  "description": "Everything target-specific that the pages show or decide: names, vocabulary, the frame strip, the specificity panel, capability flags, check settings and the sentence templates that replace hard-coded text. One profile per project; it travels inside campaign.json and inspect.json (key profile) and as data/profile.json. Full description: docs/profile_spec.md. The built-in default profile is src/binder_review/profiles/default.profile.json; examples are in docs/schema/examples.",
+  "type": "object",
+  "required": [
+    "schema",
+    "id",
+    "kind",
+    "target",
+    "caps"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "binderscope.profile/1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "description": "Slug of the profile, e.g. default."
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "run",
+        "synthetic",
+        "dataset"
+      ],
+      "description": "run: real tool output of one or more runs; synthetic: demo scores; dataset: a public collection of designs. Decides the wording of the badge."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Version of this profile's content."
+    },
+    "brand": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Word next to the logo in the header."
+        },
+        "titles": {
+          "type": "object",
+          "description": "Browser tab title per page.",
+          "properties": {
+            "board": {
+              "type": "string"
+            },
+            "inspector": {
+              "type": "string"
+            },
+            "map": {
+              "type": "string"
+            },
+            "query": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "badge": {
+      "type": "object",
+      "required": [
+        "class",
+        "text"
+      ],
+      "properties": {
+        "class": {
+          "type": "string",
+          "enum": [
+            "mock",
+            "real",
+            "run"
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "credit": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Credit line at the foot of every page, null for none.",
+      "properties": {
+        "html": {
+          "type": "string",
+          "description": "HTML for the page footer. Written by the exporter, not by users."
+        },
+        "text": {
+          "type": "string",
+          "description": "Plain text for exports and share bundles."
+        }
+      },
+      "additionalProperties": true
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "name",
+        "short"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Full name, as in UniProt."
+        },
+        "short": {
+          "type": "string",
+          "description": "Short name used in titles and sentences (TGT)."
+        },
+        "gene": {
+          "type": "string"
+        },
+        "organism": {
+          "type": "string"
+        },
+        "uniprot": {
+          "type": "string",
+          "pattern": "^([A-Z0-9]{6,10})?$",
+          "description": "UniProt accession of the target; empty or absent when no accession was given (then no UniProt, PDBe or AlphaFold record was read)."
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Length of the full-length protein."
+        },
+        "reference": {
+          "type": "object",
+          "description": "Where the reference coordinates come from.",
+          "properties": {
+            "pdb": {
+              "type": "string"
+            },
+            "chain": {
+              "type": "string"
+            },
+            "assembly": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Assembly id that gives the other subunits, null for none."
+            },
+            "given": {
+              "type": "boolean",
+              "description": "false when no full-length reference structure was given: the construct is the frame, pdb is empty, and the checks that need the rest of the protein are off (see caps_off). Absent means true."
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "construct": {
+          "type": "object",
+          "required": [
+            "first",
+            "last",
+            "label"
+          ],
+          "description": "Union construct of the project. Per-run constructs are in campaign runs[].target.",
+          "properties": {
+            "first": {
+              "type": "integer"
+            },
+            "last": {
+              "type": "integer"
+            },
+            "label": {
+              "type": "string",
+              "description": "Short description used in breadcrumbs and sentences, e.g. 'β-propeller fragment'."
+            }
+          },
+          "additionalProperties": true
+        },
+        "numbering": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "How the numbering of the file given to the design tool relates to UniProt: input = uniprot + input_offset. null when the input numbering is already UniProt.",
+          "properties": {
+            "input_offset": {
+              "type": "integer"
+            },
+            "input_label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "label": {
+          "type": "string",
+          "description": "Target label written into exported rule recipes, e.g. 'TGT 40-210'."
+        },
+        "span_label": {
+          "type": "string",
+          "description": "Target and span shown in the subtitle of the structure panel, e.g. 'TGT 40–210'."
+        }
+      },
+      "additionalProperties": true
+    },
+    "frame": {
+      "type": "object",
+      "required": [
+        "native_range",
+        "segments",
+        "glycan_sites"
+      ],
+      "description": "Target frame strip of the inspector.",
+      "properties": {
+        "native_range": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[first, last] residue of the mature chain. A construct that starts after first + 1, or ends before last, is cut there."
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "label",
+              "start",
+              "end",
+              "kind"
+            ],
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "Empty string for an unnamed linker."
+              },
+              "start": {
+                "type": "integer"
+              },
+              "end": {
+                "type": "integer"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "x",
+                  "v",
+                  "c",
+                  "l",
+                  "b",
+                  "s",
+                  "h"
+                ],
+                "description": "Colour class: x outside or unstructured, v and c domains, l linker, b base, s stalk, h head."
+              },
+              "phrase": {
+                "type": "string",
+                "description": "Name of the segment inside a sentence, e.g. 'the IgC domain'."
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "glycan_sites": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "description": "N-glycosylation sites of the full protein (UniProt)."
+        },
+        "disulfides": {
+          "$ref": "common.schema.json#/$defs/ranges",
+          "description": "Disulfide bonds of the full protein, pairs of residues. Optional; drawn as arcs when present."
+        }
+      },
+      "additionalProperties": true
+    },
+    "membrane": {
+      "type": "object",
+      "properties": {
+        "plane_radius": {
+          "type": "number",
+          "description": "Radius in A of the disc drawn in the inspector."
+        },
+        "plane_half_size": {
+          "type": "number",
+          "description": "Half side in A of the plane drawn on the query page."
+        },
+        "strip_shade": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "common.schema.json#/$defs/ranges"
+            }
+          ],
+          "description": "Ranges of target residues shaded as membrane-side on the map strip. null: derive from the plane."
+        }
+      },
+      "additionalProperties": true
+    },
+    "view": {
+      "type": "object",
+      "properties": {
+        "query_fit_pad": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "inspector_focus": {
+          "type": "string",
+          "enum": [
+            "all",
+            "binder"
+          ]
+        },
+        "inspector_zoom": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "map_size_metric": {
+          "type": "string",
+          "enum": [
+            "ipsae",
+            "iptm"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "specificity": {
+      "type": "object",
+      "required": [
+        "subject",
+        "kind",
+        "species"
+      ],
+      "properties": {
+        "subject": {
+          "type": "string",
+          "description": "Name of the protein the conservation is about."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "host",
+            "virus"
+          ]
+        },
+        "panel_noun": {
+          "type": "string",
+          "description": "What the alignment panel consists of, for sentences: 'orthologs'."
+        },
+        "species": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "match",
+              "label",
+              "key"
+            ],
+            "properties": {
+              "match": {
+                "type": "string",
+                "description": "Organism name as in UniProt OS, or 'acc:<accession>' to pick one entry of HOM.orth."
+              },
+              "label": {
+                "type": "string"
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]+$"
+              },
+              "phrase": {
+                "type": "string",
+                "description": "Name inside a sentence (for example 'the mouse')."
+              },
+              "fallback": {
+                "type": "string",
+                "description": "Key used when this species is missing from the panel."
+              },
+              "table": {
+                "type": "string",
+                "description": "Column head on the map table (omit for no column)."
+              },
+              "card": {
+                "type": "string",
+                "description": "Field label on the map hover card (omit for no field)."
+              },
+              "optional": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "show": {
+          "$ref": "common.schema.json#/$defs/string_list",
+          "description": "Species keys shown in the map's specificity block."
+        },
+        "headline": {
+          "$ref": "common.schema.json#/$defs/string_list",
+          "description": "Species of the headline finding, in order."
+        },
+        "detail": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "group",
+                  "keys"
+                ],
+                "properties": {
+                  "group": {
+                    "type": "string"
+                  },
+                  "keys": {
+                    "$ref": "common.schema.json#/$defs/string_list"
+                  }
+                },
+                "additionalProperties": true
+              }
+            ]
+          },
+          "description": "Entries whose differences the detail sentence names; each needs text keys finding.spec_orth.<entry>.some and .none."
+        },
+        "decoy_species": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "paralogs": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "focus": {
+              "type": "object",
+              "required": [
+                "key",
+                "label"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "description": "Gene symbol of the focus paralog (HOM.par[].gene)."
+                },
+                "label": {
+                  "type": "string"
+                },
+                "table": {
+                  "type": "string"
+                },
+                "card": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            },
+            "family_label": {
+              "type": "string"
+            },
+            "bars_other": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "order": {
+              "$ref": "common.schema.json#/$defs/string_list"
+            }
+          },
+          "additionalProperties": true
+        },
+        "rules": {
+          "type": "array",
+          "description": "Query rules built from the panel.",
+          "items": {
+            "$ref": "#/$defs/rule"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "predictors": {
+      "type": "object",
+      "properties": {
+        "primary": {
+          "type": "object",
+          "required": [
+            "key",
+            "label"
+          ],
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "rescore": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "label"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "monomer": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "design_model_prefix": {
+          "type": "string"
+        },
+        "colors": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "caps": {
+      "type": "object",
+      "description": "Capability flags. The exporter writes every flag; an absent flag means false. Meaning and gates of each flag: docs/profile_spec.md section 4.",
+      "properties": {
+        "outcomes": {
+          "type": "boolean",
+          "description": "design.outcome present. Shows the reveal switch, lab pills and the lab panel; hidden (and the data absent) when false."
+        },
+        "weights": {
+          "type": "boolean",
+          "description": "design.wt sampling weights present (a sample of a larger set). Used by the lab statistics only."
+        },
+        "olig": {
+          "type": "boolean",
+          "description": "Partner-subunit context present: m.olig_*, target.olig, INS.olig and per-design octx. Adds the partner part of the Context check, the partner traces and the partner meter."
+        },
+        "rest_ctx": {
+          "type": "boolean",
+          "description": "Removed-region context present: m.rest_*, cut_n, cov_n, INS.rest and per-design ctx. Adds the removed-region, cut-end and coverage parts of the Context check and the removed-region traces."
+        },
+        "flag_region": {
+          "type": "boolean",
+          "description": "m.stalk_n and octx.stalk present: contacts in the region named by profile.flag_region are counted separately."
+        },
+        "footprints": {
+          "type": "boolean",
+          "description": "target.foot, design.fpov and INS.partners present: known-complex footprints, the footprint epitope findings and the known-binder traces."
+        },
+        "has_pae": {
+          "type": "boolean",
+          "description": "Inspector designs carry PAE matrices (pae, pae_n). Shows the PAE panel; hidden when false."
+        },
+        "has_traj": {
+          "type": "boolean",
+          "description": "design.traj is a generation order (>= 1). Enables the accumulation curve and replay; the unit follows runs[].traj_basis."
+        },
+        "traj_total": {
+          "type": "boolean",
+          "description": "runs[].n_traj (trajectories attempted) is known. Enables the yield figure and forecasts in trajectories; with false only counts of families are shown."
+        },
+        "has_fold": {
+          "type": "boolean",
+          "description": "RAW.fold (TM-align matrix) present. Fold distance clustering uses it; without it the fold basis falls back to design.sc equality."
+        },
+        "families": {
+          "type": "boolean",
+          "description": "Designs belong to backbone families with sibling sequences (design.bb, design.s). The board counts families; false means one tile per design."
+        },
+        "has_boltz": {
+          "type": "boolean",
+          "description": "A co-folding model other than the design model scored the designs (ipSAE, PAE, an independent pose). false for BindCraft-only data."
+        },
+        "models": {
+          "type": "boolean",
+          "description": "design.models and INS poses list more than one predictor: pose overlay buttons and the re-score findings."
+        },
+        "has_seeds": {
+          "type": "boolean",
+          "description": "INS seeds overlay present (repeat-seed poses)."
+        },
+        "ddg_scan": {
+          "type": "boolean",
+          "description": "INS ddg_res and t_ddg present (alanine-scan proxy of the mock). The per-residue contribution uses buried area when false."
+        },
+        "species_panel": {
+          "type": "boolean",
+          "description": "HOM.orth holds the species named by profile.specificity.species. Shows the species block, columns and rules."
+        },
+        "paralog_panel": {
+          "type": "boolean",
+          "description": "HOM.par is non-empty. Shows the paralog bars, the focus-paralog column and the paralog rules."
+        },
+        "decoy_cofold": {
+          "type": "boolean",
+          "description": "Decoy co-fold section of the Specificity tab (needs a co-folding model); off unless a re-score exists."
+        },
+        "consurf": {
+          "type": "boolean",
+          "description": "HOM.consurf present and offered as a colour source (optional ConSurf-DB overlay, academic use, off by default)."
+        },
+        "glycan": {
+          "type": "boolean",
+          "description": "target.glycan is non-empty and every design carries glycan distances. Adds the glycan finding, rule and viewer toggle."
+        },
+        "membrane": {
+          "type": "boolean",
+          "description": "target.membrane is a meaningful exclusion plane (design.m.mem_excess present). Adds the membrane check, finding, rule and the plane in the viewers."
+        },
+        "multi_run": {
+          "type": "boolean",
+          "description": "More than one run: run filter, run column, per-run diversity and the descriptive pooled view. Requires runs[] in the campaign blob."
+        },
+        "rejected": {
+          "type": "boolean",
+          "description": "Rejected designs with structures are present (design.status rejected, fail, nm): near-miss rescue and the rejected toggle."
+        },
+        "reviews": {
+          "type": "boolean",
+          "description": "Decisions persist (localStorage, review file export and import). On in every profile of the first build."
+        },
+        "ipsae": {
+          "type": "boolean",
+          "description": "design.m.ipsae present (ipSAE of a co-folding model). Gates the ipSAE meter, rule and the interface check basis."
+        },
+        "min_ipae": {
+          "type": "boolean",
+          "description": "design.m.min_ipae present (from a PAE matrix)."
+        },
+        "complex_rmsd": {
+          "type": "boolean",
+          "description": "design.m.complex_rmsd present (re-score pose against the design)."
+        },
+        "dg": {
+          "type": "boolean",
+          "description": "design.m.dg present (Rosetta interface energy)."
+        },
+        "sc": {
+          "type": "boolean",
+          "description": "design.m.sc present (shape complementarity)."
+        },
+        "iptm_b": {
+          "type": "boolean",
+          "description": "design.m.iptm_b present (BindCraft Average_i_pTM)."
+        },
+        "ipae_norm": {
+          "type": "boolean",
+          "description": "design.m.ipae_norm present (BindCraft Average_i_pAE, PAE divided by 31)."
+        },
+        "surf_hyd": {
+          "type": "boolean",
+          "description": "design.m.surf_hyd present (BindCraft Surface_Hydrophobicity)."
+        },
+        "hotspot_rmsd": {
+          "type": "boolean",
+          "description": "design.m.hotspot_rmsd present (BindCraft Hotspot_RMSD)."
+        },
+        "binder_rmsd": {
+          "type": "boolean",
+          "description": "design.m.binder_rmsd present (binder alone against binder in the complex)."
+        },
+        "seed_spread": {
+          "type": "boolean",
+          "description": "design.m.seed_spread present (pose spread over repeat seeds)."
+        },
+        "n_agree": {
+          "type": "boolean",
+          "description": "design.m.n_agree present (independent predictors that reproduce the design)."
+        },
+        "esm_plddt": {
+          "type": "boolean",
+          "description": "design.m.esm_plddt present (ESMFold monomer pLDDT)."
+        },
+        "ciplddt": {
+          "type": "boolean",
+          "description": "design.m.ciplddt present (interface pLDDT)."
+        },
+        "real": {
+          "type": "boolean",
+          "description": "DEPRECATED. Legacy flag of older blobs. New exports must not write it."
+        }
+      },
+      "additionalProperties": {
+        "type": "boolean"
+      }
+    },
+    "caps_off": {
+      "type": "object",
+      "description": "Why a context flag of caps is false, for the flags that compare a design with something outside the construct (olig, rest_ctx, glycan, membrane). Absent when none is off. A false flag in caps alone cannot say whether the check did not run or ran on nothing, and a reader deciding whether to trust a campaign needs to know which: no_reference means no full-length reference structure was given, so the check could not run and a design without a finding there was not tested; reference_lacks means a reference was given but holds nothing for the check, so it had nothing to test; profile means the profile switched the flag off. note is the specific reason in words.",
+      "propertyNames": { "enum": ["olig", "rest_ctx", "glycan", "membrane"] },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["why", "note"],
+        "properties": {
+          "why": { "type": "string", "enum": ["no_reference", "reference_lacks", "profile"] },
+          "note": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "checks": {
+      "type": "object",
+      "description": "Interpretation settings of the checks and findings (docs/profile_spec.md section 5).",
+      "properties": {
+        "preset_default": {
+          "type": "string",
+          "description": "Key of the preset selected at load: lit, relaxed, strict or one of presets."
+        },
+        "presets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "name",
+              "v"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "v": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "number"
+                }
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "interface": {
+          "type": "object",
+          "properties": {
+            "basis": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "ipsae",
+                "native"
+              ]
+            }
+          },
+          "additionalProperties": true
+        },
+        "physics": {
+          "type": "object",
+          "properties": {
+            "unsat_basis": {
+              "type": "string",
+              "enum": [
+                "count",
+                "per_1000_A2"
+              ]
+            },
+            "unsat_density_max": {
+              "type": "number"
+            },
+            "unsat_density_info": {
+              "type": "number"
+            },
+            "unsat_bad_gt": {
+              "type": "number"
+            },
+            "sc_check": {
+              "type": "boolean"
+            },
+            "pack_needs_sc": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": true
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "partner": {
+              "type": "object",
+              "properties": {
+                "fail_n3": {
+                  "type": "number"
+                },
+                "warn_min": {
+                  "type": "number"
+                },
+                "warn_buried": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": true
+            },
+            "rest": {
+              "type": "object",
+              "properties": {
+                "fail_n3": {
+                  "type": "number"
+                },
+                "warn_min": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": true
+            },
+            "flag": {
+              "type": "object",
+              "properties": {
+                "warn_n": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": true
+            },
+            "cut": {
+              "type": "object",
+              "properties": {
+                "k": {
+                  "type": "integer"
+                },
+                "warn_n": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": true
+            },
+            "cover": {
+              "type": "object",
+              "properties": {
+                "min_area": {
+                  "type": "number"
+                },
+                "warn_n": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": true
+            },
+            "near": {
+              "type": "object",
+              "properties": {
+                "bad_lt": {
+                  "type": "number"
+                },
+                "warn_lt": {
+                  "type": "number"
+                },
+                "info_lt": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "findings": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "rules": {
+      "type": "object",
+      "description": "Query page rule configuration on top of the base catalogue.",
+      "properties": {
+        "groups": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "extra": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/rule"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "nl": {
+      "type": "object",
+      "properties": {
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "label",
+              "q"
+            ],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "q": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "words": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "modes": {
+      "type": "object",
+      "properties": {
+        "notes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "maxItems": 9
+    },
+    "flag_region": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "range": {
+          "$ref": "common.schema.json#/$defs/resi_list",
+          "minItems": 2,
+          "maxItems": 2
+        }
+      },
+      "additionalProperties": true
+    },
+    "footprints": {
+      "type": "object",
+      "properties": {
+        "primary": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "control_regex": {
+          "type": "string"
+        },
+        "colors": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        }
+      },
+      "additionalProperties": true
+    },
+    "inspector": {
+      "type": "object",
+      "properties": {
+        "names": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "order": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "id_strip": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "method_names": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "method_strip": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "import": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          }
+        },
+        "files_extra": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          }
+        },
+        "cards": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "title",
+              "html"
+            ],
+            "properties": {
+              "column": {
+                "type": "string",
+                "enum": [
+                  "left",
+                  "right"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "html": {
+                "type": "string"
+              },
+              "chips": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              },
+              "actions": {
+                "$ref": "common.schema.json#/$defs/string_list"
+              },
+              "tag": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "tips": {
+      "type": "object",
+      "description": "'What to try' tips per page, HTML strings.",
+      "properties": {
+        "board": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "inspector": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "map": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        },
+        "query": {
+          "$ref": "common.schema.json#/$defs/string_list"
+        }
+      },
+      "additionalProperties": {
+        "$ref": "common.schema.json#/$defs/string_list"
+      }
+    },
+    "text": {
+      "type": "object",
+      "description": "Flat map of sentence templates. Key = dotted id (the list is docs/schema/profile.keys.json). Value = a template with tokens {name}, {name|n} and {@profile.path}. A missing key falls back to the viewer's generic default.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "required": [
+        "id",
+        "label"
+      ],
+      "description": "A query rule added by the profile (docs/profile_spec.md section 6).",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_]+$"
+        },
+        "group": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "metric": {
+          "type": "string",
+          "description": "Key of design.m, or the expression unsat_density."
+        },
+        "expr": {
+          "type": "object",
+          "description": "Specificity measure: {species: key}, {min_species: [keys]}, {paralog: gene}, {paralog_max_excl: gene}.",
+          "additionalProperties": true
+        },
+        "op": {
+          "type": "string",
+          "enum": [
+            ">=",
+            "<="
+          ]
+        },
+        "val": {
+          "type": "number"
+        },
+        "lo": {
+          "type": "number"
+        },
+        "hi": {
+          "type": "number"
+        },
+        "step": {
+          "type": "number"
+        },
+        "dec": {
+          "type": "integer"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "on": {
+          "type": "boolean"
+        },
+        "note": {
+          "type": "string"
+        },
+        "rescue": {
+          "$ref": "common.schema.json#/$defs/string_list",
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "nl": {
+          "type": "object",
+          "properties": {
+            "words": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "val": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

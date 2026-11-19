@@ -10,6 +10,12 @@ class FakeStreamlit:
         self.calls = []
         self.session_state = {}
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
     def __getattr__(self, name):
         def record(*args, **kwargs):
             self.calls.append((name, args, kwargs))
@@ -17,6 +23,10 @@ class FakeStreamlit:
                 return False
             if name == "selectbox":
                 return args[1][0]
+            if name == "expander":
+                return self
+            if name == "slider":
+                return args[3]
             return None
 
         return record

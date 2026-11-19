@@ -165,6 +165,37 @@ def _write_csv(path: Path, headers: list[str], rows: Iterable[dict[str, Any]]) -
         writer.writerows(rows)
 
 
+class CoordinateFluctuations:
+    def __init__(self, atom_count: int):
+        self.count = 0
+        self.mean = np.zeros((atom_count, 3), dtype=np.float64)
+        self.squared_deviations = np.zeros((atom_count, 3), dtype=np.float64)
+
+    def update(self, coordinates):
+        coordinates = np.asarray(coordinates, dtype=np.float64)
+        if coordinates.shape != self.mean.shape or not np.isfinite(coordinates).all():
+            raise ValueError("RMSF coordinates must be finite and match the selected atoms.")
+        self.count += 1
+        difference = coordinates - self.mean
+        self.mean += difference / self.count
+        self.squared_deviations += difference * (coordinates - self.mean)
+
+    def rmsf(self):
+        if self.count < 1:
+            raise ValueError("RMSF needs at least one selected frame.")
+        return np.sqrt(np.maximum(0., self.squared_deviations.sum(axis=1) / self.count))
+
+
+def radius_of_gyration(coordinates, masses):
+    coordinates = np.asarray(coordinates, dtype=np.float64)
+    masses = np.asarray(masses, dtype=np.float64)
+    if (coordinates.shape != (len(masses), 3) or not len(masses) or not np.isfinite(coordinates).all()
+            or not np.isfinite(masses).all() or np.any(masses <= 0)):
+        raise ValueError("Radius of gyration requires finite coordinates and positive atomic masses.")
+    center = np.average(coordinates, axis=0, weights=masses)
+    return float(np.sqrt(np.average(np.sum((coordinates - center) ** 2, axis=1), weights=masses)))
+
+
 def analyze(config: dict[str, Any]) -> dict[str, Any]:
     """Analyze a source trajectory in streaming chunks and write tabular outputs."""
     try:
@@ -228,6 +259,14 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
     )
     if len(protein_heavy) == 0 or len(ligand_heavy) == 0:
         raise ValueError("Protein and ligand contact selections must each contain heavy atoms.")
+    ca_indices = np.asarray([index for index in protein_indices
+        if first.topology.atom(int(index)).name == "CA" and first.topology.atom(int(index)).residue.is_protein], dtype=np.int64)
+    fluctuation_indices = np.concatenate((ca_indices, ligand_heavy))
+    fluctuations = CoordinateFluctuations(len(fluctuation_indices))
+    gyration_indices = {"protein": protein_heavy, "ligand": ligand_heavy,
+        "complex": np.concatenate((protein_heavy, ligand_heavy))}
+    gyration_masses = {name: np.asarray([float(first.topology.atom(int(index)).element.mass) for index in indices])
+        for name, indices in gyration_indices.items()}
     residue_indices = np.asarray(
         [int(first.topology.atom(int(index)).residue.index) for index in protein_heavy],
         dtype=np.int64,
@@ -243,6 +282,11 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
     for name, path in (("topology", topology_path), ("trajectory", trajectory_path)):
         digest, size = _sha256(path)
         before_hashes[name] = {"path": str(config.get(f"{name}_source_path") or path), "sha256": digest, "size_bytes": size}
+    expected_hashes = config.get("expected_source_sha256")
+    if expected_hashes is not None and (not isinstance(expected_hashes, dict)
+            or set(expected_hashes) != {"topology", "trajectory"}
+            or any(before_hashes[name]["sha256"] != expected_hashes[name] for name in before_hashes)):
+        raise ValueError("MD source bytes changed after the pipeline selected them; submit a fresh source selection.")
 
     reference = None
     first_selected = None
@@ -265,6 +309,7 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
         "frame_index_after_stride", "time_ns", "protein_aligned_backbone_rmsd_angstrom",
         "ligand_rmsd_angstrom", "protein_ligand_minimum_distance_angstrom",
         "geometric_residue_contacts",
+        "protein_rg_angstrom", "ligand_rg_angstrom", "complex_rg_angstrom",
     ]
     frame_handle = frame_path.open("w", newline="", encoding="utf-8")
     frame_writer = csv.DictWriter(frame_handle, fieldnames=frame_headers)
@@ -356,6 +401,7 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
                 selected_start_ns = time_ns
                 first_selected = chunk[frame_index]
             aligned, protein_rmsd = kabsch_align(coordinates_angstrom, reference, backbone_indices)
+            fluctuations.update(aligned[fluctuation_indices])
             if selected_start_ns is None:
                 selected_start_ns = time_ns
             ligand_delta = aligned[ligand_indices] - reference[ligand_indices]
@@ -376,6 +422,8 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
                 "ligand_rmsd_angstrom": ligand_rmsd,
                 "protein_ligand_minimum_distance_angstrom": min(residue_distances.values()),
                 "geometric_residue_contacts": sum(distance <= cutoff for distance in residue_distances.values()),
+                **{name + "_rg_angstrom": radius_of_gyration(aligned[indices], gyration_masses[name])
+                    for name, indices in gyration_indices.items()},
             }
             frame_writer.writerow(row)
             backbone_rmsd_sum += protein_rmsd
@@ -434,6 +482,13 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
         })
     contact_path = output_dir / "residue_contacts.csv"
     _write_csv(contact_path, list(contact_rows[0].keys()) if contact_rows else [], contact_rows)
+    rmsf_values = fluctuations.rmsf()
+    rmsf_rows = [{"selection": "protein_ca" if position < len(ca_indices) else "ligand_heavy",
+        "atom_index": int(atom_index), "atom": first.topology.atom(int(atom_index)).name,
+        "residue": _residue_label(first.topology.atom(int(atom_index)).residue),
+        "rmsf_angstrom": float(rmsf_values[position]), "selected_frames": selected_frame_count}
+        for position, atom_index in enumerate(fluctuation_indices)]
+    _write_csv(output_dir / "rmsf.csv", ["selection", "atom_index", "atom", "residue", "rmsf_angstrom", "selected_frames"], rmsf_rows)
 
     representative_path = output_dir / "representative_frame.pdb"
     representative_saved = False
@@ -447,11 +502,13 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
     summary = {
         "schema_version": 1,
         "success": True,
-        "analysis": "protein-aligned RMSD and geometric ligand-contact occupancy",
+        "analysis": "protein-aligned RMSD, Cα/ligand RMSF, mass-weighted heavy-atom radius of gyration and geometric ligand-contact occupancy",
+        "analysis_version": 2,
         "units": {
             "time": "ns", "distance": "angstrom", "rmsd": "angstrom",
             "selected_frame_count": "frames",
             "contact_count_mean": "geometric heavy-atom residue contacts per analyzed frame",
+            "rmsf": "angstrom", "radius_of_gyration": "angstrom",
         },
         "metrics": scalar_metrics,
         "source": {"topology": after_hashes["topology"], "trajectory": after_hashes["trajectory"]},
@@ -471,15 +528,19 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
         "selected_time_range_ns": {"start": selected_start_ns, "end": selected_end_ns},
         "selection": {"ligand": ligand_selection, "protein": protein_selection, "alignment": f"({protein_selection}) and backbone"},
         "parameters": {
+            "analysis_version": 2,
             "stride": stride, "chunk_size": chunk_size, "start_ns": start_ns,
             "end_ns": end_ns, "contact_cutoff_angstrom": cutoff,
             "pbc_mode_requested": pbc_mode, "periodic_unit_cell_present": pbc_observed,
             "pbc_imaging_applied": pbc_applied,
         },
         "contact_map_semantics": "Per-residue minimum distance among selected heavy atoms; occupancy is the fraction of selected frames with distance <= cutoff. This is a geometric contact measure, not a hydrogen-bond analysis.",
+        "rmsf_semantics": "Population RMSF about the selected-window mean coordinates after backbone alignment to the first selected frame. Protein Cα and ligand heavy atoms only; one frame gives zero fluctuation, not evidence of stability.",
+        "radius_of_gyration_semantics": "Mass-weighted heavy-atom radius of gyration, separately for the selected protein, ligand and combined complex.",
         "artifacts": {
             "timeseries_csv": "artifacts/md_analysis/timeseries.csv",
             "residue_contacts_csv": "artifacts/md_analysis/residue_contacts.csv",
+            "rmsf_csv": "artifacts/md_analysis/rmsf.csv",
             "representative_frame_pdb": "artifacts/md_analysis/representative_frame.pdb" if representative_saved else None,
         },
         "warnings": pbc_notes,

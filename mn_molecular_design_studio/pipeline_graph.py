@@ -30,8 +30,8 @@ def field(name, label, default, *, kind="number", minimum=None, maximum=None, op
 def _spec(key, label, category, description, *, output="backbone", accepts=None, workflow=None, fields=(), color="#427f68", formats=("pdb", "cif"), coldspot_support=None, output_metrics=()):
     return {"key": key, "label": label, "category": category, "description": description,
             "color": color, "workflow": workflow, "formats": list(formats),
-            "inputs": [] if accepts is None else [{"id": "in", "label": "Target" if accepts == ["target"] else "Results" if key == "results" else "Candidates", "accepts": accepts, "multiple": key == "results"}],
-            "outputs": [] if output is None else [{"id": "out", "label": {"target": "Target", "backbone": "Backbones", "sequence": "Sequences", "prediction": "Predictions", "candidates": "Candidates", "analysis": "Surface results"}.get(output, output), "type": output}],
+            "inputs": [] if accepts is None else [{"id": "in", "label": "Target" if accepts == ["target"] else "MD segment" if key == "md_analysis" else "Results" if key == "results" else "Candidates", "accepts": accepts, "multiple": key == "results"}],
+            "outputs": [] if output is None else [{"id": "out", "label": {"target": "Target", "backbone": "Backbones", "sequence": "Sequences", "prediction": "Predictions", "candidates": "Candidates", "analysis": "Surface results", "md_trajectory": "Trajectory + topology", "md_analysis": "MD measurements"}.get(output, output), "type": output}],
             "fields": list(fields), **({"coldspot_support": coldspot_support} if coldspot_support else {}),
             **({"output_metrics": copy.deepcopy(list(output_metrics))} if output_metrics else {})}
 
@@ -182,7 +182,23 @@ NODE_CATALOG = {
         field("scannet_mode", "ScanNet prediction mode", "interface", kind="select", options=["interface", "epitope", "idp"]),
         field("scannet_use_msa", "Use MSA with ScanNet", False, kind="boolean"),
         field("masif_chain_id", "MaSIF-seed chain", "", kind="text")]),
-    "results": _spec("results", "Results & comparison", "Results", "Collect candidate structures, metrics, and surface-analysis runs from connected branches.", accepts=["backbone", "sequence", "prediction", "candidates", "analysis"], output=None, color="#5d7b6c"),
+    "md_source": _spec("md_source", "Saved MD run", "Molecular dynamics", "Select one recorded production segment and its matching topology. Files remain on this pipeline workstation; replicas and continuation segments are never joined implicitly.", output="md_trajectory", formats=(), fields=[
+        field("source_run_dir", "Source MD job", "", kind="text", section="basic"),
+        field("option_id", "Recorded production segment", "", kind="text", section="basic"),
+        field("topology_relative_path", "Matching topology", "", kind="text", section="basic")]),
+    "md_analysis": _spec("md_analysis", "MD Analysis", "Molecular dynamics", "Run streamed protein-aligned RMSD, protein/ligand RMSF, radius of gyration and geometric residue-contact analysis. Outputs remain attached to the exact source study, trajectory and sampling window.", accepts=["md_trajectory"], output="md_analysis", workflow="ligand.md.analysis", formats=(), fields=[
+        field("ligand_selection", "Ligand atom selection (MDTraj)", "resname LIG", kind="text", section="basic"),
+        field("protein_selection", "Protein atom selection (MDTraj)", "protein", kind="text", section="basic"),
+        field("stride", "Frame stride", 1, minimum=1, maximum=100000, section="basic"),
+        field("start_ns", "Window start (ns)", 0., minimum=0., section="basic"),
+        field("end_ns", "Window end (ns; blank = last frame)", "", kind="text"),
+        field("contact_cutoff_angstrom", "Geometric contact cutoff (Å)", 4.5, minimum=.1, maximum=20.),
+        field("pbc_mode", "Periodic-boundary handling", "auto", kind="select", options=["auto", "require", "none"]),
+        field("dcd_frame_interval_ps", "DCD timing override: interval (ps)", "", kind="text"),
+        field("dcd_first_time_ps", "DCD timing override: first frame (ps)", "", kind="text"),
+        field("chunk_size", "Frames per chunk", 100, minimum=1, maximum=10000),
+        field("cpu_cores", "CPU threads", 8, minimum=1, maximum=256)]),
+    "results": _spec("results", "Results & comparison", "Results", "Collect candidate structures, measurements and linked analysis runs from connected branches.", accepts=["backbone", "sequence", "prediction", "candidates", "analysis", "md_analysis"], output=None, color="#5d7b6c"),
     "ipsae": _spec("ipsae", "ipSAE & Structure Analysis", "Analysis", "Analyze saved candidate structures and any saved PAE matrices, then pass measured evidence forward with candidate identity and provenance intact. Pairwise PAE enables ipSAE, directional i_pAE, and i_pDAE. Separate design and cofold complexes enable both binder-fitted shape RMSD and target-aligned binder-pose RMSD. RFD4 native target-aligned refold RMSD remains separately attributed to RFD4. No prediction is launched.", accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", workflow="analysis.ipsae", color="#9a7854", fields=[field("pae_cutoff", "ipSAE PAE cutoff (Å)", 10., minimum=0., maximum=100., help="Used only for candidates with a saved pairwise PAE matrix."), field("dist_cutoff", "Directional i_pAE contact distance (Å)", 10., minimum=0., maximum=100., help="Cα contact distance for PAE-derived i_pAE measurements."), field("ipdae_contact_cutoff", "i_pDAE contact cutoff (Å)", 8., minimum=0., maximum=100., help="Cα contact cutoff used by the BindCraft2-definition i_pDAE recalculation."), field("structure_contact_cutoff", "Interface contact distance (Å)", 4., minimum=0., maximum=100., help="Heavy-atom distance for structure contacts and designed-interface preservation."), field("hotspot_contact_cutoff", "Hotspot contact distance (Å)", 5., minimum=0., maximum=100., help="Heavy-atom distance used only when target hotspot residues are annotated." )]),
     "rosetta_metrics": _spec("rosetta_metrics", "Rosetta Interface Analysis", "Analysis", "Calculate PyRosetta interface, packing, SASA, hydrogen-bond, and binder surface metrics.", accepts=["prediction"], output="prediction", workflow="analysis.rosetta", color="#9a7854", fields=[]),
 }
@@ -799,6 +815,16 @@ ACTIVE_LEARNING_LAYOUT = {
 
 
 def new_graph(template="foundry") -> dict[str, Any]:
+    if template == "md_analysis":
+        kinds = ["md_source", "md_analysis", "results"]
+        return clean_graph({"schema_version": SCHEMA, "id": uuid.uuid4().hex,
+            "name": "Saved MD run → MD Analysis → Results", "template_id": "md_analysis",
+            "nodes": [{"id": kind, "type": "studio", "position": {"x": 50 + 350 * index, "y": 160},
+                "data": {"kind": kind, "label": NODE_CATALOG[kind]["label"], "params": {}}}
+                for index, kind in enumerate(kinds)],
+            "edges": [{"id": "md-edge-" + str(index), "source": kinds[index], "target": kinds[index + 1],
+                "sourceHandle": "out", "targetHandle": "in"} for index in range(2)],
+            "viewport": {"x": 0, "y": 0, "zoom": .8}})
     if template == "accepted_complex_analysis":
         kinds = ["project_design_source", "candidate_merge", "shared_filter", "complex_analysis", "biotite_interface", "results"]
         nodes = []
@@ -2218,6 +2244,12 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
         if require_inputs and kind == "target":
             if not node["data"]["params"].get("target_pdb"):
                 raise ValueError("Load a target structure before running the pipeline.")
+        if require_inputs and kind == "md_source":
+            if not all(node["data"]["params"].get(key) for key in ("source_run_dir", "option_id", "topology_relative_path")):
+                raise ValueError("Choose a completed MD job, recorded segment and matching topology in Saved MD run.")
+        if kind == "md_analysis":
+            from mn_molecular_design_studio.md_pipeline import validate_analysis_parameters
+            validate_analysis_parameters(node["data"]["params"])
         if require_inputs and kind == "kejia_idr":
             from mn_molecular_design_studio.kejia_idr_input import prepare_request
             prepare_request(node["data"]["params"])

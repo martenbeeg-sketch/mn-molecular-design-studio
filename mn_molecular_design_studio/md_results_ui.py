@@ -165,10 +165,10 @@ def _line_chart(st, series: list[dict[str, Any]], *, label: str = "Replica") -> 
         time = _finite_series(row.get("time_ns"))
         backbone = _finite_series(row.get("backbone_rmsd_angstrom"))
         ligand = _finite_series(row.get("ligand_rmsd_angstrom"))
-        count = min(len(time), len(backbone), len(ligand))
         points = []
-        for frame in range(count):
-            t, bb, lig = time[frame], backbone[frame], ligand[frame]
+        for frame, t in enumerate(time):
+            bb = backbone[frame] if frame < len(backbone) else None
+            lig = ligand[frame] if frame < len(ligand) else None
             if t is not None and (bb is not None or lig is not None):
                 points.append({"time_ns": t, "backbone_rmsd_angstrom": bb, "ligand_rmsd_angstrom": lig})
         if points:
@@ -176,16 +176,38 @@ def _line_chart(st, series: list[dict[str, Any]], *, label: str = "Replica") -> 
             st.line_chart(points, x="time_ns", y=["backbone_rmsd_angstrom", "ligand_rmsd_angstrom"])
 
 
-def _render_structural_dynamics(st, structural: dict[str, Any], rmsd: dict[str, Any], *, label: str) -> None:
+def _recorded_occupancy_rows(structural: dict[str, Any]) -> list[dict[str, Any]]:
+    from mn_molecular_design_studio.md_atom_interactions import INTERACTIONS, interaction_residues
+
+    residues = [row for row in interaction_residues(structural) if row["occupancies"]]
+    kinds = [kind for kind in INTERACTIONS if any(kind in row["occupancies"] for row in residues)]
+    return [{"Residue": row["residue"], "Ligand atom (representative)": row["ligand_atom"] or None,
+        **{INTERACTIONS[kind][0] + " (%)": 100 * row["occupancies"][kind] if kind in row["occupancies"] else None
+            for kind in kinds}} for row in residues]
+
+
+def _render_recorded_occupancies(st, structural: dict[str, Any]) -> None:
+    from streamlit import column_config
+
+    rows = _recorded_occupancy_rows(structural)
+    if not rows:
+        return
+    with st.expander("Saved interaction occupancies (%) · all recorded residues"):
+        st.caption("Original saved values for this selected report; no recalculation. This table is not limited by the diagram's interaction type, threshold or residue count. "
+            "Blank means not recorded / invalid; 0% is a recorded zero. Percentages are residue-level occupancies; ligand atoms are recorded representatives, not exact atom-pair assignments.")
+        st.dataframe(rows, hide_index=True, width="stretch",
+            column_config={column: column_config.NumberColumn(format="%.2f%%") for column in rows[0] if column.endswith(" (%)")})
+
+
+def _render_structural_dynamics(st, structural: dict[str, Any], rmsd: dict[str, Any], *, label: str, key_prefix: str | None = None) -> None:
     """Show only stored OpenMM structural-dynamics outputs; perform no analysis."""
     time_ps = _finite_series(structural.get("time_ps"))
     time_ns = [value / 1000.0 if value is not None else None for value in time_ps]
     rmsd_time = _finite_series(rmsd.get("time_ps"))
-    if not time_ns and rmsd_time:
-        time_ns = [value / 1000.0 if value is not None else None for value in rmsd_time]
+    rmsd_time_ns = [value / 1000.0 if value is not None else None for value in rmsd_time] if rmsd_time else time_ns
     series = [{
         "replica": label,
-        "time_ns": time_ns,
+        "time_ns": rmsd_time_ns,
         "backbone_rmsd_angstrom": rmsd.get("backbone_rmsd_angstrom"),
         "ligand_rmsd_angstrom": rmsd.get("ligand_rmsd_angstrom"),
     }]
@@ -196,6 +218,8 @@ def _render_structural_dynamics(st, structural: dict[str, Any], rmsd: dict[str, 
     ca_values = rmsf.get("ca_rmsf_angstrom")
     if isinstance(residues, list) and isinstance(ca_values, list) and residues:
         st.markdown("**Protein Cα RMSF (Å)**")
+        st.bar_chart([{"Residue": str(residue), "Cα RMSF (Å)": _finite(value)}
+            for residue, value in zip(residues, ca_values)], x="Residue", y="Cα RMSF (Å)")
         st.dataframe([
             {"Residue": str(residue), "Cα RMSF (Å)": _finite(value)}
             for residue, value in zip(residues, ca_values)
@@ -206,6 +230,8 @@ def _render_structural_dynamics(st, structural: dict[str, Any], rmsd: dict[str, 
     atom_values = ligand_rmsf.get("rmsf_angstrom")
     if isinstance(atoms, list) and isinstance(atom_values, list) and atoms:
         st.markdown("**Ligand atom RMSF (Å)**")
+        st.bar_chart([{"Atom": str(atom), "RMSF (Å)": _finite(value)}
+            for atom, value in zip(atoms, atom_values)], x="Atom", y="RMSF (Å)")
         st.dataframe([
             {"Atom": str(atom), "RMSF (Å)": _finite(value)}
             for atom, value in zip(atoms, atom_values)
@@ -276,10 +302,11 @@ def _render_structural_dynamics(st, structural: dict[str, Any], rmsd: dict[str, 
     contacts = structural.get("contacts") if isinstance(structural.get("contacts"), dict) else {}
     contact_rows = _rows(contacts.get("residues"))
     hotspot = contacts.get("interaction_hotspot_score")
+    _render_recorded_occupancies(st, structural)
     if contact_rows:
-        st.markdown("**Recorded protein–ligand contacts and interaction occupancy**")
-        st.caption("Occupancies and scores are the values stored by the source analytics.")
-        st.dataframe(contact_rows, use_container_width=True, hide_index=True)
+        with st.expander("Original protein–ligand contact data"):
+            st.caption("Occupancies and scores are the values stored by the source analytics.")
+            st.dataframe(contact_rows, use_container_width=True, hide_index=True)
     if isinstance(hotspot, dict) and hotspot:
         st.caption(str(hotspot.get("description") or "Recorded interaction score metadata"))
         st.json(hotspot)
@@ -287,7 +314,7 @@ def _render_structural_dynamics(st, structural: dict[str, Any], rmsd: dict[str, 
     if isinstance(distance_series, dict) and distance_series:
         labels = list(distance_series)
         residue = st.selectbox(f"Recorded contact distance series · {label}", labels,
-                               key=f"md-contact-distance-{label}")
+                               key=f"md-contact-distance-{key_prefix or label}")
         distances = _finite_series(distance_series.get(residue))
         points = [{"time_ns": time_ns[index], "minimum distance (Å)": distances[index]}
                   for index in range(min(len(time_ns), len(distances)))
@@ -354,6 +381,15 @@ def _render_aggregate_analysis(st, run_root: Path, study: dict[str, Any], *, jso
     report = _safe_optional_json(st, run_root, analysis_record.get("result_path"), "Analysis", json_loader=json_loader)
     if report is None:
         return
+    if report.get("replicas") and all(row.get("run_id") for row in _rows(report.get("replicas"))):
+        from mn_molecular_design_studio.md_plot_matrix import validate_report_sources
+
+        try:
+            validate_report_sources(report, {str(row.get("run_id") or ""): row.get("repeat_index")
+                for row in _rows(study.get("production_runs"))})
+        except ValueError as exc:
+            st.warning("The overview cannot be linked to this study: " + str(exc))
+            return
     _render_analysis_report(st, report, run_root=run_root, text_loader=text_loader, key_prefix=key_prefix)
 
 
@@ -361,6 +397,16 @@ def _render_analysis_report(st, report: dict[str, Any], *, run_root: Path | None
     if report.get("schema_version") == 1 and "source" in report and "units" in report:
         _render_md_analysis_summary(st, report, run_root=run_root, text_loader=text_loader, key_prefix=key_prefix)
         return
+    from mn_molecular_design_studio.md_plot_matrix import render_plot_matrix
+
+    if render_plot_matrix(st, report, key_prefix=key_prefix + "-matrix"):
+        with st.expander("Original report tables and numerical values"):
+            _render_analysis_tables(st, report, show_series=False)
+        return
+    _render_analysis_tables(st, report)
+
+
+def _render_analysis_tables(st, report: dict[str, Any], *, show_series=True) -> None:
     replicas = _rows(report.get("replicas"))
     if replicas:
         st.markdown("**Per-replica summary**")
@@ -369,7 +415,7 @@ def _render_analysis_report(st, report: dict[str, Any], *, run_root: Path | None
         if failed:
             st.warning(f"{len(failed)} production replica(s) did not report a completed status.")
     series = _rows(report.get("replica_series"))
-    if series:
+    if series and show_series:
         st.markdown("**RMSD time series**")
         _line_chart(st, series)
     consensus = _rows(report.get("contact_consensus"))
@@ -451,6 +497,8 @@ def _render_md_analysis_summary(st, summary: dict[str, Any], *, run_root: Path |
             st.warning(str(warning))
     time_path = "artifacts/md_analysis/timeseries.csv"
     timeseries = _csv_rows(_artifact_text(run_root, time_path, text_loader=text_loader, description="MD analysis timeseries CSV"))
+    if len(timeseries) == 20000:
+        st.caption("The inline view reads at most 20,000 recorded rows. The complete numerical output remains in Results files.")
     if timeseries:
         points = []
         for row in timeseries:
@@ -462,9 +510,41 @@ def _render_md_analysis_summary(st, summary: dict[str, Any], *, run_root: Path |
         if points:
             st.markdown("**RMSD over time (ns, Å)**")
             st.line_chart(points, x="time_ns", y=["backbone_rmsd_angstrom", "ligand_rmsd_angstrom"])
+        gyration = [{"Time (ns)": _finite(row.get("time_ns")),
+            **{label: _finite(row.get(field)) for field, label in (
+                ("protein_rg_angstrom", "Protein Rg (Å)"), ("ligand_rg_angstrom", "Ligand Rg (Å)"),
+                ("complex_rg_angstrom", "Complex Rg (Å)"))}} for row in timeseries
+            if _finite(row.get("time_ns")) is not None]
+        if any(any(value is not None for key, value in row.items() if key != "Time (ns)") for row in gyration):
+            st.markdown("**Radius of gyration**")
+            st.caption(str(summary.get("radius_of_gyration_semantics") or "Recorded radius of gyration."))
+            st.line_chart(gyration, x="Time (ns)")
+    artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+    if artifacts.get("rmsf_csv"):
+        rmsf = _csv_rows(_artifact_text(run_root, str(artifacts["rmsf_csv"]), text_loader=text_loader, description="MD RMSF CSV"))
+        st.caption(str(summary.get("rmsf_semantics") or "Recorded RMSF."))
+        for selection, title in (("protein_ca", "Protein Cα RMSF"), ("ligand_heavy", "Ligand heavy-atom RMSF")):
+            points = [{"Atom": str(row.get("residue", "")) + " · " + str(row.get("atom", "")) + " · " + str(row.get("atom_index", "")),
+                "RMSF (Å)": _finite(row.get("rmsf_angstrom"))} for row in rmsf
+                if row.get("selection") == selection and _finite(row.get("rmsf_angstrom")) is not None]
+            if points:
+                st.markdown("**" + title + "**")
+                st.bar_chart(points, x="Atom", y="RMSF (Å)")
+                st.dataframe(points, use_container_width=True, hide_index=True)
+        if not rmsf:
+            st.info("MD RMSF CSV is loading or unavailable.")
     contacts_path = "artifacts/md_analysis/residue_contacts.csv"
     contacts = _csv_rows(_artifact_text(run_root, contacts_path, text_loader=text_loader, description="MD residue contact CSV"))
     if contacts:
+        from mn_molecular_design_studio.md_atom_interactions import render_interaction_diagram
+
+        structural = {"contacts": {"residues": [
+            {"residue": row.get("residue"), "contact_occupancy": row.get("contact_occupancy_fraction")}
+            for row in contacts]}, "analysis_window": {"analyzed_frames": summary.get("selected_frame_count"),
+                "trajectory_stride": parameters.get("stride")}}
+        render_interaction_diagram(st, structural, key_prefix=key_prefix + "-native-contacts",
+            scope="Selected trajectory-analysis window; geometric contacts only")
+        _render_recorded_occupancies(st, structural)
         st.markdown("**Geometric ligand contact occupancy**")
         st.caption(str(summary.get("contact_map_semantics") or "Geometric contact occupancy; not hydrogen-bond analysis."))
         st.dataframe(contacts, use_container_width=True, hide_index=True)
@@ -509,7 +589,8 @@ def _endpoint_rows(endpoint: dict[str, Any], manifest_row: dict[str, Any]) -> li
 def _render_endpoint_details(st, endpoint: dict[str, Any], record: dict[str, Any], production: dict[str, Any] | None = None) -> None:
     mmgbsa = _mmgbsa_payload(endpoint) or endpoint
     metadata = mmgbsa.get("metadata") if isinstance(mmgbsa.get("metadata"), dict) else {}
-    params = record.get("parameters") if isinstance(record.get("parameters"), dict) else {}
+    params = record.get("parameters") if isinstance(record.get("parameters"), dict) else (
+        record.get("sampling_parameters") if isinstance(record.get("sampling_parameters"), dict) else {})
     details = {
         "Method": mmgbsa.get("method") or record.get("method") or metadata.get("method") or params.get("backend") or "not recorded",
         "Backend": mmgbsa.get("backend") or record.get("backend") or metadata.get("backend") or params.get("backend") or "not recorded",
@@ -652,6 +733,15 @@ def _render_study(st, run_root: Path, study: dict[str, Any], *, json_loader=None
                     rmsd = analytics.get("rmsd") if isinstance(analytics.get("rmsd"), dict) else {}
                     structural = analytics.get("structural_dynamics") if isinstance(analytics.get("structural_dynamics"), dict) else {}
                     if structural or rmsd:
+                        if structural.get("contacts") or structural.get("interaction_network"):
+                            from mn_molecular_design_studio.md_atom_interactions import render_interaction_diagram
+
+                            render_interaction_diagram(st, structural,
+                                ligand_smiles=study.get("ligand_smiles") or study.get("identity_smiles") or "",
+                                ligand_pdb=production_result.get("ligand_pdb") or "",
+                                ligand_label=study.get("compound_name") or study.get("compound_id") or "Ligand",
+                                key_prefix=key_prefix + "-interactions-" + str(study.get("study_id") or "study"),
+                                scope="Production " + str(item.get("run_id") or "not recorded"))
                         _render_structural_dynamics(
                             st, structural, rmsd,
                             label=str(item.get("repeat_index") or item.get("run_id") or "production"),
@@ -689,6 +779,7 @@ def _render_legacy_result(st, run_root: Path, result: dict[str, Any]) -> None:
                 "ligand_rmsd_angstrom": rmsd.get("ligand_rmsd_angstrom"),
             }]
             _line_chart(st, series, label="Production")
+            _render_recorded_occupancies(st, structural)
             if analytics.get("error"):
                 st.warning(f"Production analytics reported: {analytics['error']}")
             rendered = True

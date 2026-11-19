@@ -940,6 +940,11 @@ def render_setup(
                 parameters.update({"complex_pdb": str(target_path)})
                 ligand_path = Path(database_md["ligand_sdf"]) if database_md else _save_reference_ligand_upload(owner_id, uploaded_md_ligand.name, uploaded_md_ligand.getvalue())
                 parameters.update({"ligand_sdf": str(ligand_path)})
+                if database_md:
+                    source = database_md.get("database_bound_source")
+                    if not isinstance(source, dict):
+                        raise ValueError("Reopen the bound pose from Database to refresh its source reference before starting MD.")
+                    parameters["database_bound_source"] = source
             else:
                 target_path = _save_target_upload(owner_id, uploaded.name, uploaded.getvalue())
                 parameters.update({"target_pdb": str(target_path)})

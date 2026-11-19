@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 
 
 TOOL_CATALOG_HISTORY = {
+    "analysis.binderscope": {"introduced_at": "2026-11-17"},
     "design.rfd4_proteina": {"introduced_at": "2026-10-21"},
     # Protein and ligand QC tiles added to the Studio catalog.
     "analysis.sequence_qc": {"introduced_at": "2026-10-21"},

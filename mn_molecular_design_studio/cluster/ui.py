@@ -2640,9 +2640,10 @@ def render_job(reference, user, token, submit):
         if transfer.get("error"):
             st.warning(transfer["error"])
     if row.get("status") not in {"completed", "succeeded", "failed", "cancelled"}:
-        if st.button("Request cancellation", key="cluster-cancel-" + jid):
+        st.caption("Cancellation includes recorded downstream jobs. Completed results and unrelated branches are preserved; offline workstations stop work when they reconnect.")
+        if st.button("Cancel job + downstream", key="cluster-cancel-" + jid):
             response = _request("/jobs/" + jid + "/actions", token, {"action": "cancel"}, method="POST")
-            st.success("Cancellation requested. The workstation will confirm when execution has stopped.")
+            st.success(f"Cancellation requested, including {response.get('downstream_count', 0)} recorded downstream jobs. Workstations confirm when execution has stopped.")
     if row.get("metrics"):
         st.json(row.get("metrics", {}), expanded=False)
     acceptance_counts = (row.get("candidate_summary") or {}).get("acceptance_counts") or {}

@@ -1,0 +1,454 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binderscope.local/schema/inspect.schema.json",
+  "title": "Inspector blob (INS)",
+  "description": "data/inspect.json: what the design inspector reads. Per design: the binder as PDB text in the reference frame, contacts, hydrogen bonds, per-residue tracks, confidence, context blocks. Field meaning, units, producers and consumers are in docs/data_contract.md section 4. Older blobs validate once a profile is added.",
+  "type": "object",
+  "required": ["profile", "target_pdb", "target_seq", "target_resi", "designs", "order", "hotspots", "epitope", "glycan", "glycan_xyz", "membrane", "t_ss"],
+  "properties": {
+    "schema": { "type": "string", "const": "binderscope.inspect/1" },
+    "profile": { "$ref": "profile.schema.json" },
+    "target_pdb": {
+      "type": "string",
+      "description": "PDB text of the reference chain (chain A, UniProt numbering, heavy atoms, reference frame) with HELIX and SHEET records. Sugars attached to glycan sites may follow as HETATM records."
+    },
+    "target_seq": { "$ref": "common.schema.json#/$defs/aa_sequence", "description": "One-letter sequence, one letter per entry of target_resi." },
+    "target_resi": { "$ref": "common.schema.json#/$defs/resi_list", "description": "Same list as campaign target.resi." },
+    "t_ss": { "$ref": "common.schema.json#/$defs/ss_string" },
+    "designs": {
+      "type": "object",
+      "description": "tag -> inspector record. For BindCraft projects the tag is the design id.",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/design" }
+    },
+    "order": {
+      "$ref": "common.schema.json#/$defs/string_list",
+      "description": "Tags in display order. Every entry is a key of designs. Legacy pages show one button per entry; the refactored inspector shows a searchable list when there are more than twelve."
+    },
+    "names": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Optional tag -> display label (featured designs of a dataset). Superseded by designs[tag].label."
+    },
+    "hotspots": { "$ref": "common.schema.json#/$defs/resi_list", "description": "Pooled hotspots (same as the campaign target.hotspots)." },
+    "epitope": { "$ref": "common.schema.json#/$defs/resi_list" },
+    "glycan": { "$ref": "common.schema.json#/$defs/resi_list" },
+    "glycan_xyz": { "type": "object", "additionalProperties": { "$ref": "common.schema.json#/$defs/xyz" } },
+    "glycan_atoms": {
+      "type": "object",
+      "description": "NEW. Same as the campaign target.glycan_atoms; drawn as sticks when the Glycans toggle is on.",
+      "additionalProperties": true
+    },
+    "membrane": { "$ref": "campaign.schema.json#/$defs/target/properties/membrane" },
+    "runs": {
+      "type": "array",
+      "description": "NEW. Per-run target constructs, for the frame strip and for hiding the removed stretches of a design's own run. Same objects as campaign runs[] reduced to id, label, hotspots and target.",
+      "items": {
+        "type": "object",
+        "required": ["id", "target"],
+        "properties": {
+          "id": { "$ref": "common.schema.json#/$defs/key_id" },
+          "label": { "type": "string" },
+          "target": { "$ref": "campaign.schema.json#/$defs/run_target" },
+          "term": { "$ref": "campaign.schema.json#/$defs/run_term", "description": "NEW. The run's terminus block (campaign runs[].term): the format, what BindCraft was asked to do about the ends and the tag sizes. The inspector never reads the campaign blob." }
+        },
+        "additionalProperties": true
+      }
+    },
+    "olig": {
+      "type": "object",
+      "description": "Partner-subunit context drawn as CA traces: neigh maps a chain key to a flat xyz array; buried is residue -> buried area. One entry per other chain, e.g. chains B, C and D of a tetramer, or chain B of a dimer.",
+      "properties": {
+        "buried": { "type": "object", "additionalProperties": { "type": "number" } },
+        "buried_all": { "type": "object", "additionalProperties": { "type": "number" }, "description": "NEW. The whole interface of the reference chain with the partner: residue -> buried area, also the residues outside the union construct (buried keeps only the part inside it). The frame strip of the inspector draws it." },
+        "neigh": { "type": "object", "additionalProperties": { "$ref": "common.schema.json#/$defs/flat_xyz" } },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "rest": {
+      "type": "object",
+      "description": "NEW. Rest-of-chain context drawn as CA traces: the stretches of the reference chain that the target lacks. traces: [{label, chain, ranges, ca}], ca flat xyz, one trace per contiguous stretch.",
+      "properties": {
+        "ref": { "type": "string" },
+        "ranges": { "$ref": "common.schema.json#/$defs/ranges" },
+        "traces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["ca"],
+            "properties": {
+              "label": { "type": "string" },
+              "chain": { "type": "string" },
+              "ranges": { "$ref": "common.schema.json#/$defs/ranges" },
+              "ca": { "$ref": "common.schema.json#/$defs/flat_xyz" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "foot": {
+      "type": "object",
+      "additionalProperties": { "$ref": "common.schema.json#/$defs/resi_list" },
+      "description": "Named footprints of known complexes (same as campaign target.foot)."
+    },
+    "partners": {
+      "type": "object",
+      "description": "Known-complex partners drawn as CA traces in the target frame: name -> {chains, traces}. traces is one flat xyz array per chain.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["chains", "traces"],
+        "properties": {
+          "chains": { "$ref": "common.schema.json#/$defs/string_list" },
+          "traces": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/flat_xyz" } }
+        },
+        "additionalProperties": true
+      }
+    },
+    "frame": {
+      "type": "object",
+      "description": "LEGACY. Frame strip data: {len, nat, name, acc, construct, segs, glyc, nat_ends}. Superseded by profile.frame; the viewer reads the profile first.",
+      "additionalProperties": true
+    },
+    "real": { "type": "boolean", "description": "LEGACY flag of older blobs. Deprecated; replaced by profile.caps." },
+    "target_name": { "type": "string", "description": "LEGACY. Replaced by profile.target.name." },
+    "run": {
+      "type": "object",
+      "description": "Same object as campaign run (legacy inspector blobs carry it).",
+      "additionalProperties": true
+    },
+    "modes": {
+      "type": "object",
+      "description": "Same object as campaign modes (legacy inspector blobs carry it).",
+      "additionalProperties": true
+    },
+    "generated": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "design": {
+      "type": "object",
+      "description": "One inspected design. Per-residue arrays of the binder have one entry per residue (n). Arrays over the target have one entry per target_resi (or per t_resi when the design carries its own target).",
+      "required": [
+        "tag", "id", "bb", "mode", "mode_name", "scaffold", "site", "modality", "seq", "n", "ss", "pdb_b",
+        "plddt_res", "plddt_t", "rsa_res", "dsasa_res", "t_dsasa", "contacts", "hbonds", "salt", "buns",
+        "patches", "dsasa", "hyd_frac", "t_contact", "b_contact", "hot", "ssbonds", "nterm_d", "cterm_d",
+        "mem_margin", "glycan", "poses", "sibs", "metrics", "liab", "flip", "center"
+      ],
+      "properties": {
+        "tag": { "type": "string" },
+        "id": { "type": "string" },
+        "label": { "type": "string", "description": "NEW. Display name in the design list." },
+        "run": { "$ref": "common.schema.json#/$defs/key_id", "description": "NEW. Run id; selects runs[].target for the strip and for the removed stretches." },
+        "status": { "type": "string", "enum": ["accepted", "rejected"], "description": "NEW." },
+        "rank": { "$ref": "common.schema.json#/$defs/int_or_null", "description": "NEW." },
+        "prov": { "type": "object", "additionalProperties": true, "description": "NEW. Same object as campaign design.prov." },
+        "bb": { "type": "string" },
+        "mode": { "type": "string", "pattern": "^M[1-7]$" },
+        "mode_name": { "type": "string" },
+        "scaffold": { "type": "string" },
+        "site": { "type": "string" },
+        "modality": { "type": "string", "enum": ["minibinder", "nanobody", "scFv", "peptide"] },
+        "source_note": { "type": ["string", "null"], "description": "Set on illustrative stand-ins (a nanobody, an scFv, a peptide)." },
+        "seq": { "$ref": "common.schema.json#/$defs/binder_sequence" },
+        "n": { "type": "integer", "minimum": 1 },
+        "ss": { "$ref": "common.schema.json#/$defs/ss_string" },
+        "pdb_b": { "type": "string", "description": "PDB text of the binder: chain B, residues 1..n, heavy atoms, reference frame, HELIX and SHEET records first, B-factor = pLDDT (0..100)." },
+        "target_pdb": { "type": ["string", "null"], "description": "Own target (nanobody and scFv stand-ins). null = use the blob's target_pdb." },
+        "t_resi": { "type": ["array", "null"], "items": { "type": "integer" }, "description": "Own target residues. null = target_resi." },
+        "t_seq": { "type": ["string", "null"] },
+        "t_ss": { "type": ["string", "null"] },
+        "plddt_res": { "$ref": "common.schema.json#/$defs/num_list", "description": "Binder pLDDT per residue, 0..100, length n." },
+        "plddt_t": { "$ref": "common.schema.json#/$defs/num_or_null_list", "description": "Target pLDDT per target residue, 0..100. null (or 0) where the design's own target lacks the residue." },
+        "rsa_res": { "$ref": "common.schema.json#/$defs/num_list", "description": "Binder relative accessibility in the complex, per residue." },
+        "dsasa_res": { "$ref": "common.schema.json#/$defs/num_list", "description": "Binder area buried per residue in A^2, length n." },
+        "ddg_res": { "type": ["array", "null"], "items": { "type": "number" }, "description": "Alanine-scan ddG per binder residue (kcal/mol). null when profile.caps.ddg_scan is false." },
+        "t_dsasa": { "$ref": "common.schema.json#/$defs/num_list", "description": "Target area buried per target residue in A^2; 0 where absent." },
+        "t_ddg": { "type": ["array", "null"], "items": { "type": "number" } },
+        "contacts": {
+          "type": "array",
+          "description": "Residue pairs within 4.5 A. t = target residue (UniProt), b = binder residue (1-based), d = closest heavy-atom distance in A, n = atom pairs.",
+          "items": {
+            "type": "object",
+            "required": ["t", "b", "d", "n"],
+            "properties": {
+              "t": { "type": "integer" },
+              "b": { "type": "integer", "minimum": 1 },
+              "d": { "type": "number" },
+              "n": { "type": "integer", "minimum": 1 }
+            },
+            "additionalProperties": true
+          }
+        },
+        "hbonds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["t", "tn", "ta", "b", "bn", "ba", "d", "k"],
+            "properties": {
+              "t": { "type": "integer" },
+              "tn": { "type": "string", "description": "Target residue name (three-letter)." },
+              "ta": { "type": "string", "description": "Target atom name." },
+              "b": { "type": "integer", "minimum": 1 },
+              "bn": { "type": "string" },
+              "ba": { "type": "string" },
+              "d": { "type": "number" },
+              "k": { "type": "string", "enum": ["D>A", "A<D"], "description": "D>A: target donates; A<D: target accepts." }
+            },
+            "additionalProperties": true
+          }
+        },
+        "salt": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["t", "tn", "b", "bn", "d"],
+            "properties": {
+              "t": { "type": "integer" },
+              "tn": { "type": "string" },
+              "b": { "type": "integer", "minimum": 1 },
+              "bn": { "type": "string" },
+              "d": { "type": "number" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "buns": {
+          "type": "array",
+          "description": "Buried unsatisfied polar atoms. side t = target, b = binder; resi is UniProt for t and 1-based for b.",
+          "items": {
+            "type": "object",
+            "required": ["side", "resi", "resn", "atom"],
+            "properties": {
+              "side": { "type": "string", "enum": ["t", "b"] },
+              "resi": { "type": "integer" },
+              "resn": { "type": "string" },
+              "atom": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "patches": {
+          "type": "array",
+          "description": "Exposed hydrophobic patches on the binder, largest first (at most 3). res are 1-based binder residues.",
+          "items": {
+            "type": "object",
+            "required": ["area", "res"],
+            "properties": {
+              "area": { "type": "number" },
+              "res": { "type": "array", "items": { "type": "integer", "minimum": 1 } }
+            },
+            "additionalProperties": true
+          }
+        },
+        "voids": {
+          "type": "array",
+          "description": "Reserved: cavities at the interface (not rendered by the current pages). May be empty.",
+          "items": {
+            "type": "object",
+            "properties": { "c": { "$ref": "common.schema.json#/$defs/xyz" }, "vol": { "type": "number" } },
+            "additionalProperties": true
+          }
+        },
+        "dsasa": { "type": "number", "description": "Buried area in A^2 (same value as metrics.dsasa)." },
+        "hyd_frac": { "type": "number" },
+        "t_contact": { "$ref": "common.schema.json#/$defs/resi_list", "description": "Contacted target residues (UniProt)." },
+        "b_contact": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "description": "Contacted binder residues, 1-based." },
+        "hot": { "$ref": "common.schema.json#/$defs/resi_list" },
+        "ssbonds": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "minItems": 2, "maxItems": 2 },
+          "description": "The binder's disulfides, pairs of 1-based residues: those the structure file records, or when it records none, those read from SG-SG geometry (see ssbond_basis). Each residue is in at most one pair."
+        },
+        "ssbond_basis": {
+          "enum": ["recorded", "inferred", "none"],
+          "description": "How ssbonds is known. recorded: the file lists the disulfides (mmCIF _struct_conn, PDB SSBOND). inferred: the file records none (BindCraft 2 writes none), so the pairs are read from the model's SG-SG distances, at most 3.4 A (see disulfides). none: no record and no sulfur coordinates; no cysteine is judged."
+        },
+        "disulfides": {
+          "type": "array",
+          "description": "The pairs of ssbonds with their evidence. Absent in older bundles.",
+          "items": {
+            "type": "object",
+            "required": ["a", "b", "d", "band"],
+            "properties": {
+              "a": { "type": "integer", "minimum": 1 },
+              "b": { "type": "integer", "minimum": 1 },
+              "d": { "type": ["number", "null"], "description": "SG-SG distance in the model, A. null when a recorded pair has no sulfur coordinates." },
+              "band": { "enum": ["recorded", "close", "loose"], "description": "recorded: listed in the file. close: inferred, at most 3.0 A. loose: inferred, 3.0 to 3.4 A, the band where a predicted model is least sure." }
+            }
+          }
+        },
+        "nterm_d": { "type": "number" },
+        "cterm_d": { "type": "number" },
+        "mem_margin": { "type": ["number", "null"], "description": "A. -metrics.mem_excess: positive = clear of the membrane plane by that much." },
+        "glycan": { "type": "object", "additionalProperties": { "type": "number" } },
+        "pae": { "type": ["string", "null"], "contentEncoding": "base64", "description": "Base64 of an uint8 matrix of size (pae_n[0] + pae_n[1])^2, row-major, value = PAE / 0.125 (so 31.75 A is the maximum). Rows and columns: binder residues first, then pae_tres target residues. null when profile.caps.has_pae is false." },
+        "pae_n": { "type": ["array", "null"], "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "[binder residues, target residues] in the matrix." },
+        "pae_tres": { "type": "array", "items": { "type": "integer" }, "description": "Target residues in the matrix, in order. Absent = target_resi." },
+        "poses": {
+          "type": "array",
+          "description": "One entry per predictor: binder transform relative to the design (R, t) plus scores. BindCraft-only data: one entry, AF2 (BindCraft), identity.",
+          "items": {
+            "type": "object",
+            "required": ["model", "R", "t"],
+            "properties": {
+              "model": { "type": "string" },
+              "ipsae": { "$ref": "common.schema.json#/$defs/num_or_null" },
+              "iptm": { "$ref": "common.schema.json#/$defs/num_or_null" },
+              "rmsd": { "$ref": "common.schema.json#/$defs/num_or_null" },
+              "R": { "$ref": "common.schema.json#/$defs/rot9" },
+              "t": { "$ref": "common.schema.json#/$defs/xyz" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "seeds": {
+          "type": "array",
+          "description": "Pose of repeat seeds (R, t) for the seed overlay. Empty when profile.caps.has_seeds is false.",
+          "items": {
+            "type": "object",
+            "required": ["R", "t"],
+            "properties": { "R": { "$ref": "common.schema.json#/$defs/rot9" }, "t": { "$ref": "common.schema.json#/$defs/xyz" } },
+            "additionalProperties": true
+          }
+        },
+        "sibs": {
+          "type": "array",
+          "description": "Sequences on the same backbone, the design itself included. diff = 1-based positions that differ from the family's first listed sequence.",
+          "items": {
+            "type": "object",
+            "required": ["id", "seq"],
+            "properties": {
+              "id": { "type": "string" },
+              "seq": { "$ref": "common.schema.json#/$defs/binder_sequence" },
+              "ipsae": { "$ref": "common.schema.json#/$defs/num_or_null" },
+              "iptm": { "$ref": "common.schema.json#/$defs/num_or_null" },
+              "min_ipae": { "$ref": "common.schema.json#/$defs/num_or_null" },
+              "ipae_norm": { "$ref": "common.schema.json#/$defs/num_or_null", "description": "NEW." },
+              "rmsd": { "$ref": "common.schema.json#/$defs/num_or_null" },
+              "plddt": { "$ref": "common.schema.json#/$defs/num_or_null" },
+              "unsat": { "$ref": "common.schema.json#/$defs/int_or_null" },
+              "hb": { "$ref": "common.schema.json#/$defs/int_or_null" },
+              "dg": { "$ref": "common.schema.json#/$defs/num_or_null" },
+              "sc": { "$ref": "common.schema.json#/$defs/num_or_null", "description": "NEW." },
+              "hot": { "$ref": "common.schema.json#/$defs/int_or_null" },
+              "ndiff": { "type": "integer", "minimum": 0 },
+              "diff": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+              "status": { "type": "string", "enum": ["accepted", "rejected"], "description": "NEW." }
+            },
+            "additionalProperties": true
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "description": "The campaign metrics of this design (same keys and values as design.m) plus length, plus min_ipae and ipae_mean from the PAE matrix when the campaign record lacks them.",
+          "properties": {
+            "length": { "type": "integer" }
+          },
+          "additionalProperties": true
+        },
+        "liab": {
+          "type": "array",
+          "description": "Sequence liabilities (long key names, unlike the campaign record).",
+          "items": {
+            "type": "object",
+            "required": ["kind", "pos", "motif", "sev"],
+            "properties": {
+              "kind": { "type": "string" },
+              "pos": { "type": "integer", "minimum": 1 },
+              "motif": { "type": "string" },
+              "sev": { "$ref": "common.schema.json#/$defs/severity" },
+              "region": { "type": "string", "description": "Antibody region of the position (CDR1, FR2, ...)." },
+              "basis": { "enum": ["recorded", "inferred"], "description": "Disulfide entries only (Unpaired cysteine, Disulfide geometry loose): whether the pairing came from the file's record or from the model's geometry." }
+            },
+            "additionalProperties": true
+          }
+        },
+        "flip": { "type": "boolean" },
+        "center": { "$ref": "common.schema.json#/$defs/xyz", "description": "Centre of the interface in the reference frame (used to pull the partners apart)." },
+        "regions": { "type": ["array", "null"], "items": { "type": "string" }, "description": "Antibody region per residue (FR1, CDR1, ...). null for non-antibodies." },
+        "chain_of": { "type": ["array", "null"], "items": { "type": "string" }, "description": "Antibody chain per residue (H or L, or K for non-antibodies)." },
+        "region_counts": { "type": "object", "additionalProperties": { "type": "integer" } },
+        "cdrs": { "type": ["array", "null"], "items": { "type": "string" } },
+        "nH": { "type": "integer", "description": "scFv: residues in the VH domain." },
+        "term": { "$ref": "campaign.schema.json#/$defs/design_term", "description": "NEW. Copy of the campaign design's term block (docs/termini.md): the inspector never reads the campaign blob. Absent for a design the exporter did not judge." },
+        "ctx": {
+          "type": ["object", "null"],
+          "description": "Removed-region context (rest of the chain, or a removed domain). nearest = closest binder atom to the removed region (A); pair = [binder residue (1-based), target residue]; covered = contacted residues the removed region buries, covered_all = all target residues it buries, as [residue, area in A^2]. removed is [first, last] (legacy) or a list of such ranges.",
+          "properties": {
+            "ref": { "type": "string", "description": "Structure the removed region is placed from (a PDB id such as 1ABC)." },
+            "removed": {
+              "oneOf": [
+                { "$ref": "common.schema.json#/$defs/resi_list", "minItems": 2, "maxItems": 2 },
+                { "$ref": "common.schema.json#/$defs/ranges" }
+              ]
+            },
+            "nearest": { "type": "number" },
+            "n3": { "type": "integer", "description": "NEW. Binder atoms within 3 A." },
+            "n4": { "type": "integer" },
+            "n6": { "type": "integer" },
+            "pair": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+            "pair_resn": { "type": "string" },
+            "covered": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 } },
+            "covered_all": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 } },
+            "cut": {
+              "type": "object",
+              "description": "NEW. Cut-end context: cut_points of the design's run and the contacted residues within checks.cut_k of them.",
+              "properties": {
+                "points": { "$ref": "common.schema.json#/$defs/resi_list" },
+                "near": { "$ref": "common.schema.json#/$defs/resi_list" }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "octx": {
+          "type": "object",
+          "description": "Partner-subunit context (olig). A flagged region adds fp_ov, epi_prec, epi_rec and stalk here.",
+          "properties": {
+            "olig_min": { "type": ["number", "null"] },
+            "olig_n3": { "type": ["integer", "null"] },
+            "olig_n4": { "type": ["integer", "null"] },
+            "olig_buried": { "$ref": "common.schema.json#/$defs/resi_list", "description": "Contacted residues buried at the partner interface." },
+            "stalk": { "$ref": "common.schema.json#/$defs/resi_list", "description": "Contacted residues in the flagged region." },
+            "fp_ov": { "type": "object", "additionalProperties": { "type": "integer" } },
+            "epi_prec": { "type": "number" },
+            "epi_rec": { "type": "number" },
+            "rms_head": { "type": "number", "description": "A. Placement RMSD of the rigid part of the target on the reference." }
+          },
+          "additionalProperties": true
+        },
+        "real": {
+          "type": "object",
+          "description": "LEGACY: dataset facts of the design. name, method, author, cls, outcome, label, esm_plddt, expressed, fam. Superseded by design.prov and the outcome object.",
+          "additionalProperties": true
+        },
+        "nbrs": {
+          "type": "array",
+          "description": "Nearest designs by shared contacted residues (the Similar tab).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "sim": { "type": "number" },
+              "ipsae": { "$ref": "common.schema.json#/$defs/num_or_null" },
+              "iptm": { "$ref": "common.schema.json#/$defs/num_or_null" },
+              "cls": { "type": "string" },
+              "mode": { "type": "string" },
+              "n": { "type": "integer" },
+              "fam": { "type": "string" },
+              "binds": { "type": ["boolean", "null"] },
+              "strength": { "type": ["string", "null"] },
+              "kd": { "$ref": "common.schema.json#/$defs/num_or_null" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

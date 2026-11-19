@@ -36,6 +36,7 @@ _WORKFLOWS = {
     "analysis.sequence_qc",
     "analysis.proteinsol",
     "analysis.binder_interface_chemistry",
+    "analysis.binderscope",
 }
 _STRUCTURE_SUFFIXES = {".pdb", ".ent", ".cif", ".mmcif"}
 _SELECTION_FIELDS = {
@@ -932,6 +933,12 @@ def build_saved_structure_collection(
     selected protein chain per input and does not align target groups.
     """
     contracts = {
+        "analysis.binderscope": {
+            "selection_schema": "studio.binderscope_selection.v1",
+            "collection_schema": "studio.binderscope_collection.v1",
+            "item_schema": "studio.binderscope_collection_item.v1",
+            "minimum": 1, "maximum": 2000, "label": "BinderScope",
+        },
         "analysis.interface_clustering": {
             "selection_schema": "studio.interface_clustering_selection.v1",
             "collection_schema": "studio.interface_clustering_collection.v1",
@@ -954,8 +961,9 @@ def build_saved_structure_collection(
     if not isinstance(selection, dict) or selection.get("schema") != contract["selection_schema"]:
         raise ValueError(f"{label} requires a versioned saved-structure collection.")
     sources = selection.get("sources")
-    if not isinstance(sources, list) or not 2 <= len(sources) <= contract["maximum"]:
-        raise ValueError(f"{label} requires between 2 and {contract['maximum']:,} saved structures.")
+    minimum = contract.get("minimum", 2)
+    if not isinstance(sources, list) or not minimum <= len(sources) <= contract["maximum"]:
+        raise ValueError(f"{label} requires between {minimum} and {contract['maximum']:,} saved structures.")
     if not str(user.get("id") or ""):
         raise PermissionError("A signed-in user is required to analyze saved structures.")
 
@@ -983,9 +991,18 @@ def build_saved_structure_collection(
         if not isinstance(raw_selector, dict):
             raise ValueError(f"Every {label} input must be a saved structure selector.")
         kind = str(raw_selector.get("kind") or "").casefold()
+        assessment = None
+        if workflow_id == "analysis.binderscope":
+            if kind != "database":
+                raise ValueError("Browser BinderScope assessments require admitted SQL designs, not raw Results outputs.")
+            if "assessment" in raw_selector:
+                from mn_molecular_design_studio.binderscope import validate_assessment_settings
+                assessment = validate_assessment_settings(raw_selector["assessment"])
         target_chains = [str(value).strip() for value in raw_selector.get("target_chains", []) if str(value).strip()]
         binder_chains = [str(value).strip() for value in raw_selector.get("binder_chains", []) if str(value).strip()]
-        target_required = workflow_id == "analysis.interface_clustering"
+        target_required = workflow_id in {"analysis.interface_clustering", "analysis.binderscope"}
+        if workflow_id == "analysis.binderscope" and (len(binder_chains) != 1 or len(target_chains) != 1):
+            raise ValueError("Saved BinderScope cohorts require one explicitly selected binder chain and one target chain.")
         if ((target_required and not target_chains) or len(target_chains) != len(set(target_chains))
                 or len(binder_chains) != len(set(binder_chains)) or set(target_chains) & set(binder_chains)):
             raise ValueError(f"Each {label} structure needs unique protein chain selections with no overlap.")
@@ -1042,6 +1059,26 @@ def build_saved_structure_collection(
                 user, database_selector, project_id=project_id, database=database,
                 workflow_id=workflow_id,
             )
+            role_evidence = None
+            target_evidence, target_reference_path = None, None
+            if workflow_id == "analysis.binderscope":
+                from mn_molecular_design_studio.binderscope import saved_chain_roles
+                from mn_molecular_design_studio.binderscope_sources import target_context
+                from mn_molecular_design_studio.data_browser import load_saved_record
+
+                role_record = load_saved_record(database, user, {"molecule_id": authorized["molecule_id"],
+                    "group_id": authorized["group_id"], "structure_ids": [authorized["structure_id"]], "evaluation_id": ""})
+                if role_record is None:
+                    raise PermissionError("The selected design is no longer accessible.")
+                if raw_selector.get("chain_role_evidence"):
+                    recorded_binder, recorded_target, role_evidence = saved_chain_roles(database, user, role_record,
+                        authorized["structure_record"], authorized["parsed_components"])
+                    if (recorded_binder != binder_chains or recorded_target != target_chains
+                            or role_evidence != raw_selector["chain_role_evidence"]):
+                        raise ValueError("Saved chain-role evidence changed after selection. Reopen the BinderScope selection.")
+                target_evidence, target_reference_path = target_context(database, user, role_record, authorized["structure_record"])
+                if "target_context" in raw_selector and raw_selector["target_context"] != target_evidence:
+                    raise ValueError("Saved hotspot or target-reference evidence changed after selection. Reopen BinderScope.")
             source_path = Path(authorized["structure_path"]).resolve(strict=True)
             if (str(raw_selector.get("structure_digest") or "")
                     and str(raw_selector.get("structure_digest")) != authorized["structure_digest"]):
@@ -1061,6 +1098,8 @@ def build_saved_structure_collection(
                 "model_id": model_id, "record_name": authorized["record_name"],
                 "structure_label": authorized["structure_label"],
                 "evaluation_ids": evaluation_ids,
+                **({"chain_role_evidence": role_evidence} if role_evidence is not None else {}),
+                **({"target_context": target_evidence} if target_evidence is not None else {}),
             }
         else:
             raise ValueError(f"{label} accepts saved Results or Database structures.")
@@ -1102,6 +1141,7 @@ def build_saved_structure_collection(
             "source_record": source_record, "source_project_id": source_project_id,
             "evaluation_ids": list(source_record.get("evaluation_ids") or []),
             "database_source": None,
+            **({"assessment": assessment} if assessment is not None else {}),
         })
         if kind == "database":
             resolved[-1]["database_source"] = {
@@ -1113,8 +1153,16 @@ def build_saved_structure_collection(
                 "structure_digest": source_digest, "record_name": authorized["record_name"],
                 "structure_label": authorized["structure_label"],
                 "binder_chains": binder_chains, "target_chains": target_chains,
+                **({"chain_role_evidence": role_evidence} if role_evidence is not None else {}),
+                **({"target_context": target_evidence} if target_evidence is not None else {}),
             }
             resolved[-1]["candidate_metadata"] = {"components": authorized.get("record_components") or []}
+            if workflow_id == "analysis.binderscope":
+                resolved[-1]["target_reference_path"] = target_reference_path
+                resolved[-1]["candidate_metadata"]["components"] = [
+                    {**component, **({"role": "binder"} if component.get("chain") in binder_chains else
+                                     {"role": "target"} if component.get("chain") in target_chains else {})}
+                    for component in authorized["parsed_components"]]
 
     reference = resolved[0]
     if workflow_id == "analysis.interface_clustering":
@@ -1132,6 +1180,7 @@ def build_saved_structure_collection(
         "source_structure_digest": item["source_digest"], "target_structure_digest": item["target_digest"],
         "model_id": item["model_id"], "binder_chains": item["binder_chains"],
         "target_chains": item["target_chains"], "evaluation_ids": item["evaluation_ids"],
+        **({"assessment": item["assessment"]} if "assessment" in item else {}),
     } for item in resolved]
     collection_identity = {"schema": contract["collection_schema"],
                            "project_id": requested_project, "sources": manifest_sources}
@@ -1161,7 +1210,16 @@ def build_saved_structure_collection(
             "input_structure_digest": staged_digest, "target_structure_digest": item["target_digest"],
             "model_id": item["model_id"], "binder_chains": item["binder_chains"],
             "target_chains": item["target_chains"], "evaluation_ids": item["evaluation_ids"],
+            **({"assessment": item["assessment"]} if "assessment" in item else {}),
         }
+        if item.get("target_reference_path"):
+            reference_path = item["target_reference_path"]
+            staged_reference = structures_dir / (candidate_id + "-target" + _collection_structure_suffix(reference_path))
+            reference_content = _collection_structure_bytes(reference_path)
+            staged_reference.write_bytes(reference_content)
+            selection_item["target_reference"] = {"path": str(staged_reference.resolve()),
+                "input_structure_digest": hashlib.sha256(reference_content).hexdigest(),
+                **item["source_record"]["target_context"]["reference"]}
         raw_metadata = {
             **item["candidate_metadata"],
             "analysis_subject": "protein", "model_index": item["model_id"],

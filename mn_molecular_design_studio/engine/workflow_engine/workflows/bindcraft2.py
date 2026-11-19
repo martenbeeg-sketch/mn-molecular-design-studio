@@ -1162,6 +1162,9 @@ def normalize_bindcraft2_candidates(run_dir: Path, settings: dict[str, Any]) -> 
                         "bindcraft2_design": design_name,
                         "bindcraft2_ranked_csv": ranked_csv.relative_to(run_dir).as_posix(),
                         "bindcraft2_output_structure": complex_ref,
+                        "design_creation_structure": portable_path(
+                            output_dir / "2_Refolded" / "Complexes" / (Path(str(refolded_matches[0].get("design") or "")).name + ".cif"), run_dir=run_dir)
+                            if len(refolded_matches) == 1 else None,
                         "pae_path": pae_ref,
                         "bindcraft2_pae_matrix": pae_ref,
                         "bindcraft2_row": row,

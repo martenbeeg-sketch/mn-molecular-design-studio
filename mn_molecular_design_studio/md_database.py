@@ -355,6 +355,7 @@ def _base_context(root: Path, study: dict[str, Any], identity: dict[str, Any], *
         "selected_complex_run_id": str(study.get("selected_complex_run_id") or ""),
         "source_summary_sha256": source_hash,
         "source_summary_relative_path": relative_path,
+        "study_manifest_sha256": study.get("study_manifest_sha256") or "",
         "is_representative": False,
     }
 
@@ -687,7 +688,8 @@ def ingest_md_studies(run_dir: str | Path, *, database: MolecularDatabase | None
         if not isinstance(study, dict):
             records.append({"study_id": "", "status": "withheld", "reason": "study record is not an object", "observations": 0})
             continue
-        records.append(_ingest_study(root, study, database, user, root.name, owner, metadata))
+        records.append(_ingest_study(root, {**study, "study_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest()},
+            database, user, root.name, owner, metadata))
     return {"status": "ok", "studies": records, "observations": sum(row.get("observations", 0) for row in records)}
 
 

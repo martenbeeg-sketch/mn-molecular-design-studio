@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import csv
 
 import numpy as np
 import pytest
@@ -98,8 +99,21 @@ def test_streaming_analysis_writes_unit_labeled_outputs_and_exact_source_identit
         "time": "ns", "distance": "angstrom", "rmsd": "angstrom",
         "selected_frame_count": "frames",
         "contact_count_mean": "geometric heavy-atom residue contacts per analyzed frame",
+        "rmsf": "angstrom", "radius_of_gyration": "angstrom",
     }
     assert summary["success"] is True
+    assert summary["analysis_version"] == 2
+    with (output_dir / "rmsf.csv").open() as handle:
+        rmsf = list(csv.DictReader(handle))
+    assert len(rmsf) == 3
+    protein_fluctuation = next(row for row in rmsf if row["selection"] == "protein_ca")
+    assert float(protein_fluctuation["rmsf_angstrom"]) == pytest.approx(0., abs=1e-5)
+    assert [float(row["rmsf_angstrom"]) for row in rmsf if row["selection"] == "ligand_heavy"] == pytest.approx([np.sqrt(8 / 9)] * 2, abs=1e-5)
+    with (output_dir / "timeseries.csv").open() as handle:
+        timeseries = list(csv.DictReader(handle))
+    assert len(timeseries) == 3
+    assert all(float(row["protein_rg_angstrom"]) > 0 for row in timeseries)
+    assert float(timeseries[0]["ligand_rg_angstrom"]) == pytest.approx(float(timeseries[2]["ligand_rg_angstrom"]), abs=1e-5)
     assert summary["trajectory_atom_count"] == 6
     assert summary["selected_frame_count"] == 3
     assert summary["selected_time_range_ns"] == {"start": 0.0, "end": 2.0}
@@ -115,18 +129,20 @@ def test_streaming_analysis_writes_unit_labeled_outputs_and_exact_source_identit
     assert summary["source"]["trajectory"]["sha256"] == hashlib.sha256(trajectory_path.read_bytes()).hexdigest()
     assert summary["source"]["trajectory"]["path"] == "artifacts/legacy/production/production.xtc"
     with (output_dir / "timeseries.csv").open() as handle:
-        import csv
         rows = list(csv.DictReader(handle))
     assert [float(row["time_ns"]) for row in rows] == pytest.approx([0.0, 1.0, 2.0])
     assert float(rows[0]["protein_aligned_backbone_rmsd_angstrom"]) == pytest.approx(0.0, abs=1e-5)
     assert float(rows[2]["protein_aligned_backbone_rmsd_angstrom"]) == pytest.approx(0.0, abs=1e-5)
     assert float(rows[2]["ligand_rmsd_angstrom"]) == pytest.approx(2.0, abs=1e-4)
     with (output_dir / "residue_contacts.csv").open() as handle:
-        import csv
         contact = next(csv.DictReader(handle))
     assert contact["residue"] == "A:10:ALA"
     assert float(contact["contact_occupancy_fraction"]) == pytest.approx(1.0)
     assert (output_dir / "representative_frame.pdb").is_file()
+    with pytest.raises(ValueError, match="changed after the pipeline selected"):
+        analyze({"topology_path": str(topology_path), "trajectory_path": str(trajectory_path),
+            "output_dir": str(tmp_path / "changed-source"), "ligand_selection": "resname LIG",
+            "expected_source_sha256": {"topology": "0" * 64, "trajectory": "0" * 64}})
     with pytest.raises(ValueError, match="no periodic box vectors"):
         analyze({
             "topology_path": str(topology_path),

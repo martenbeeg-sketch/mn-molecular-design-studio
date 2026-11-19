@@ -10,9 +10,13 @@ and disulfide-method concepts from `binder_review/liabilities.py` and
 `binder_review/disulfides.py`. BinderScope's `binder_review/interface.py` was
 reviewed to compare contact, SASA, patch and confidence evidence with Studio's
 existing registered evaluators; Studio keeps those Studio method definitions.
-Studio's evaluators are independent implementations and do not import or copy
-BinderScope Python source. Upstream attribution is retained here and in the
-saved liability Evaluation payload.
+Those existing Studio evaluators are independent implementations. The separate
+BinderScope tile now includes and runs the upstream analysis source at revision
+`c61ef9ca3dfc64dbde018ae7329d7538d8c583f1` under
+`mn_molecular_design_studio/vendor/binderscope`, with its complete MIT licence,
+validation resources and offline review assets. Its adapter does not replace or
+relabel the existing Studio methods. See `docs/binderscope.md` and the vendored
+`PROVENANCE.md`. BindCraft engine code is not included.
 
 BinderScope is available under the MIT License. Copyright (c) 2026 The
 University of Iowa.

@@ -1511,6 +1511,7 @@ def test_openmm_md_tile_uses_studio_bundled_runtime_and_records_trajectory(tmp_p
     monkeypatch.setattr(ligand_tools, "run_docker_job", fake_docker)
     run_dir = ligand_tools.run_ligand_openmm_md(
         complex_path, sdf_path, "LIG|A|501|_", production_ns=0.1, cpu_cores=2,
+        database_bound_source={"schema": "studio.bound-pose-source.v1", "structure_id": "source-pose"},
     )
     contract = json.loads((run_dir / "artifact_contract.json").read_text())
     result = jobs.read_json(run_dir / "result.json")
@@ -1526,6 +1527,7 @@ def test_openmm_md_tile_uses_studio_bundled_runtime_and_records_trajectory(tmp_p
     assert contract["workflow"] == "ligand.md.openmm"
     assert contract["outputs"][0]["type"] == "md_trajectory_set/v1"
     assert result["success"] is True
+    assert jobs.read_json(run_dir / "input.json")["params"]["database_bound_source"]["structure_id"] == "source-pose"
 
 
 def test_gromacs_md_validates_bound_residue_against_sdf_heavy_atoms(tmp_path, monkeypatch):
@@ -1601,6 +1603,7 @@ def test_gromacs_md_tile_stages_typed_artifacts_and_mounts_studio_runtime_read_o
     monkeypatch.setattr(ligand_tools, "run_docker_job", fake_docker)
     run_dir = ligand_tools.run_ligand_gromacs_md(
         complex_path, sdf_path, "LIG|A|501|_", production_ns=0.1, cpu_cores=2, use_gpu=False,
+        database_bound_source={"schema": "studio.bound-pose-source.v1", "structure_id": "source-pose"},
     )
 
     contract = json.loads((run_dir / "artifact_contract.json").read_text())
@@ -1615,6 +1618,7 @@ def test_gromacs_md_tile_stages_typed_artifacts_and_mounts_studio_runtime_read_o
     assert contract["inputs"][0]["type"] == "protein_ligand_complex/pdb/v1"
     assert contract["outputs"][0]["type"] == "md_trajectory_set/v1"
     assert jobs.read_json(run_dir / "result.json")["success"] is True
+    assert jobs.read_json(run_dir / "input.json")["params"]["database_bound_source"]["structure_id"] == "source-pose"
 
 
 def test_docker_runner_supports_read_only_source_mount_and_environment(tmp_path, monkeypatch):

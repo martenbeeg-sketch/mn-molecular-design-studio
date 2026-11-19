@@ -22,6 +22,7 @@ def bound(tmp_path, monkeypatch):
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", str(tmp_path))
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
     receptor = tmp_path / "receptor.pdb"
     receptor.write_text("\n".join([pdb_atom(i, " CA ", "ALA", "L", i, (i, 1, 2)) for i in range(1, 6)]) + "\nEND\n")
     pose = tmp_path / "pose.pdbqt"
@@ -460,3 +461,88 @@ render_setup({workflow!r}, {{}}, owner_id={USER['id']!r}, compound_sets=[], proj
     assert not app.exception
     assert app.session_state["submitted"]["complex_pdb"] == prepared["complex_pdb"]
     assert app.session_state["submitted"]["ligand_sdf"] == prepared["ligand_sdf"]
+    assert app.session_state["submitted"]["database_bound_source"] == prepared["database_bound_source"]
+
+
+@pytest.mark.parametrize("engine", ["openmm", "gromacs"])
+@pytest.mark.parametrize("changed", [False, True])
+def test_database_bound_md_retains_target_and_withholds_changed_inputs(bound, engine, changed):
+    from mn_molecular_design_studio.data_browser import folder_scopes, saved_results
+    from mn_molecular_design_studio.database_browser import build_browser_index, subject_results
+    from mn_molecular_design_studio.molecular_database_ingest import ingest_run
+    from test_molecular_database_policy import _make_run
+
+    database, molecule_id, structure_id, _, _, _ = bound
+    with database.connection() as connection:
+        connection.execute("UPDATE molecule_structures SET context=json_set(context,'$.target_pdb_id','4LNW',"
+            "'$.target_receptor','TRα') WHERE id=?", (structure_id,))
+    prepared = bound_docking.prepare_bound_inputs(database, USER, molecule_id, structure_id=structure_id)
+    run = _make_run(database, "ligand-md", engine, project="", tool=engine + "_md", workflow="ligand.md." + engine,
+                    metrics={"production_ns": 1.0})
+    path = run / "input.json"
+    document = json.loads(path.read_text())
+    document["params"].update(database_bound_source=prepared["database_bound_source"], complex_pdb=prepared["complex_pdb"])
+    path.write_text(json.dumps(document))
+    summary = run / "artifacts/md/result.json"
+    summary.parent.mkdir(parents=True, exist_ok=True)
+    summary.write_text(json.dumps({"success": True, "md_result": {"status": "completed", "analytics": {
+        "rmsd": {"time_ps": [0, 1000], "backbone_rmsd_angstrom": [0, 1]}}}}))
+    if changed:
+        Path(prepared["complex_pdb"]).write_text("CHANGED\n")
+    assert ingest_run(run, database=database) == (0 if changed else 1)
+    with database.connection() as connection:
+        rows = connection.execute("SELECT molecule_id,context FROM molecule_observations WHERE namespace=?", (engine + "_md",)).fetchall()
+    if changed:
+        assert not rows
+        assert Path(prepared["complex_pdb"]).read_text() == "CHANGED\n"
+        return
+    assert rows[0]["molecule_id"] == molecule_id
+    assert json.loads(rows[0]["context"])["target_pdb_id"] == "4LNW"
+    import hashlib
+    from mn_molecular_design_studio.cluster import config
+    from mn_molecular_design_studio.md_browser import MDArtifactReader, study_observations
+
+    context = json.loads(rows[0]["context"])
+    assert context["source_summary_relative_path"] == "artifacts/md/result.json"
+    assert context["source_summary_sha256"] == hashlib.sha256(summary.read_bytes()).hexdigest()
+    config.identity()
+    index = build_browser_index(database, USER, collection="library", include_related=True)
+    scope = folder_scopes(index, [])["targets:pdb:4LNW"]
+    outcomes = saved_results(index, subject_results(database, index, scope["subject"]))
+    assert any(row["activity"] == "Molecular dynamics" and row["target_id"] for row in outcomes)
+    md = next(row for row in outcomes if row["activity"] == "Molecular dynamics")
+    observation = study_observations(database, USER, md)[0]
+    reader = MDArtifactReader(database, USER, observation, index["runs"][md["primary"]["run_key"]])
+    assert reader.report()["md_result"]["analytics"]["rmsd"]["backbone_rmsd_angstrom"] == [0, 1]
+    assert ingest_run(run, database=database) == 0
+
+
+def test_md_submission_resolves_owner_qualified_pose_on_another_node(bound, tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster.replication import Replica
+    from mn_molecular_design_studio.molecular_database_ingest import ingest_run
+    from test_molecular_database_peer import _sync_all
+    from test_molecular_database_policy import _make_run
+
+    database, molecule_id, structure_id, _, _, _ = bound
+    prepared = bound_docking.prepare_bound_inputs(database, USER, molecule_id, structure_id=structure_id)
+    source = prepared["database_bound_source"]
+    peer = MolecularDatabase(tmp_path / "peer/database")
+    _sync_all(Replica(), database, peer, author=source["source_structure_owner_node"])
+    with peer.connection() as connection:
+        structures = {row["id"]: json.loads(row["context"])["_replica_structure"]
+                      for row in connection.execute("SELECT id,context FROM molecule_structures")}
+    monkeypatch.setattr(peer, "structure_file", lambda user, identifier, **kwargs:
+                        database.structure_file(user, structures[identifier], **kwargs))
+    run = _make_run(peer, "ligand-md", "remote-md", project="", tool="openmm_md", workflow="ligand.md.openmm",
+                    metrics={"production_ns": 1.0})
+    path = run / "input.json"
+    document = json.loads(path.read_text())
+    document["params"].update(database_bound_source=source, complex_pdb=prepared["complex_pdb"])
+    path.write_text(json.dumps(document))
+    assert ingest_run(run, database=peer) == 1
+    with peer.connection() as connection:
+        context = json.loads(connection.execute("SELECT context FROM molecule_observations WHERE namespace='openmm_md'").fetchone()[0])
+    assert context["source_structure_id"] != structure_id
+    assert context["source_structure_owner_structure_id"] == structure_id
+    assert structures[context["source_structure_id"]] == structure_id
+    assert context["source_group_id"] != source["group_id"]

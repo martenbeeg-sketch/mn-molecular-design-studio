@@ -644,6 +644,12 @@ def render_md_analysis_setup(
     owner_id = str(owner_id or user.get("id") or "")
     workflow_id = "ligand.md.analysis"
     project_id = project_selector("md-analysis")
+    st.caption("This executable MD Analysis tool is also available as a visual pipeline step: Saved MD run → MD Analysis → Results.")
+    if project_id and st.button("Use MD Analysis in a pipeline", key="md-analysis-create-pipeline"):
+        from mn_molecular_design_studio.pipeline_graph import new_graph
+        st.session_state["pipeline-pending-draft"] = {"project_id": project_id, "graph": new_graph("md_analysis")}
+        st.session_state["page"] = "Pipelines"
+        st.rerun()
     st.write("Analyze one selected MD production segment at a time. The source trajectory stays on its owning workstation and is mounted read-only; it is never downloaded into the analysis job.")
     st.caption("Each input file is treated as its own recorded segment. Previous and target durations are shown as lineage metadata and are not added together or presented as one continuous trajectory.")
     if not project_id:

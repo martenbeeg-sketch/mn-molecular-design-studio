@@ -386,8 +386,9 @@ def _request_payload_and_project(
     try:
         project_id = validate_project_id(requested_project_id)
     except ValueError as exc:
+        from mn_molecular_design_studio.project_lifecycle import ProjectUnavailableError
         source_reference = str(request_payload.get("source_job") or "")
-        if (allow_authorized_remote_source_project and isinstance(requested_project_id, str)
+        if (not isinstance(exc, ProjectUnavailableError) and allow_authorized_remote_source_project and isinstance(requested_project_id, str)
                 and source_reference.startswith("cluster:")):
             # A Results source on a connected workstation can belong to an
             # authorized project that is not provisioned in this workstation's
@@ -415,7 +416,7 @@ def _request_payload_and_project(
             raise HTTPException(status_code=404, detail="Project not found.") from exc
     has_database_source = isinstance(request_payload.get("database_source"), dict)
     collections = [request_payload.get("interface_clustering_collection"),
-                   request_payload.get("foldseek_collection")]
+                   request_payload.get("foldseek_collection"), request_payload.get("binderscope_collection")]
     private_database_collection = any(
         isinstance(collection, dict)
         and isinstance(collection.get("sources"), list)
@@ -443,6 +444,26 @@ def _request_payload_and_project(
 
 def _prepare_database_analysis_request(request_payload: dict[str, Any], user: dict[str, Any], project_id: str | None) -> dict[str, Any]:
     """Resolve a stable authorized Database structure into existing workflow inputs."""
+    if "binderscope_collection" in request_payload:
+        if (request_payload.get("workflow") != "analysis.binderscope" or request_payload.get("source_job")
+                or request_payload.get("database_source")):
+            raise HTTPException(status_code=422, detail="BinderScope requires one saved collection source, not mixed sources.")
+        parameters = request_payload.get("parameters")
+        if not isinstance(parameters, dict):
+            raise HTTPException(status_code=422, detail="BinderScope requires one parameters object.")
+        from mn_molecular_design_studio.complex_analysis_sources import build_saved_structure_collection
+        try:
+            adapter = build_saved_structure_collection(user, request_payload["binderscope_collection"],
+                workflow_id="analysis.binderscope", project_id=project_id)
+        except (PermissionError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=404, detail="A selected saved design is unavailable or access was denied.") from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        updated = dict(request_payload)
+        updated.pop("binderscope_collection")
+        updated["parameters"] = {**parameters, "source_run_dir": adapter["source_run_dir"],
+                                 "candidates_jsonl": adapter["candidates_jsonl"]}
+        return updated
     if "database_source" not in request_payload:
         return request_payload
     from mn_molecular_design_studio.complex_analysis_sources import apply_database_analysis_source
@@ -614,6 +635,7 @@ def validate_workflow(
     is_database_source = isinstance(request_payload.get("database_source"), dict)
     is_interface_collection = isinstance(request_payload.get("interface_clustering_collection"), dict)
     is_foldseek_collection = isinstance(request_payload.get("foldseek_collection"), dict)
+    is_binderscope_collection = isinstance(request_payload.get("binderscope_collection"), dict)
     request_payload = _prepare_database_analysis_request(request_payload, user, project_id)
     request_payload = _prepare_interface_clustering_collection_request(request_payload, user, project_id)
     request_payload = _prepare_foldseek_collection_request(request_payload, user, project_id)
@@ -629,7 +651,7 @@ def validate_workflow(
                 "validation_scope": "all_selected_sources", "sources": validations}
     request_dir = _request_directory(user, base_dir)
     _validate_user_path_values(request_payload, user, request_dir)
-    saved_collection = is_interface_collection or is_foldseek_collection
+    saved_collection = is_interface_collection or is_foldseek_collection or is_binderscope_collection
     remote = None if is_database_source or saved_collection else _cluster_submission(request_payload, project_id, user, request_dir, credentials, validate_only=True)
     if remote is not None:
         return remote
@@ -653,12 +675,13 @@ def workflow_placement_options(
     is_database_source = isinstance(request_payload.get("database_source"), dict)
     is_interface_collection = isinstance(request_payload.get("interface_clustering_collection"), dict)
     is_foldseek_collection = isinstance(request_payload.get("foldseek_collection"), dict)
+    is_binderscope_collection = isinstance(request_payload.get("binderscope_collection"), dict)
     request_payload = _prepare_database_analysis_request(request_payload, user, project_id)
     request_payload = _prepare_interface_clustering_collection_request(request_payload, user, project_id)
     request_payload = _prepare_foldseek_collection_request(request_payload, user, project_id)
     request_dir = _request_directory(user, base_dir)
     _validate_user_path_values(request_payload, user, request_dir)
-    if is_database_source or is_interface_collection or is_foldseek_collection:
+    if is_database_source or is_interface_collection or is_foldseek_collection or is_binderscope_collection:
         return {"placement": "local", "candidates": []}
     from mn_molecular_design_studio.cluster.service import placement_options_from_api
     token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
@@ -684,6 +707,7 @@ def submit_workflow(
     is_database_source = isinstance(request_payload.get("database_source"), dict)
     is_interface_collection = isinstance(request_payload.get("interface_clustering_collection"), dict)
     is_foldseek_collection = isinstance(request_payload.get("foldseek_collection"), dict)
+    is_binderscope_collection = isinstance(request_payload.get("binderscope_collection"), dict)
     request_payload = _prepare_database_analysis_request(request_payload, user, project_id)
     request_payload = _prepare_interface_clustering_collection_request(request_payload, user, project_id)
     request_payload = _prepare_foldseek_collection_request(request_payload, user, project_id)
@@ -704,7 +728,7 @@ def submit_workflow(
         # They use the normal local workflow queue; remote placement would
         # either lose that authorized path or require staging it as a Results
         # prediction artifact, which this source contract explicitly avoids.
-        saved_collection = is_interface_collection or is_foldseek_collection
+        saved_collection = is_interface_collection or is_foldseek_collection or is_binderscope_collection
         remote = None if is_database_source or saved_collection else _cluster_submission(request_payload, project_id, user, request_dir, credentials)
         if remote is not None:
             return remote
@@ -842,8 +866,15 @@ def _submit_once(payload, project_id, user, kind, header_key, operation):
     if header_key and execution_key and header_key != execution_key:
         raise HTTPException(422, "Header and execution idempotency keys must match.")
     try:
+        from mn_molecular_design_studio.cluster.replication import locked
+        from mn_molecular_design_studio.workspace import load_organization
+        def guarded_operation():
+            with locked():
+                if project_id and any(row.get("id") == project_id for row in load_organization().get("projects", [])):
+                    validate_project_id(project_id)
+                return operation()
         return submit_once(user, kind, header_key or execution_key,
-                           {"project_id": project_id, **payload}, operation)
+                           {"project_id": project_id, **payload}, guarded_operation)
     except Conflict as exc:
         raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:

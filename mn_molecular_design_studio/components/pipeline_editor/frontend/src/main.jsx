@@ -247,11 +247,17 @@ function Editor({args}){
     const incomingKinds=edges.filter(e=>e.target===n.id).map(e=>nodes.find(source=>source.id===e.source)?.data.kind);
     const hasSurfaceAnalysis=incomingKinds.includes('surface_analysis');
     const hasOtherResults=incomingKinds.some(kind=>kind&&kind!=='surface_analysis');
-    const summary=n.data.kind==='results'&&hasSurfaceAnalysis
+    const hasMDAnalysis=incomingKinds.includes('md_analysis');
+    const mdStep=['md_source','md_analysis'].includes(n.data.kind)||(n.data.kind==='results'&&hasMDAnalysis);
+    const summary=n.data.kind==='md_source'
+      ? n.data.params.option_id?'One recorded segment · read-only':'Choose a recorded MD segment'
+      : n.data.kind==='md_analysis'?'RMSD · RMSF · Rg · contacts'
+      : n.data.kind==='results'&&hasMDAnalysis?'MD plots · tables · source provenance'
+      : n.data.kind==='results'&&hasSurfaceAnalysis
       ? hasOtherResults?'Candidates + surface evidence':'Residue consensus · surface view'
       : undefined;
     const studySize=n.data.studySize||args.active_study_layout?.[n.data.kind]||{width:320,height:160};
-    return {...n,...(activeStudy?{style:{width:studySize.width}}:{}),data:{...n.data,status:args.execution?.[n.id]?.status,count:args.execution?.[n.id]?.candidate_count,summary,routeHandles:connectionLayout.handles.get(n.id),...(activeStudy?{study:true,studySize,studyInfo:n.data.studyInfo||studyInfo(n.data.kind,n.data.params,nodes)}:{})}};
+    return {...n,...(activeStudy?{style:{width:studySize.width}}:{}),data:{...n.data,status:args.execution?.[n.id]?.status,count:mdStep?undefined:args.execution?.[n.id]?.candidate_count,summary,routeHandles:connectionLayout.handles.get(n.id),...(activeStudy?{study:true,studySize,studyInfo:n.data.studyInfo||studyInfo(n.data.kind,n.data.params,nodes)}:{})}};
   });
   const categories=[...new Set(Object.values(catalog).map(s=>s.category))];
   return <div ref={shellRef} className={`editor-shell ${activeStudy?'active-study':''} ${focus?'focus-mode':''} ${fullscreen?'fullscreen-mode':''}`}>

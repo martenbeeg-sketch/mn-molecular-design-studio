@@ -60,6 +60,39 @@ def test_saved_comparison_keeps_canonical_evaluations_across_sync(roots):
     assert restored[0]["selected_evaluation"]["id"] == source.list_molecules(OWNER, group_id=saved["group_id"])["items"][0]["selected_evaluation"]["id"]
 
 
+def test_project_deleted_replica_ignores_positive_replay_and_accepts_removal_ack(roots, monkeypatch):
+    from mn_molecular_design_studio.molecular_database_peer import receive_member_removal
+    from mn_molecular_design_studio.project_lifecycle import install_guards
+    source, target = MolecularDatabase(roots / 'source-retired'), MolecularDatabase(roots / 'target-retired')
+    imported = source.import_records(OWNER, molecule_imports.parse_sequences('ACDE'), project_id='project-current')
+    replica = Replica()
+    _sync_all(replica, source, target)
+    records = _capture_rows(replica)
+    group_key = 'molecule_group:' + SOURCE + ':' + imported['group_id']
+    entry_key = 'molecule_entry:' + SOURCE + ':' + imported['group_id'] + ':' + imported['molecule_ids'][0]
+    replica_group = _id('peer-', SOURCE + ':' + imported['group_id'])
+    with target.connection() as connection:
+        origin = json.loads(connection.execute('SELECT origin FROM molecule_groups WHERE id=?', (replica_group,)).fetchone()[0])
+        origin['project_deleted'] = 'confirmed-operation'
+        connection.execute('UPDATE molecule_groups SET origin=? WHERE id=?', (json.dumps(origin), replica_group))
+        for table in ('molecule_sources', 'molecule_structures', 'molecule_observations', 'molecule_members'):
+            connection.execute(f'DELETE FROM {table} WHERE group_id=?', (replica_group,))
+        install_guards(connection)
+        connection.execute('INSERT INTO project_lifecycle_locks VALUES (?,?,?)', ('project-current', 'confirmed-operation', 'deleted'))
+    apply_record('molecule_group', group_key, records[group_key][1], SOURCE, database=target)
+    apply_record('molecule_entry', entry_key, records[entry_key][1], SOURCE, database=target)
+    with target.connection() as connection:
+        assert connection.execute('SELECT count(*) FROM molecule_members WHERE group_id=?', (replica_group,)).fetchone()[0] == 0
+        assert json.loads(connection.execute('SELECT origin FROM molecule_groups WHERE id=?', (replica_group,)).fetchone()[0])['project_deleted']
+    received = []
+    monkeypatch.setattr(Replica, 'receive', lambda self, values: received.extend(values) or len(values))
+    payload = {'source_group_id': imported['group_id'], 'molecule_ids': imported['molecule_ids'], 'records': [
+        {'key': group_key, 'kind': 'molecule_group', 'author': SOURCE, 'counter': 100, 'value': records[group_key][1]},
+        {'key': entry_key, 'kind': 'molecule_entry', 'author': SOURCE, 'counter': 101, 'value': None}]}
+    assert receive_member_removal(target, {'id': OWNER['id'], 'role': 'admin'}, SOURCE, payload) == 1
+    assert [row['key'] for row in received] == [entry_key]
+
+
 def test_synchronized_generator_observations_project_same_common_values(roots):
     source = MolecularDatabase(roots / "generator-source")
     target = MolecularDatabase(roots / "generator-target")

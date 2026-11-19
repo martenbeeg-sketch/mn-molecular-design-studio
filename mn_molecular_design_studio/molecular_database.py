@@ -40,7 +40,8 @@ def _observation_identity(context):
     selection = raw.get("complex_analysis_selection") or {}
     layers = (context, candidate, raw, selection, context.get("row") or {})
     selectors = {}
-    for key in ("candidate_id", "model_id", "model_index", "model", "pose_id", "pose_rank"):
+    for key in ("candidate_id", "model_id", "model_index", "model", "pose_id", "pose_rank",
+                "legacy_run_id", "replicate", "compound_id"):
         values = {str(layer[key]).strip() for layer in layers
                   if layer.get(key) is not None and str(layer[key]).strip()}
         if key == "pose_id":
@@ -71,6 +72,8 @@ def _observation_structure_matches(provenance, run_id, selectors):
             actual = provenance.get(key) if provenance.get(key) is not None else (pose.get("id") if isinstance(pose, dict) else pose)
         else:
             actual = provenance.get(key)
+            if actual is None and key in {"legacy_run_id", "replicate", "compound_id"}:
+                actual = (provenance.get("row") or {}).get(key)
         if actual is None or values != {str(actual).strip()}:
             return False
     return True
@@ -298,6 +301,11 @@ class MolecularDatabase:
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS molecular_score_lookup ON molecule_observations(molecule_id,namespace,created_at);
+            CREATE INDEX IF NOT EXISTS molecular_pending_owner_structure ON molecule_observations(id)
+                WHERE COALESCE(json_extract(context,'$.source_structure_owner_node'),'')!=''
+                AND COALESCE(json_extract(context,'$.source_structure_owner_group_id'),'')!=''
+                AND COALESCE(json_extract(context,'$.source_structure_owner_structure_id'),'')!=''
+                AND COALESCE(json_extract(context,'$.source_structure_reference_status'),'')!='resolved';
             CREATE TABLE IF NOT EXISTS molecule_sources (
                 source_key TEXT PRIMARY KEY, molecule_id TEXT NOT NULL REFERENCES molecules(id),
                 group_id TEXT NOT NULL REFERENCES molecule_groups(id), provenance TEXT NOT NULL
@@ -353,6 +361,8 @@ class MolecularDatabase:
         install_schema(connection)
         from mn_molecular_design_studio.scientific_lineage import install_schema as install_lineage
         install_lineage(connection)
+        from mn_molecular_design_studio.entity_names import install_schema as install_names
+        install_names(connection)
         try:
             with connection:
                 yield connection
@@ -361,6 +371,10 @@ class MolecularDatabase:
 
     @staticmethod
     def _can_read(group, user):
+        origin = group["origin"] if "origin" in group.keys() else "{}"
+        origin = json.loads(origin) if isinstance(origin, str) else origin
+        if origin.get("project_deleted"):
+            return False
         if user.get("role") == "admin":
             return True
         project = str(group["project_id"] or "")
@@ -374,6 +388,9 @@ class MolecularDatabase:
             row = connection.execute("SELECT * FROM molecule_groups WHERE id=?", (group_id,)).fetchone()
         if not row or not self._can_read(row, user):
             raise PermissionError("This molecule group is not accessible.")
+        if write and row["project_id"]:
+            from mn_molecular_design_studio.project_lifecycle import require_mutable_project
+            require_mutable_project(row["project_id"])
         if write and user.get("role") != "admin" and row["owner_id"] != user["id"]:
             raise PermissionError("Only the group owner or an administrator can change this group.")
         if write and json.loads(row["origin"]).get("_replica_node"):
@@ -382,6 +399,10 @@ class MolecularDatabase:
         result["origin"] = json.loads(result["origin"])
         result["read_only"] = bool(result["origin"].get("_replica_node"))
         result["schema"] = json.loads(result.pop("schema_json"))
+        from mn_molecular_design_studio.entity_names import records
+        from mn_molecular_design_studio.entity_properties import project_groups
+        with self.connection() as connection:
+            project_groups([result], records(connection))
         return result
 
     @staticmethod
@@ -420,11 +441,15 @@ class MolecularDatabase:
         with self.connection() as connection:
             rows = connection.execute("SELECT g.*, COUNT(mm.molecule_id) AS molecule_count FROM molecule_groups g "
                                       "LEFT JOIN molecule_members mm ON mm.group_id=g.id GROUP BY g.id ORDER BY g.updated_at DESC").fetchall()
+            from mn_molecular_design_studio.entity_names import records
+            labels = records(connection)
         result = []
         for row in rows:
             item = {**dict(row), "origin": json.loads(row["origin"]), "schema": json.loads(row["schema_json"])}
             item["read_only"] = bool(item["origin"].get("_replica_node"))
             item["collection_kind"] = self._collection_kind(item)
+            if item["origin"].get("project_deleted"):
+                continue
             row_project = str(row["project_id"] or "")
             authorized = (accessible_projects is None or
                           (row_project in accessible_projects if row_project else str(row["owner_id"]) == user_id))
@@ -447,7 +472,8 @@ class MolecularDatabase:
             if methods and row["import_method"] not in methods:
                 continue
             result.append(item)
-        return result
+        from mn_molecular_design_studio.entity_properties import project_groups
+        return project_groups(result, labels)
 
     def _authorize_group_ids_for_query(self, user: dict, group_ids: list[str]) -> set[str]:
         """Authorize only the requested group IDs instead of rescanning the catalog."""
@@ -538,6 +564,14 @@ class MolecularDatabase:
         else:
             metadata = {**(json.loads(existing["metadata"]) if existing else {}), **supplied_metadata}
             saved_name = str(record.get("name") or molecule_id)[:250]
+        if existing:
+            from mn_molecular_design_studio.design_creation import valid_creation
+            original_creation = json.loads(existing["metadata"]).get("design_creation")
+            if valid_creation(original_creation):
+                metadata["design_creation"] = original_creation
+        if not existing:
+            from mn_molecular_design_studio.scientific_naming import prepare_design_name
+            saved_name, metadata = prepare_design_name(connection, group_id, {**record, "name": saved_name}, metadata, origin or {})
         connection.execute("INSERT INTO molecule_members VALUES (?,?,?,?,?,?) ON CONFLICT(group_id,molecule_id) "
                            "DO UPDATE SET metadata=excluded.metadata", (
                                group_id, molecule_id, saved_name, _json(components), _json(metadata), stamp))
@@ -871,7 +905,8 @@ class MolecularDatabase:
                 raise ValueError("The source structure changed after molecular validation.")
             revision_fields = ("source_file_field", "representation_type",
                                "database_structure_label", "database_structure_policy", "binder_chains",
-                               "target_chains", "pose_id", "pose_rank", "ligand_selection", "candidate_id")
+                               "target_chains", "pose_id", "pose_rank", "ligand_selection", "candidate_id",
+                               "run_id", "tool", "legacy_run_id", "replicate", "target_structure_digest")
             existing_rows = connection.execute(
                 "SELECT id,path,context FROM molecule_structures WHERE molecule_id=? AND group_id=? ORDER BY id",
                 (molecule_id, group_id),
@@ -885,6 +920,9 @@ class MolecularDatabase:
                     continue
                 if not _structure_model_evidence_compatible(
                         path, content_bytes, existing_context, structure_context):
+                    continue
+                if any((existing_context.get("row") or {}).get(key) != (structure_context.get("row") or {}).get(key)
+                       for key in ("legacy_run_id", "replicate", "compound_id")):
                     continue
                 if all(existing_context.get(key) == structure_context.get(key)
                        for key in revision_fields
@@ -1232,10 +1270,6 @@ class MolecularDatabase:
         accessible = _json(self._visible_ids(user, project_id=project_id, collection="all", hide_smoke_test=hide_smoke_test))
         parameters: list[Any] = [visibility]
         clause = "EXISTS (SELECT 1 FROM molecule_members mm WHERE mm.molecule_id=m.id AND mm.group_id IN (SELECT value FROM json_each(?)))"
-        if query:
-            clause += " AND (m.components LIKE ? OR EXISTS (SELECT 1 FROM molecule_members mm WHERE mm.molecule_id=m.id AND mm.group_id IN (SELECT value FROM json_each(?)) AND (mm.name LIKE ? OR mm.metadata LIKE ?)))"
-            needle = "%" + query + "%"
-            parameters.extend([needle, visibility, needle, needle])
         if molecule_type:
             clause += " AND m.type=?"
             parameters.append(molecule_type)
@@ -1265,6 +1299,21 @@ class MolecularDatabase:
             parameters.append(float(item["value"]))
         with self.connection() as connection:
             _finish_projection_upgrade(connection, rebuild_missing)
+            from mn_molecular_design_studio.entity_names import component_id, resolve_record, visible_records
+            name_groups = {row["id"]: dict(row) for row in connection.execute(
+                "SELECT id,project_id,owner_id,import_method FROM molecule_groups WHERE id IN (SELECT value FROM json_each(?))", (accessible,))}
+            canonical_names = visible_records(connection, name_groups)
+            if query:
+                needle = "%" + query + "%"
+                match = "m.components LIKE ? OR EXISTS (SELECT 1 FROM molecule_members mm WHERE mm.molecule_id=m.id AND mm.group_id IN (SELECT value FROM json_each(?)) AND (mm.name LIKE ? OR mm.metadata LIKE ?))"
+                parameters.extend([needle, visibility, needle, needle])
+                if canonical_names:
+                    connection.create_function("studio_component_id", 1, component_id, deterministic=True)
+                    match += (" OR EXISTS (SELECT 1 FROM json_each(m.components) component JOIN entity_names label "
+                        "ON label.subject_id=studio_component_id(component.value) AND label.kind='target' "
+                        "WHERE (label.name LIKE ? OR label.aliases LIKE ?) AND label.scope IN (SELECT value FROM json_each(?)))")
+                    parameters.extend([needle, needle, _json(sorted({row["scope"] for row in canonical_names}))])
+                clause += " AND (" + match + ")"
             total = connection.execute("SELECT COUNT(*) FROM molecules m WHERE " + clause, parameters).fetchone()[0]
             ordering_params = []
             if sort == "name":
@@ -1311,6 +1360,7 @@ class MolecularDatabase:
             result[row["molecule_id"]]["sources"].append({"source_key": row["source_key"], **json.loads(row["provenance"])})
         from mn_molecular_design_studio.molecule_schema import evaluate
         for record in result.values():
+            resolve_record(record, canonical_names, name_groups)
             record["evaluation_count"] = len(record["observations"])
             record["representations"] = list(record["structures"])
             evaluation = record.get("selected_evaluation")

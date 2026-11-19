@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binderscope.local/schema/review_event.schema.json",
+  "title": "Review event",
+  "description": "One decision of one reviewer: a line of reviews/<reviewer>.jsonl. Events are append-only and never edited. Merging two reviews is the union of events by id; the current decision of a reviewer on an item is the event with the latest ts (ties: the later line) among the events with the same reviewer, unit and design. Undoing a decision appends a 'clear' event. docs/data_contract.md section 7.",
+  "type": "object",
+  "required": ["v", "id", "reviewer", "ts", "unit", "design", "decision"],
+  "properties": {
+    "v": { "type": "integer", "const": 1, "description": "Event schema version." },
+    "type": { "type": "string", "enum": ["decision"], "description": "Event type. Only 'decision' exists; the field is reserved for comments and votes (phase 2). Default decision." },
+    "id": {
+      "type": "string",
+      "pattern": "^ev[0-9a-f]{8,32}$",
+      "description": "Event id: 'ev' plus lowercase hex of a hash of (reviewer, unit, design, decision, ts, a per-session counter). Must be unique across all reviewers so a union has no clashes. Older versions wrote ev + 8 hex digits (djb2)."
+    },
+    "reviewer": { "type": "string", "minLength": 1, "maxLength": 80, "description": "Name the reviewer chose. Free text." },
+    "ts": { "$ref": "common.schema.json#/$defs/timestamp", "description": "UTC time of the decision, e.g. 2026-10-01T07:12:55Z." },
+    "unit": { "type": "string", "enum": ["family", "design"], "description": "What was decided on: a backbone family (the board's default unit) or a single design." },
+    "design": { "type": "string", "minLength": 1, "description": "Id of the family (campaign bb) when unit is family, or of the design when unit is design. Name kept from the earlier events." },
+    "run": { "type": ["string", "null"], "description": "Run id of the family or design, for convenience; null when it spans runs." },
+    "decision": { "type": "string", "enum": ["keep", "maybe", "reject", "clear"], "description": "clear removes the reviewer's earlier decision on the item." },
+    "sequences": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Design ids put on the order list (keep decisions on a family: the chosen sequences of the family). Empty otherwise."
+    },
+    "reasons": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Reason keys from profile.reasons (wrong site, small interface, floppy, sticky, low confidence, pose disagrees, oligomer clash, liability, duplicate)."
+    },
+    "learning": { "type": "boolean", "description": "Whether the reviewer model was learning from decisions when this one was made." },
+    "note": { "type": ["string", "null"], "description": "Optional free-text comment." },
+    "bundle": { "type": "string", "description": "manifest bundle.id of the bundle the reviewer was looking at. Events from another bundle are kept but flagged on merge." },
+    "app": { "type": "string", "description": "Writing tool and version, e.g. binderscope-viewer 0.1.0." },
+    "supersedes": { "type": ["string", "null"], "description": "Id of the event this one replaces (informational; the latest ts rule decides)." }
+  },
+  "additionalProperties": true
+}

@@ -641,7 +641,10 @@ experimental binding result.
 The inspected BinderScope source is MIT licensed. Studio's Tag and Fusion
 evaluator independently implements and attributes selected geometric and
 presentation concepts from `binder_review/termini.py` and `docs/termini.md`;
-no BinderScope Python source was copied or vendored. The upstream copyright and
+those original evaluators do not copy BinderScope Python source. The separate
+integrated BinderScope tile now vendors the upstream analysis library, schemas
+and offline review resources; see `docs/binderscope.md` for its source, runtime
+and explicit native-campaign versus saved-cohort coverage. The upstream copyright and
 MIT permission notice are retained in `docs/third-party-notices.md`. The
 license does not grant separate rights to BindCraft 2; its campaign launcher
 and scheduler integration are excluded from Studio.

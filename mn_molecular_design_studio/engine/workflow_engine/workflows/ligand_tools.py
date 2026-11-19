@@ -3025,6 +3025,7 @@ def run_ligand_gromacs_md(
     gpu_device: str = "0",
     cpu_cores: int = 8,
     seed: int = 42,
+    database_bound_source: dict[str, Any] | None = None,
 ) -> Path:
     """Run bound protein–ligand preparation and production MD with GROMACS."""
     params = {
@@ -3044,6 +3045,8 @@ def run_ligand_gromacs_md(
         "cpu_cores": int(cpu_cores),
         "seed": int(seed),
     }
+    if database_bound_source is not None:
+        params["database_bound_source"] = database_bound_source
     _validate_gromacs_md_request(
         {**params, "complex_pdb": str(complex_pdb), "ligand_sdf": str(ligand_sdf)},
         require_files=True,
@@ -3205,6 +3208,7 @@ def run_ligand_openmm_md(
     gpu_device: str = "0",
     cpu_cores: int = 8,
     seed: int = 42,
+    database_bound_source: dict[str, Any] | None = None,
 ) -> Path:
     """Run bound protein–ligand system preparation and MD with OpenMM."""
     params = {
@@ -3217,6 +3221,8 @@ def run_ligand_openmm_md(
         "use_gpu": bool(use_gpu), "gpu_device": str(gpu_device if use_gpu else "none"),
         "cpu_cores": int(cpu_cores), "seed": int(seed),
     }
+    if database_bound_source is not None:
+        params["database_bound_source"] = database_bound_source
     _validate_gromacs_md_request(
         {**params, "complex_pdb": str(complex_pdb), "ligand_sdf": str(ligand_sdf)},
         require_files=True, engine="openmm",

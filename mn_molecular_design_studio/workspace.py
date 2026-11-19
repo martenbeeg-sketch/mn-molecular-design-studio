@@ -125,6 +125,8 @@ def save_organization(organization: dict, home: Path | None = None) -> dict:
     payload.setdefault("members", [])
     projects = payload.get("projects")
     payload["projects"] = projects if isinstance(projects, list) else []
+    from mn_molecular_design_studio.entity_names import project_projection
+    payload = project_projection(payload, workspace)
     temporary_path = path.with_suffix(".json.tmp")
     temporary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     temporary_path.replace(path)
@@ -184,12 +186,16 @@ def validate_project_id(project_id: object, home: Path | None = None) -> str | N
         return None
     if not isinstance(project_id, str):
         raise ValueError("project_id must be a project ID or null.")
-    organization = load_organization(home)
+    organization = load_organization(home or _studio_home())
     projects = organization.get("projects")
     if not isinstance(projects, list) or not any(
         isinstance(project, dict) and project.get("id") == project_id for project in projects
     ):
         raise ValueError(f"Unknown project ID: {project_id}")
+    from mn_molecular_design_studio.project_lifecycle import ProjectUnavailableError, project_writable
+    project = next(project for project in projects if isinstance(project, dict) and project.get("id") == project_id)
+    if not project_writable(project):
+        raise ProjectUnavailableError("This project is archived, being cleaned up, or deleted; new work is blocked.")
     return project_id
 
 
@@ -339,4 +345,7 @@ def load_organization(home: Path | None = None) -> dict:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {"id": "local-default", "name": "Molecular Design Studio", "members": [], "projects": []}
-    return payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        return {}
+    from mn_molecular_design_studio.entity_names import project_projection
+    return project_projection(payload, workspace)

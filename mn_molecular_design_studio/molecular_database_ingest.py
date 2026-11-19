@@ -24,6 +24,12 @@ _SYNC_WORKERS = set()
 _SYNC_WORKERS_LOCK = threading.Lock()
 
 
+def _run_lineage(metadata):
+    fields = ("studio_run_id", "studio_run_name", "campaign_id", "campaign_name", "organizer_node_id",
+              "parent_campaign_run_dir", "pipeline_parent_run_dir", "pipeline_parent_node_id")
+    return {field: metadata[field] for field in fields if isinstance(metadata.get(field), str) and metadata[field].strip()}
+
+
 def _read(path):
     try:
         value = json.loads(Path(path).read_text())
@@ -196,11 +202,11 @@ def _record(candidate, run_dir):
     # binder-only files as if they represented a different complex's identity.
     # Keep every available candidate representation on that identity, while
     # choosing the first valid structure (complex first) for component parsing.
-    for key in ("complex_pdb", "binder_pdb", "target_pdb"):
+    for key in ("complex_pdb", "binder_pdb", "target_pdb", "generated_complex_pdb"):
         if key == "target_pdb" and sequence:
             # A target-only file cannot identify the newly designed sequence.
             continue
-        path = _path(candidate.get(key), run_dir)
+        path = _path(raw_metadata.get(key) if key == "generated_complex_pdb" else candidate.get(key), run_dir)
         if not path:
             continue
         try:
@@ -222,7 +228,13 @@ def _record(candidate, run_dir):
         if components is None:
             components = parsed_components
         if all(existing.get("path") != str(path) for existing in files):
-            files.append({"path": str(path), "label": key.replace("_", " ").title(), "dimensions": 3,
+            representation = raw_metadata.get("design_representation") or {}
+            validation_model = key == "complex_pdb" and representation.get("schema") == "studio.rfd4-representations.v1"
+            files.append({"path": str(path), "label": "Refolded validation complex" if validation_model else
+                          "Generated design complex" if key == "generated_complex_pdb" else key.replace("_", " ").title(), "dimensions": 3,
+                          **({"design_representation_role": "refolded_validation",
+                              "b_factor_interpretation": representation["b_factor_interpretation"]} if validation_model else
+                             {"design_representation_role": "generated_design"} if key == "generated_complex_pdb" else {}),
                           "source_file_field": key, "representation_type": representation_type,
                           "model_id": parsed.get("model_id"),
                           "validated_content_sha256": hashlib.sha256(structure_bytes).hexdigest()})
@@ -334,7 +346,7 @@ def _candidate_structure_correspondence(field, components, candidate, primary_co
                          for item in declared_components
                          if isinstance(item, dict) and item.get("type", "protein") == "protein"
                          and item.get("sequence")}
-    if field in {"complex_pdb", "validation_complex_pdb"} and declared_proteins \
+    if field in {"complex_pdb", "validation_complex_pdb", "generated_complex_pdb"} and declared_proteins \
             and protein_by_chain != declared_proteins:
         return False, "Protein chain IDs or sequences do not match the candidate's declared molecular composition."
     sequences_by_chain = raw.get("sequences_by_chain") if isinstance(raw.get("sequences_by_chain"), dict) else {}
@@ -373,7 +385,7 @@ def _candidate_structure_correspondence(field, components, candidate, primary_co
             return False, "Binder-only representation contains a different protein composition."
         if binder_chains and set(protein_by_chain) != set(binder_chains):
             return False, "Binder-only representation has different chain identifiers."
-    if field in {"complex_pdb", "validation_complex_pdb"} and primary_components:
+    if field in {"complex_pdb", "validation_complex_pdb", "generated_complex_pdb"} and primary_components:
         primary = {str(item.get("chain") or ""): str(item.get("sequence") or "")
                    for item in primary_components if item.get("type") == "protein"}
         if primary and primary != protein_by_chain:
@@ -556,6 +568,9 @@ def _run_mode(run_dir, metadata, inputs):
     # so their candidates cannot fall through into identity-creating modes.
     if _analysis_only_workflow(run_dir, metadata, inputs):
         return "evaluation"
+    if any(str(mapping.get("workflow") or mapping.get("workflow_id") or "").startswith(("refolding.", "structure_prediction."))
+           for mapping in (metadata, inputs)):
+        return "evaluation"
     if any(token in text for token in ("optimized_prediction", "refolding.optimized", "validation_acceptance", "vina", "docking", "affinity", "rescoring", "evaluation", "boltz2", "boltz_2", "molecule_selection")):
         return "evaluation"
     if any(token in text for token in (
@@ -662,16 +677,45 @@ def _database_analysis_subject(database, user, owner, project, source):
             return None
         context = representation.get("context") or {}
         represented_context = dict(context)
+        if "target_context" in source:
+            from mn_molecular_design_studio.binderscope_sources import target_context
+            from mn_molecular_design_studio.data_browser import load_saved_record
+
+            target_record = load_saved_record(database, user, {"molecule_id": molecule_id, "group_id": group_id,
+                "structure_ids": [structure_id], "evaluation_id": ""})
+            if target_record is None or target_context(database, user, target_record, representation)[0] != source["target_context"]:
+                return None
         if (isinstance(source.get("ligand_selection"), dict)
                 and not represented_context.get("ligand_selection")):
             represented_context["ligand_selection"] = source["ligand_selection"]
         representation_components, selected_model_id = _selected_representation_components(
             path.read_bytes(), path.name, represented_context,
         )
+        verified_target_id = None
+        if source.get("chain_role_evidence"):
+            from mn_molecular_design_studio.binderscope import saved_chain_roles
+            from mn_molecular_design_studio.data_browser import load_saved_record
+
+            role_record = load_saved_record(database, user, {"molecule_id": molecule_id, "group_id": group_id,
+                "structure_ids": [structure_id], "evaluation_id": ""})
+            if role_record is None:
+                return None
+            binder, target, evidence = saved_chain_roles(database, user, role_record, representation, representation_components)
+            if (evidence != source["chain_role_evidence"] or binder != source.get("binder_chains")
+                    or target != source.get("target_chains")):
+                return None
+            verified_target_id = evidence.get("target_molecule_id")
+            represented_context.update(binder_chains=binder, target_chains=target)
+            for component in representation_components:
+                if component.get("type") == "protein":
+                    if component.get("chain") in binder:
+                        component["role"] = "binder"
+                    elif component.get("chain") in target:
+                        component["role"] = "target"
         _apply_representation_identity_annotations(representation_components, record.get("components") or [])
         origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
         if source.get("target_chains"):
-            target_id = context.get("design_target_molecule_id") if (
+            target_id = (context.get("design_target_molecule_id") or context.get("target_molecule_id")) if (
                 set(source["target_chains"]) == set(context.get("target_chains") or [])
             ) else None
         else:
@@ -680,7 +724,11 @@ def _database_analysis_subject(database, user, owner, project, source):
             # Preserve that explicit source relationship without treating it as
             # an analysis chain or inferring one from coordinate order.
             target_id = (context.get("design_target_molecule_id")
+                         or context.get("target_molecule_id")
                          or origin.get("design_target_molecule_id"))
+        if not target_id and source.get("ligand_selection"):
+            target_id = context.get("target_molecule_id")
+        target_id = target_id or verified_target_id
         if origin.get("_replica_node"):
             source_owner_node = str(origin.get("_replica_node") or "")
             source_owner_group_id = str(origin.get("_replica_group") or group_id)
@@ -1017,6 +1065,7 @@ def _results_analysis_subject(database, user, owner, project, analysis_run, inpu
                     "source_sequence_sha256": hashlib.sha256(":".join(sorted(expected_sequences)).encode()).hexdigest(),
                     "target_molecule_id": str(raw.get("target_molecule_id")
                                               or source_candidate.get("target_molecule_id") or ""),
+                    "target_context": {key: raw[key] for key in ("target_pdb_id", "target_receptor", "target_reference") if key in raw},
                     "source_owner_id": str(source["owner_id"] or ""),
                     "source_node": str(source_origin.get("_replica_node") or ""),
                 }
@@ -1104,7 +1153,9 @@ def _results_analysis_subject(database, user, owner, project, analysis_run, inpu
                     "structure_id": "", "structure_digest": "", "source_reference_kind": "sequence",
                     "source_sequence_sha256": hashlib.sha256(":".join(sorted(expected_sequences)).encode()).hexdigest(),
                     "target_molecule_id": str(raw.get("target_molecule_id")
-                                              or source_candidate.get("target_molecule_id") or ""),
+                                              or source_candidate.get("target_molecule_id")
+                                              or provenance.get("design_target_molecule_id") or provenance.get("target_molecule_id") or ""),
+                    "target_context": provenance,
                     "source_owner_id": str(source["owner_id"] or ""),
                     "source_node": str((json.loads(source["origin"] or "{}")).get("_replica_node") or ""),
                 })
@@ -1164,7 +1215,8 @@ def _results_analysis_subject(database, user, owner, project, analysis_run, inpu
                         "structure_id": str(structure["id"]), "structure_digest": digest,
                         "source_reference_kind": "structure", "source_sequence_sha256": "",
                         "target_molecule_id": str(raw.get("target_molecule_id")
-                                                  or source_candidate.get("target_molecule_id") or ""),
+                                                  or source_candidate.get("target_molecule_id")
+                                                  or context.get("design_target_molecule_id") or context.get("target_molecule_id") or ""),
                         "source_owner_id": str(source["owner_id"] or ""),
                         "source_node": source_owner_node,
                         "source_structure_owner_node": source_owner_node,
@@ -1435,9 +1487,124 @@ def _target_sequence_record(inputs, metadata, run_dir):
                          "structural_reference": False}}
 
 
+def _run_target_reference(database, user, project, inputs, metadata, *, path=None):
+    from mn_molecular_design_studio.target_registration import reference_context, saved_reference_context
+
+    mappings = [metadata, inputs, inputs.get("inputs") or {}, inputs.get("params") or {}]
+    structure_id = next((str(mapping["target_source_structure_id"]) for mapping in mappings
+                         if isinstance(mapping, dict) and mapping.get("target_source_structure_id")), "")
+    molecule_id = next((str(mapping["target_source_molecule_id"]) for mapping in mappings
+                        if isinstance(mapping, dict) and mapping.get("target_source_molecule_id")), "")
+    saved = saved_reference_context(database, user, project, structure_id=structure_id,
+                                    molecule_id=molecule_id, path=path)
+    return reference_context(*mappings, saved, path=path)
+
+
+def _register_candidate_target(database, user, project, run_dir, inputs, metadata, candidate, record,
+                               *, source_key, origin, reference=None, fallback_record=None):
+    from mn_molecular_design_studio.target_registration import reference_context, register_exact_target, target_components
+
+    raw = candidate.get("raw_metadata") or {}
+    declared_reference = {key: raw[key] for key in ("target_pdb_id", "target_receptor", "target_reference") if key in raw}
+    reference = reference_context(reference or {}, declared_reference,
+        {key: candidate[key] for key in ("target_pdb_id", "target_receptor", "target_reference") if key in candidate})
+    if set(candidate.get("target_chains") or []) & set(candidate.get("binder_chains") or []):
+        return {**reference, "target_registration": {"status": "unresolved", "reason": "Overlapping target and binder chains"}}
+    components = target_components(record.get("components") or [], record.get("metadata"), candidate)
+    if not components:
+        components = target_components(raw.get("components") or [], raw, candidate)
+    if not components:
+        components = _target_sequence_components(candidate, inputs, metadata, run_dir)
+    if not components and fallback_record:
+        fallback_metadata = fallback_record.get("metadata") or {}
+        fallback_candidate = {**candidate, "target_chains": candidate.get("target_chains")
+                              or fallback_metadata.get("validated_target_chains") or []}
+        components = target_components(fallback_record.get("components") or [], fallback_metadata, fallback_candidate)
+        if not components and not (candidate.get("target_chains") or candidate.get("binder_chains")):
+            components = fallback_record.get("components") or []
+    if not components:
+        return reference
+    mappings = [raw, candidate, inputs.get("params") or {}, inputs.get("inputs") or {}, inputs, metadata]
+    name = next((str(mapping[key]).strip() for mapping in mappings for key in ("target_name", "target_label")
+                 if isinstance(mapping.get(key), str) and mapping[key].strip()), "")
+    name = name or (fallback_record or {}).get("name") or "Recorded target"
+    return register_exact_target(database, user, project, components, name=name,
+        source_key=source_key, origin=origin, reference=reference)
+
+
 def _is_completed_success(metadata, result):
     status = str(metadata.get("status") or "").strip().casefold()
     return status in {"completed", "complete", "success", "succeeded"} and result.get("success") is True
+
+
+def _ingest_bound_md(database, user, project, run_dir, inputs, metadata, result, source_key):
+    from mn_molecular_design_studio.bound_docking import prepare_bound_inputs
+    from mn_molecular_design_studio.target_registration import reference_context
+
+    source = (inputs.get("params") or {}).get("database_bound_source")
+    if not isinstance(source, dict) or source.get("schema") != "studio.bound-pose-source.v1":
+        return 0
+    if any(not isinstance(source.get(key), str) or not source[key] or len(source[key]) > 512
+           for key in ("molecule_id", "group_id", "structure_id")) or any(
+        not re.fullmatch(r"[a-f0-9]{64}", str(source.get(key) or "")) for key in ("pose_digest", "complex_digest")
+    ):
+        return 0
+    source = dict(source)
+    try:
+        from mn_molecular_design_studio.molecular_database_peer import _resolve_owner_qualified_structure
+        translated = {**source, "source_molecule_id": source.get("molecule_id")}
+        with database.connection() as connection:
+            if _resolve_owner_qualified_structure(connection, translated):
+                if translated.get("source_structure_reference_status") != "resolved":
+                    return 0
+                source.update(group_id=translated["source_group_id"], structure_id=translated["source_structure_id"])
+        group = database.group(str(source.get("group_id") or ""), user)
+        if str(group.get("project_id") or "") != str(project or "") or (
+            not project and group["owner_id"] != user["id"]
+        ):
+            return 0
+        with database.connection() as connection:
+            attached = connection.execute("SELECT 1 FROM molecule_structures WHERE id=? AND group_id=? AND molecule_id=?",
+                (source.get("structure_id"), source.get("group_id"), source.get("molecule_id"))).fetchone()
+        if not attached:
+            return 0
+        target_path = _target_structure_path(inputs, run_dir)
+        input_digest = _file_sha256(target_path) if target_path is not None else ""
+        prepared = prepare_bound_inputs(database, user, source["molecule_id"], structure_id=source["structure_id"], persist=False)
+        if (prepared["source_pose_digest"] != source.get("pose_digest") or target_path is None
+                or prepared["complex_structure_digest"] != source.get("complex_digest")
+                or input_digest != prepared["complex_structure_digest"]):
+            return 0
+    except (OSError, ValueError, PermissionError, KeyError):
+        return 0
+    metrics = {key: value for key, value in _numeric(result.get("metrics") or {}).items() if math.isfinite(value)}
+    if not metrics:
+        return 0
+    origin = {"type": "job", "run_id": run_dir.name, "task_group": run_dir.parent.name,
+        "run_dir": str(run_dir), "workstation": socket.gethostname(), "tool": metadata.get("tool"),
+        "status": "completed", "workflow_role": "molecular_dynamics"}
+    destination = _ensure_group(database, user, _id("evaluation-", f"{user['id']}:{project or ''}"),
+        "Evaluated structures", project, "tool_output", origin, "evaluation")
+    database.add_to_group(user, destination, [source["molecule_id"]])
+    pose_context = prepared["source_pose_context"]
+    context = {**origin, **reference_context(pose_context),
+        **{key: source[key] for key in ("source_structure_owner_node", "source_structure_owner_group_id",
+                                       "source_structure_owner_structure_id") if source.get(key)},
+        "target_molecule_id": pose_context.get("target_molecule_id") or "",
+        "target_structure_digest": prepared["target_structure_digest"],
+        "source_group_id": source["group_id"], "source_molecule_id": source["molecule_id"],
+        "source_structure_id": source["structure_id"], "source_structure_digest": source["pose_digest"],
+        "input_complex_digest": source["complex_digest"], "source_reference_kind": "bound_pose",
+        "settings": inputs.get("params") or {}, "is_representative": False}
+    summary = run_dir / "artifacts/md/result.json"
+    if summary.is_file() and summary.resolve().is_relative_to(run_dir.resolve()):
+        context.update(source_summary_relative_path="artifacts/md/result.json", source_summary_sha256=_file_sha256(summary),
+            replica_index=1, md_engine=metadata.get("engine") or metadata.get("tool") or "MD")
+    _put_source(database, destination, source["molecule_id"], source_key + ":md-source", context)
+    database.add_observation(destination, source["molecule_id"], str(metadata.get("tool") or "md"), run_dir.name,
+        metrics, context=context, source_key=source_key + ":md:metrics",
+        created_at=metadata.get("completed_at") or metadata.get("created_at") or _now())
+    return 1
 
 
 def _numeric(values):
@@ -1451,6 +1618,16 @@ def _numeric(values):
             except ValueError:
                 pass
     return result
+
+
+def _calculation_receipt(row, *, affinity=False, default_status=""):
+    status = str(row.get("status") or default_status).casefold()
+    numeric = _numeric(row)
+    measurements = ({"affinity", "affinity_log10_ic50_uM", "affinity_log10_ic50_um", "pIC50", "ic50_uM", "binder_probability"}
+                    if affinity else set(numeric) - {"attempt_index", "pose_rank", "model_id", "compound_id", "seed"})
+    recorded = status in {"completed", "complete", "success", "succeeded"} and any(
+        math.isfinite(value) for key, value in numeric.items() if key in measurements)
+    return {"status": status, "calculation_recorded": recorded}
 
 
 def _is_cofolding_prediction(tool, metadata, inputs, mode):
@@ -1631,6 +1808,7 @@ def _candidate_structure_signature(run_dir):
         references = [(field, candidate.get(field)) for field in ("complex_pdb", "binder_pdb", "target_pdb")]
         raw_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
         references.append(("validation_complex_pdb", raw_metadata.get("validation_complex_pdb")))
+        references.append(("generated_complex_pdb", raw_metadata.get("generated_complex_pdb")))
         for field, reference in references:
             if not reference:
                 continue
@@ -1665,6 +1843,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     database = database or MolecularDatabase()
     marker = _read(run_dir / "molecular_design_studio.json")
     metadata, inputs, result = (_read(run_dir / name) for name in ("metadata.json", "input.json", "result.json"))
+    if not (metadata.get("workflow") or inputs.get("workflow")):
+        contract_workflow = _read(run_dir / "artifact_contract.json").get("workflow")
+        if isinstance(contract_workflow, str) and contract_workflow:
+            metadata = {**metadata, "workflow": contract_workflow}
     embedded = metadata.get("molecular_design_studio") or {}
     owner = str(marker.get("studio_owner_id") or metadata.get("owner_id") or embedded.get("studio_owner_id") or "legacy-unassigned")
     project = str(marker.get("project_id") or metadata.get("project_id") or embedded.get("project_id") or "")
@@ -1713,10 +1895,39 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                                (source_key, signature, _now()))
         return 0
 
+    if run_dir.parent.name == "ligand-md" and (inputs.get("params") or {}).get("database_bound_source") is not None:
+        count = _ingest_bound_md(database, user, project, run_dir, inputs, metadata, result, source_key)
+        if count:
+            with database.connection() as connection:
+                connection.execute("INSERT INTO molecular_ingestions VALUES (?,?,?) ON CONFLICT(source_key) "
+                    "DO UPDATE SET signature=excluded.signature,updated_at=excluded.updated_at", (source_key, signature, _now()))
+        return count
+
     name = str(metadata.get("campaign_name") or (inputs.get("params") or {}).get("job_name") or metadata.get("job_name") or run_dir.name)
     stamp = str(metadata.get("completed_at") or metadata.get("created_at") or _now())
     origin = {"type": "job", "run_id": run_dir.name, "task_group": run_dir.parent.name, "run_dir": str(run_dir.resolve()),
-              "tool": tool, "workstation": socket.gethostname(), "status": metadata.get("status")}
+              "tool": tool, "workstation": socket.gethostname(), "status": metadata.get("status"), **_run_lineage(metadata)}
+    legacy_input_cache = {}
+    legacy_registered_targets = {}
+
+    def recovered_target_context(calculation):
+        if not is_legacy_aggregate:
+            return {}
+        from mn_molecular_design_studio.legacy_target_links import recover_target, register_target
+        try:
+            binding = recover_target(run_dir, calculation, namespace=tool, cache=legacy_input_cache)
+            identity = _canonical_fingerprint({"components": binding["components"]})
+            if identity not in legacy_registered_targets:
+                legacy_registered_targets[identity] = register_target(database, user, project, binding,
+                    source_key=source_key + ":target-binding:" + identity, origin=origin)
+            return {"target_molecule_id": legacy_registered_targets[identity],
+                "target_registration": binding["evidence"], "target_pdb_id": binding["pdb_id"],
+                "target_receptor": binding["receptor"],
+                "workflow_role": binding["workflow_role"]}
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            log.warning("Could not recover original target for %s: %s", run_dir, exc)
+            return {}
+
     output_method = "user_uploads" if mode == "curated" else "tool_output"
     seen_molecules = set()
     candidate_groups = {}
@@ -1768,6 +1979,8 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             target_path = None
             target_structure_record = None
             source_target_sequences = []
+    native_reference = (_run_target_reference(database, user, project, inputs, metadata, path=target_path)
+                        if not is_legacy_aggregate and not analysis_only else {})
     if prediction_run and candidate_records:
         from mn_molecular_design_studio.cofolding_results import best_candidates_by_complex
         with_structures = [candidate for candidate, record in candidate_records if record.get("files")]
@@ -1895,8 +2108,19 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                                       if key in (candidate.get("metrics") or {})},
         }
         provenance = {**origin, "candidate_id": candidate.get("candidate_id"),
+                      "binder_chains": list(candidate.get("binder_chains") or []),
+                      "target_chains": list(candidate.get("target_chains") or []),
                       "parents": candidate.get("parents") or [],
                       "acceptance_decision": {"status": acceptance_state, "evidence": acceptance_evidence}}
+        from mn_molecular_design_studio.database_outcomes import workflow_role
+        provenance.update(workflow_role=workflow_role(metadata, inputs, candidate, mode=mode,
+            analysis_only=analysis_only, prediction=prediction_run),
+            workflow_id=str(inputs.get("workflow") or metadata.get("workflow") or ""),
+            job_type=str(inputs.get("job_type") or metadata.get("job_type") or ""))
+        if not analysis_only:
+            provenance.update(recovered_target_context({"candidate_id": candidate.get("candidate_id")}))
+        if mode == "curated":
+            provenance["saved_selection"] = True
         candidate_id = str(candidate.get("candidate_id") or _canonical_fingerprint(record))
         source_for_molecule = f"{source_key}:{candidate_id}"
         with database.connection() as connection:
@@ -1981,19 +2205,24 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         if ("mol-" + _canonical_fingerprint(identity_record)[:32]) in removed_ids:
             continue
 
-        if designed_target_components:
+        if not analysis_only and (not is_legacy_aggregate or (mode == "generated" and designed_target_components)):
+            target_context = _register_candidate_target(database, user, project, run_dir, inputs, metadata,
+                candidate, record, source_key=source_for_molecule, origin=origin,
+                reference=provenance if is_legacy_aggregate else native_reference,
+                fallback_record=input_target_record or target_structure_record)
+            provenance.update(target_context)
+            identity_record["metadata"] = {**identity_record.get("metadata", {}), **target_context}
+        if designed_target_components and provenance.get("target_molecule_id"):
             # Preserve a molecule relationship as well as the complex coordinates.
             # This is the exact modeled target sequence, which may be a crop of
             # the campaign input; it is not a native structural reference.
             target_record = {"name": f"{name} · modeled target", "components": designed_target_components,
                              "files": [], "metadata": {"target_identity_type": "sequence_only",
                                                          "structural_reference": False}}
-            target_id, _, _ = _find_or_create_input(
-                database, user, project, name, source_for_molecule, target_record,
-                provenance={**provenance, "input_role": "modeled_target"}, source_key_suffix=":target",
-            )
+            target_id = provenance["target_molecule_id"]
             relationship = {
                 "design_target_molecule_id": target_id,
+                "design_target_name": (input_target_record or {}).get("name") or target_record["name"],
                 "design_target_relationship": "exact modeled target sequence",
                 "design_target_sequence_sha256": hashlib.sha256(
                 ":".join(sorted(component["sequence"] for component in designed_target_components)).encode()
@@ -2008,6 +2237,12 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             identity_record["metadata"] = {**identity_record.get("metadata", {}), **relationship}
 
         if database_subject is not None:
+            from mn_molecular_design_studio.target_registration import reference_context
+            source_context = database_subject.get("target_context") or (
+                database_subject.get("representation", {}).get("context") or {})
+            provenance.update(reference_context(source_context))
+            if database_subject.get("target_molecule_id"):
+                provenance["target_molecule_id"] = database_subject["target_molecule_id"]
             molecule_id, destination = database_subject["molecule_id"], database_subject["group_id"]
             # Evaluations authored on this workstation belong to its local
             # Evaluation collection, even when the selected molecule and
@@ -2103,22 +2338,19 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             if (candidate.get("metrics") or {}).get("binder_geometry_status") is not None:
                 candidate_context["binder_geometry_status"] = candidate["metrics"]["binder_geometry_status"]
             candidate_context["raw_metadata"] = {key: raw[key] for key in (
-                "fasta_header", "engine_version", "operation", "structure_kind", "image_digest",
-                "validation_acceptance", "validation_measurements", "validation_provenance",
+                "fasta_header", "engine_version", "operation", "structure_kind", "image_digest", "design_creation",
+                "validation_acceptance", "validation_measurements", "validation_provenance", "design_representation",
                 "database_source", "complex_analysis_selection", "reference_placement",
                 "reference_environment", "tag_fusion_suitability", "sequence_liability",
                 "binder_interface_chemistry",
+                "binderscope",
                 "measurement_provenance", "analysis_parameters",
             ) if key in raw}
             settings = inputs.get("params") or {}
             from mn_molecular_design_studio.evaluations import file_digest
             target_source = _path(candidate.get("target_pdb"), run_dir)
-            target_components = [component for component in record.get("components", []) if component.get("role") == "target"]
-            evaluation_target = {"target_id": _id("target-", _json(target_components))} if target_components else {}
-            if provenance.get("design_target_molecule_id"):
-                evaluation_target["target_id"] = provenance["design_target_molecule_id"]
-            elif database_subject is not None and database_subject.get("target_molecule_id"):
-                evaluation_target["target_id"] = database_subject["target_molecule_id"]
+            evaluation_target_id = provenance.get("design_target_molecule_id") or provenance.get("target_molecule_id")
+            evaluation_target = {"target_id": evaluation_target_id} if evaluation_target_id else {}
             analysis_source_context = ({
                 "source_kind": "database" if database_source is not None else "results",
                 "source_molecule_id": database_subject["molecule_id"],
@@ -2150,6 +2382,13 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                         "calculation_structure_digest": selected_digest,
                         "is_representative": True,
                     }
+                    generated_id = candidate_structure_ids.get("generated_complex_pdb")
+                    if generated_id and selected_structure_id == candidate_structure_ids.get("complex_pdb"):
+                        representation = raw.get("design_representation") or {}
+                        analysis_source_context.update(source_structure_id=generated_id,
+                            source_structure_digest=representation.get("generated_sha256") or "",
+                            design_representation_role="refolded_validation",
+                            b_factor_interpretation=representation.get("b_factor_interpretation") or "uninterpreted")
             database.add_observation(destination, molecule_id, tool, run_dir.name, metrics,
                 context={**provenance, **evaluation_target, **analysis_source_context,
                          "candidate": candidate_context, "settings": settings,
@@ -2206,7 +2445,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         try:
             target_record = target_structure_record
             target_id, target_group_id, matched = _find_original_group(database, user["id"], project, target_record)
-            target_provenance = {**origin, "input_role": "receptor", "collection_kind": "inputs"}
+            target_provenance = {**origin, **native_reference, "input_role": "receptor", "collection_kind": "inputs"}
             if not matched:
                 target_group_id = _ensure_group(database, user, _id("inputs-", f"{user['id']}:{project or ''}"),
                     "Tool inputs", project, "tool_inputs",
@@ -2234,7 +2473,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         except ValueError as exc:
             log.info("Could not index receptor for %s: %s", run_dir, exc)
     elif input_target_record and not analysis_only:
-        target_provenance = {**origin, "input_role": "sequence_defined_target",
+        target_provenance = {**origin, **native_reference, "input_role": "sequence_defined_target",
                              "collection_kind": "inputs", "structural_reference": False}
         target_id, target_group_id, _ = _find_or_create_input(
             database, user, project, name, source_key, input_target_record,
@@ -2245,15 +2484,17 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         })
         seen_molecules.add(target_id)
     params = inputs.get("params") or {}
-    context = {**origin, "target_molecule_id": target_id, "target_path": str(target_path) if target_path else None,
+    from mn_molecular_design_studio.database_outcomes import workflow_role
+    context = {**origin, **native_reference, "target_molecule_id": target_id, "target_path": str(target_path) if target_path else None,
                "settings": params, "units": (result.get("metrics") or {}).get("score_units"),
                "primary_ranking_metric": (result.get("metrics") or {}).get("primary_ranking_metric"),
-               "ranking_direction": (result.get("metrics") or {}).get("ranking_direction")}
+               "ranking_direction": (result.get("metrics") or {}).get("ranking_direction"),
+               "workflow_role": workflow_role(metadata, inputs, {}, mode=mode, prediction=prediction_run)}
     if target_path and (run_dir / "artifacts/docking_scores.csv").is_file():
         from mn_molecular_design_studio.bound_docking import register_receptor
         try:
             context.update(register_receptor(database, user, target_path, project_id=project,
-                name=str((target_record or {}).get("name") or "Docking receptor")))
+                name=str((target_record or {}).get("name") or "Docking receptor"), reference=native_reference))
         except (ValueError, OSError) as exc:
             log.info("Could not retain docking receptor snapshot for %s: %s", run_dir, exc)
     target_context_by_attempt = {}
@@ -2283,7 +2524,8 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 continue
             molecule_id, destination, record = match
             legacy_run_id = str(row.get("legacy_run_id") or "").strip()
-            row_target_context = target_context_by_attempt.get(legacy_run_id, {})
+            row_target_context = {**target_context_by_attempt.get(legacy_run_id, {}),
+                **recovered_target_context({"legacy_run_id": legacy_run_id, "row": row})}
             pose = pose_paths[index]
             pose_digest = _file_sha256(pose) if pose and pose.is_file() else ""
             pose_identity = {
@@ -2306,6 +2548,9 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 preferred_docking_structure_ids.add(structure_id)
             database.add_observation(destination, molecule_id, tool, run_dir.name, _numeric({key: value for key, value in row.items() if key != "compound_id"}),
                 context={**context, **row_target_context, "row": row, "legacy_run_id": legacy_run_id,
+                         **(_calculation_receipt(row, affinity=filename == "nesso_affinity.csv",
+                            default_status=str(metadata.get("status") or "") if filename == "nesso_affinity.csv" else "")
+                            if not is_legacy_aggregate else {"status": str(row.get("status") or "")}),
                          "attempt_index": row.get("attempt_index"), "pose_identity": pose_identity,
                          "pose_id": pose_identity["id"], "pose_digest": pose_digest,
                          "structure_digest": pose_digest, "model_id": row.get("model_id") or "",
