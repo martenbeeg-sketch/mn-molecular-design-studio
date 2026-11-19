@@ -49,6 +49,8 @@ separate from input imports.
 structure/analysis viewer. The old **Database** session route redirects here;
 the legacy screen is not a separate destination. **Workspace** can expand the
 table or structure pane, with folders pinned beside it or available as an overlay.
+There is no separate Complex Analysis sidebar entry. Analysis tools, pipeline
+steps, saved attached analyses and compatibility handoffs remain available.
 Input-only library rows are not presented as scientific outcomes. Dataset and
 member links connect to their accessible saved results using the same SQL IDs.
 

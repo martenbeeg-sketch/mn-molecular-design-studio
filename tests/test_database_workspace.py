@@ -55,6 +55,19 @@ def test_single_database_navigation_accepts_old_browser_sessions():
     assert not any(button.label == "Database" for button in app.button)
 
 
+def test_sidebar_omits_separate_complex_analysis_without_removing_legacy_handoffs():
+    app = AppTest.from_string("import streamlit as st\n"
+        "st.session_state.setdefault('page','Complex Analysis')\n"
+        "from mn_molecular_design_studio.navigation import render_workspace_navigation\n"
+        f"render_workspace_navigation({USER!r})").run()
+    assert not app.exception
+    assert not any(button.label == "Complex Analysis" for button in app.button)
+    assert app.button(key="nav-all-tools") and app.button(key="nav-data-browser")
+    assert app.session_state["page"] == "Complex Analysis"
+    source = (Path(data_browser_ui.__file__).parent / "run_app.py").read_text()
+    assert 'elif page == "Complex Analysis":' in source
+
+
 def test_both_database_routes_dispatch_only_the_new_browser():
     source = (Path(data_browser_ui.__file__).parent / "run_app.py").read_text()
     assert 'elif page in {"Database", "Data Browser"}:\n    _render_database()' in source

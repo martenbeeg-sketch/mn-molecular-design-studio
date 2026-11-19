@@ -10,7 +10,6 @@ WORKSPACE_PAGES = (
     ("My results", ":material/query_stats:", "My runs"),
     ("Datasets", ":material/library_books:", "Datasets"),
     ("Data browser", ":material/folder_copy:", "Data Browser"),
-    ("Complex Analysis", ":material/biotech:", "Complex Analysis"),
 )
 
 
