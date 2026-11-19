@@ -16,27 +16,27 @@ The Results folder starts empty, defaults to the same data volume as the
 previous app, and can be changed in Settings. The Database includes only
 molecule sets imported or created through Molecular Design Studio.
 
-### Browse connected Database results
+### Database workspace
 
-The Database keeps its three-pane layout: choose and filter on the left,
-select a connected result in the center, and inspect its structure and scores
-on the right.
+The single **Database** sidebar entry opens the folder-based browser: choose
+and refine folders on the left, select saved results in the center, and inspect
+structures, scores and attached analyses on the right. **Workspace** can expand
+the table or structure pane, with folders pinned beside it or available as an
+overlay. The former **Data browser** session route opens this same workspace;
+the legacy Database screen is no longer a separate application destination.
 
-- **Molecules** defaults to **Targets & ligands**. A recorded binding target or
-  receptor is distinct from a designed binder; **Designed molecules** and
-  **All molecular entities** are separate choices. Recorded target labels take
-  precedence over carrier filenames or a complex's binder alias. **Whole molecule**
-  keeps complete complexes, partners and stoichiometry separate.
-- **Runs** shows the individual results of a recorded execution. Campaigns
-  combine only explicitly linked executions, across their source collections.
-- **Collections** are imported libraries or folders of selected molecules,
-  not new calculations. Existing selection, editing and export remain here.
+**Library actions** retains molecule imports, collection creation and management,
+including metadata columns and explicitly confirmed collection-member removal.
+Select table rows and choose **Data actions** to collect, export, compare or reuse
+their molecules in another tool. Contextual **Properties** handles descriptive
+editing; **Table columns & CSV export** exports the matching scientific results
+across every page. Project/run cleanup remains on **Projects**.
 
-Each evaluation/model retains its own scores and representations. A structure
-without a recorded evaluation is shown without borrowing another job's scores.
-Repeated target carriers and other input-only history are hidden from outputs
-unless **Include input / reference history** is enabled. Structures/evaluations
-appear first; this order is not a scientific score ranking.
+The default view remains the curated library. **Include historical indexed data**
+is an explicit advanced inspection option, not admission or evidence of passing.
+Existing project, run, import and collection links open the new tree, reset stale
+refinements and retain exact authorized source collections and molecular focus.
+An inaccessible destination is reported rather than silently substituted.
 
 Links use accessible exact contents, explicit target IDs, or an unambiguous
 origin-qualified run's recorded target input. Ambiguous or conflicting legacy
@@ -45,15 +45,13 @@ fresh collection access and all SQLite commits, including peer edits and deletio
 the first load after new data can still take several seconds. Browsing does not
 merge, rename or delete original records.
 
-### Experimental Data browser
-
 Project and target/ligand names now have [canonical SQL labels](docs/canonical-entity-names.md),
 contextual Properties dialogs, searchable previous names and stale-edit protection.
 Scientific IDs, structures and filesystem paths are unchanged. Shared label
 editing stays on its source workstation; all peers need the naming-capable
 release for consistent target labels.
 
-The separate **Data browser** page adds a folder tree without replacing Database:
+The folder tree provides several starting points over the same SQL data:
 
 - **Projects** is the default: project → target or compound → activity → experiment.
   Single-activity levels are omitted. Imported libraries open into their compounds;

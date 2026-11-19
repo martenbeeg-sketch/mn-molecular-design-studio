@@ -314,10 +314,10 @@ def render_setup(schema, *, user, project_selector, submit):
         st.info("Read-only development preview: configuration is available, but job submission is disabled.")
     st.write("Interface chemistry, liabilities, surface patches, structural diversity, binding modes and tag/fusion assessment. "
              "Reference context, specificity and scaffold evidence are enabled only when their inputs are supplied.")
-    st.info("Start in Data Browser: select table rows or all matching admitted designs at any tree level, then choose Analyze · BinderScope. "
+    st.info("Start in Database: select table rows or all matching admitted designs at any tree level, then choose Analyze · BinderScope. "
             "Generator, topology and confidence settings are taken from the selected designs, with per-design overrides when needed.")
-    if st.button("Open Data Browser", key="binderscope-open-browser"):
-        st.session_state["page"] = "Data Browser"
+    if st.button("Open Database", key="binderscope-open-browser"):
+        st.session_state["page"] = "Database"
         st.rerun()
     with st.expander("Advanced · original campaign inputs"):
         _render_native_setup(schema, project_selector=project_selector, submit=submit)

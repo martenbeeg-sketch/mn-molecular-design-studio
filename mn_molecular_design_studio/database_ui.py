@@ -101,6 +101,10 @@ def _reset_import():
     st.rerun()
 
 
+def _dismiss_library_dialog():
+    st.session_state.pop("data-browser-management", None)
+
+
 def _guess(columns, names):
     return next((column for column in columns if column.lower().replace(" ", "_") in names), "")
 
@@ -277,8 +281,8 @@ def _report_csv(rows):
 
 
 @st.dialog("Import molecules", width="large")
-def render_import_dialog(user, projects):
-    database = MolecularDatabase()
+def render_import_dialog(user, projects, *, database=None):
+    database = database if database is not None else MolecularDatabase()
     step = st.session_state.get("molecular-import-step", 0)
     st.caption("Group  ›  What are you importing?" if step == 0 else "Group  ›  Import molecules")
     if step == 0:
@@ -814,25 +818,35 @@ def _render_evaluation_measurements(result, *, compact=False):
         st.caption("Execution status: " + (result["status"] or "not recorded") + ". This is not a filter acceptance decision.")
 
 
-@st.dialog("Create molecule group", width="small")
-def render_group_dialog(user, projects, ids, default_project=""):
-    database = MolecularDatabase()
+@st.dialog("Create molecule group", width="small", on_dismiss=_dismiss_library_dialog)
+def render_group_dialog(user, projects, ids, default_project="", *, database=None):
+    database = database if database is not None else MolecularDatabase()
     st.caption(f"{len(ids):,} selected molecules. Their existing structures and scores stay linked.")
     name = st.text_input("Group name", key="molecular-group-name")
     project = _projects(projects, "molecular-group-project", default=default_project)
     if st.button("Create group", type="primary", disabled=not name.strip(), key="molecular-group-save"):
-        group_id = database.create_group(user, name, project_id=project)
-        database.add_to_group(user, group_id, ids)
+        try:
+            group_id = database.create_group(user, name, project_id=project)
+            if ids:
+                database.add_to_group(user, group_id, ids)
+        except (ValueError, PermissionError, OSError, sqlite3.Error) as exc:
+            st.error(str(exc))
+            return
         st.session_state["molecular-preselect-group"] = group_id
         st.session_state["molecular-preselect-collection"] = "library"
         st.session_state["database-group-request"] = None
+        _dismiss_library_dialog()
         st.rerun()
 
 
-@st.dialog("Add column", width="small")
-def render_column_dialog(user, group_id):
-    database = MolecularDatabase()
-    group = database.group(group_id, user, write=True)
+@st.dialog("Add column", width="small", on_dismiss=_dismiss_library_dialog)
+def render_column_dialog(user, group_id, *, database=None):
+    database = database if database is not None else MolecularDatabase()
+    try:
+        group = database.group(group_id, user, write=True)
+    except (ValueError, PermissionError, OSError, sqlite3.Error) as exc:
+        st.error(str(exc))
+        return
     name = st.text_input("Column name", key="molecular-column-name")
     kind = st.selectbox("Type", ["text", "number", "boolean", "category"], key="molecular-column-type")
     formula = st.text_input("Formula (optional)", placeholder="=9 - LOG10(affinity_nM)", key="molecular-column-formula")
@@ -848,6 +862,7 @@ def render_column_dialog(user, group_id):
                 field["choices"] = [value.strip() for value in categories.split(",") if value.strip()]
             database.set_schema(user, group_id, {**schema, "fields": [*schema.get("fields", []), field]})
             st.session_state["molecular-column-open"] = False
+            _dismiss_library_dialog()
             st.rerun()
         except (ValueError, PermissionError) as exc:
             st.error(str(exc))

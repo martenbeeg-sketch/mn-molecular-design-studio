@@ -607,7 +607,7 @@ CURRENT_USER = _render_authentication_gate()
 st.session_state["_molecular_database_user"] = CURRENT_USER
 if os.environ.get("MDS_ANALYSIS_WORKSPACE") == "1":
     st.info("Live analysis workspace · uses your real saved Database. Analyses run only after you confirm Queue; results attach to the selected designs.")
-    st.session_state.setdefault("page", "Data Browser")
+    st.session_state.setdefault("page", "Database")
 
 
 def search_jobs(**kwargs):
@@ -9850,8 +9850,9 @@ def _render_legacy_database() -> None:
 
 
 def _render_database() -> None:
-    from mn_molecular_design_studio import database_ui
-    database_ui.render_database(CURRENT_USER, _studio_projects(include_archived=True))
+    from mn_molecular_design_studio.data_browser_ui import render_data_browser
+    render_data_browser(CURRENT_USER, _studio_projects(include_archived=True),
+                        workflow_schema=workflow_schema, submit=_submit_cofolding_job)
 
 
 def _render_account() -> None:
@@ -10124,12 +10125,8 @@ elif page == "My runs":
     _render_runs()
 elif page == "Job details":
     _render_job_details()
-elif page == "Database":
+elif page in {"Database", "Data Browser"}:
     _render_database()
-elif page == "Data Browser":
-    from mn_molecular_design_studio.data_browser_ui import render_data_browser
-    render_data_browser(CURRENT_USER, _studio_projects(include_archived=True),
-                        workflow_schema=workflow_schema, submit=_submit_cofolding_job)
 elif page == "Complex Analysis":
     from mn_molecular_design_studio.complex_analysis_ui import initialize_workspace_view, render_complex_analysis_workspace
     initialize_workspace_view(st.session_state)

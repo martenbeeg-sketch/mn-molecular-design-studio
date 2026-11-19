@@ -127,6 +127,16 @@ def _subject(index, groups):
             "molecule_ids": molecules, "direct_molecule_ids": molecules}
 
 
+def source_collection_scope(index, group_id):
+    group = index["groups"].get(group_id)
+    if group is None:
+        return None
+    identifier = "collection:" + group_id
+    return {"id": identifier, "label": group["name"], "parent": "collections",
+        "subject": _subject(index, {group_id}), "run_view": False, "route": "collection",
+        "entity": {"kind": "dataset", "group_id": group_id}, "search": group["name"]}
+
+
 def _scope_label(name, fallback, identifier):
     return str(name) if friendly(name) else fallback
 

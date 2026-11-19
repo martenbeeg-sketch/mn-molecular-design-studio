@@ -1,4 +1,4 @@
-"""Experimental folder-based reader, independent of the existing Database page."""
+"""The Database workspace: scientific folders, saved results and linked details."""
 from __future__ import annotations
 
 import hashlib
@@ -11,7 +11,7 @@ import streamlit as st
 
 from mn_molecular_design_studio.data_browser import (
     ReadOnlyLibrary, admission_measurements, concise_result_label, expand_scope, listed_results, load_saved_record,
-    navigation_tree, producing_evaluations, saved_receptor_file, scope_path,
+    navigation_tree, producing_evaluations, saved_receptor_file, scope_path, source_collection_scope,
 )
 from mn_molecular_design_studio.database_browser_cache import BrowserCache
 from mn_molecular_design_studio.database_browser_labels import calculation_label, run_label, tool_label
@@ -22,6 +22,8 @@ from mn_molecular_design_studio.data_browser_table import (
     COLUMN_PRESETS, column_label, default_columns, evaluation_entries, result_table, table_columns, table_csv, table_profile,
 )
 from mn_molecular_design_studio.binderscope_table import NUMBER_FORMATS, PREFIX, VIEWER_COLUMN, inspector_choices, inspector_label
+from mn_molecular_design_studio.database_actions_ui import read_only_workspace, render_library_actions, render_selection_actions
+from mn_molecular_design_studio.navigation import database_destination
 
 
 def _cache(database):
@@ -91,7 +93,7 @@ def _page_selection(signature, page, visible):
     return selection
 
 
-def _listing_window(entries, signature):
+def _listing_window(entries, signature, *, focus_molecule=""):
     options = ["50", "100", "250", "500", *(["All"] if len(entries) <= 1000 else [])]
     key = "data-browser-rows-shown"
     st.session_state.setdefault(key, "All" if len(entries) <= 1000 else "50")
@@ -106,6 +108,9 @@ def _listing_window(entries, signature):
         size = max(1, len(entries)) if amount == "All" else int(amount)
         pages = max(1, math.ceil(len(entries) / size))
         view_signature = hashlib.sha256(json.dumps([signature, amount]).encode()).hexdigest()[:20]
+        position = next((position for position, entry in enumerate(entries) if entry["result"]["molecule_id"] == focus_molecule), None) if focus_molecule else None
+        if position is not None and pages > 1:
+            st.session_state["data-browser-page-" + view_signature] = position // size + 1
         page = int(st.number_input("Page", min_value=1, max_value=pages, value=1, step=1,
             key="data-browser-page-" + view_signature)) if pages > 1 else 1
         visible = entries[(page - 1) * size:page * size]
@@ -232,7 +237,8 @@ def _render_details(database, user, cache, index, entry):
     heading = concise_result_label(entry["outcome"])
     st.markdown("#### " + heading)
     from mn_molecular_design_studio.entity_properties_ui import render_record_properties
-    render_record_properties(database, user, record, index=index, outcome=entry["outcome"], key_prefix="data-browser-result")
+    render_record_properties(database, user, record, index=index, outcome=entry["outcome"],
+        read_only=read_only_workspace(), key_prefix="data-browser-result")
     st.caption(" · ".join(value for value in [entry["outcome"].get("target_reference_label") or entry["outcome"].get("target_name"),
         ", ".join(tool_label(tool) for tool in entry["outcome"]["origin_tools"]),
         entry["outcome"].get("design_created_at") if entry["outcome"]["outcome_kind"] == "Design" else run_label(result["run_id"])] if value))
@@ -340,28 +346,49 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
         configured = os.environ.get("MDS_DATA_BROWSER_DATABASE_ROOT", "").strip()
         database = ReadOnlyLibrary(Path(configured) if configured else None)
     st.markdown('<style>[data-testid="stMainBlockContainer"]{padding:1.5rem 1.6rem;max-width:none}.stMarkdown h4{overflow-wrap:anywhere}</style>', unsafe_allow_html=True)
-    st.title("Data browser")
+    destination = database_destination(st.session_state)
+    st.title("Database")
     st.caption("Saved SQL data · projects, molecules and experiments. Original jobs and batches remain in provenance.")
     from mn_molecular_design_studio.entity_properties_ui import render_notice
     render_notice()
+    render_library_actions(database, user, projects)
     if not database.path.is_file():
-        st.info("No molecular SQL database is available yet. Import or admit results using the existing Database page.")
+        st.info("No molecular SQL database is available yet. Use Library actions to import molecules, or admit passing results from a run.")
         return
     cache = _cache(database)
     with st.spinner("Opening saved data…"):
-        index = cache.get_index(database, user, scope="all", collection="library", hide_smoke_test=False, include_related=True)
+        index = cache.get_index(database, user, scope="all",
+            collection="all" if st.session_state.get("data-browser-indexed-history") else "library",
+            hide_smoke_test=False, include_related=True)
+    if st.session_state.get("data-browser-indexed-history"):
+        st.info("Historical indexed data is included. Stored does not mean reviewed or passed. Library actions can restore the curated-only view.")
     index["project_names"] = {project["id"]: project["name"] for project in projects}
-    scopes_key = ("scientific-tree-v3-cached-navigation", cache.index_key, id(index), tuple((row["id"], row["name"]) for row in projects))
+    if destination is not None:
+        st.session_state["data-browser-source-group"] = destination.get("group_id")
+    source_group = st.session_state.get("data-browser-source-group")
+    scopes_key = ("scientific-tree-v3-cached-navigation", cache.index_key, id(index), source_group,
+        tuple((row["id"], row["name"]) for row in projects))
     if st.session_state.get("data-browser-scopes-key") != scopes_key:
         st.session_state["data-browser-scopes"] = scientific_scopes(index, projects)
         st.session_state["data-browser-scopes-key"] = scopes_key
         st.session_state.pop("data-browser-inventory", None)
         st.session_state.pop("data-browser-inventory-key", None)
     scopes = st.session_state["data-browser-scopes"]
+    if source_scope := source_collection_scope(index, source_group):
+        scopes[source_scope["id"]] = scopes.get(source_scope["id"], source_scope)
+    if destination is not None:
+        desired = "collection:" + str(destination["group_id"]) if destination.get("group_id") else (
+            "project:" + (destination.get("project_id") or "personal") if "project_id" in destination else "projects")
+        if desired not in scopes:
+            st.warning("The requested collection or project has no accessible saved data in this view. No other collection has been substituted.")
+            desired = "collections" if destination.get("group_id") else "projects"
+        st.session_state.update({"data-browser-entry-v2": scope_path(scopes, desired)[0],
+            "data-browser-scope": desired, "data-browser-folder": desired,
+            "data-browser-focus-molecule": destination.get("molecule_id") or ""})
     for ancestor in st.session_state.get("data-browser-scope-path", []):
         if ancestor in scopes:
             expand_scope(scopes, index, ancestor)
-    if not index["molecules"]:
+    if not index["molecules"] and not index["groups"]:
         st.info("No saved molecules are accessible to this account.")
         return
     layout, left, middle, right = _workspace()
@@ -453,7 +480,8 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
             st.caption("Includes uniquely matching target crops. Exact construct identities and measurements remain separate for every result.")
         from mn_molecular_design_studio.entity_properties_ui import render_folder_properties
         if selected_id == scope_id:
-            render_folder_properties(database, user, index, scope, projects, key_prefix="data-browser-folder")
+            render_folder_properties(database, user, index, scope, projects,
+                read_only=read_only_workspace(), key_prefix="data-browser-folder")
         result_controls = st.container() if layout == "Split" else st.popover("Results, filters & analysis", icon=":material/table_view:")
         md_selected = bool(selection.get("md_outcome_id"))
         with result_controls:
@@ -481,13 +509,20 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
         else:
             window_control, analysis_toolbar = st.columns([1, 2], vertical_alignment="bottom")
             with window_control:
-                visible, page, view_signature = _listing_window(entries, signature)
+                visible, page, view_signature = _listing_window(entries, signature,
+                    focus_molecule=st.session_state.get("data-browser-focus-molecule", ""))
         with result_controls:
             if not md_selected:
                 if any(entry["outcome"]["outcome_kind"] == "Design" for entry in entries):
                     st.caption("Passed means the recorded native or final acceptance filters passed, not that every later analysis passed. "
                         "Tree counts are whole-folder totals; search and refinements can reduce the list.")
         page_selection = _page_selection(view_signature, page, visible)
+        if focus_molecule := st.session_state.pop("data-browser-focus-molecule", ""):
+            match = next((entry for entry in visible if entry["result"]["molecule_id"] == focus_molecule), None)
+            if match:
+                page_selection["focused"] = match["id"]
+            else:
+                st.info("The requested molecular record has no displayed saved result at this level. It may remain unreviewed in its source collection; no passing result has been inferred.")
         selected_entries = []
         if visible and md_selected:
             focused = visible[0]
@@ -561,6 +596,9 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
             with analysis_toolbar:
                 render_browser_action(database, user, index, entries, selected_entries, signature=signature,
                                       workflow_schema=workflow_schema, submit=submit)
+        if not md_selected:
+            project_id = (scope.get("entity") or {}).get("project_id", "")
+            render_selection_actions(database, user, projects, selected_entries, project_id=project_id)
         if selection.get("experiment"):
             jobs = source_jobs(index, inventory, selection)
             with result_controls.expander(f"Source jobs & provenance ({len(jobs):,})"):

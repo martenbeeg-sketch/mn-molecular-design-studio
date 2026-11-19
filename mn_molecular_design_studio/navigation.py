@@ -9,12 +9,13 @@ WORKSPACE_PAGES = (
     ("Pipelines", ":material/account_tree:", "Pipelines"),
     ("My results", ":material/query_stats:", "My runs"),
     ("Database", ":material/storage:", "Database"),
-    ("Data browser", ":material/folder_copy:", "Data Browser"),
     ("Complex Analysis", ":material/biotech:", "Complex Analysis"),
 )
 
 
 def render_workspace_navigation(user, *, development=False):
+    if st.session_state.get("page") == "Data Browser":
+        st.session_state["page"] = "Database"
     st.markdown("""<style>
         [data-testid="stSidebar"] { background: #f7f8f7; }
         [data-testid="stSidebar"] [class*="st-key-nav-"] button {
@@ -85,4 +86,24 @@ def open_project_database(state, project_id):
             state[key] = True
     state.update({"page": "Database", "molecular-project-filter": project_id,
                   "database-browser-view": "Molecules", "molecular-scope": "All",
-                  "molecular-collection-view": "Library"})
+                  "molecular-collection-view": "Library", "data-browser-open": {"project_id": project_id}})
+
+
+def database_destination(state):
+    destination = state.pop("data-browser-open", None)
+    group_id = state.pop("molecular-preselect-group", None)
+    molecule_id = state.pop("molecular-preselect-molecule", None)
+    collection = state.pop("molecular-preselect-collection", None)
+    if group_id or molecule_id:
+        destination = {"group_id": group_id, "molecule_id": molecule_id, "collection": collection or "library"}
+    if destination is not None:
+        for key in list(state):
+            if str(key).startswith(("data-browser-activity-", "data-browser-construct-")) or key in {
+                "data-browser-page-selection", "data-browser-scope-path", "data-browser-expanded",
+                "data-browser-source-group", "binderscope-browser-preflight",
+            }:
+                state.pop(key, None)
+        state.update({"data-browser-result-query": "", "data-browser-folder-query": "",
+                      "data-browser-type": "", "data-browser-coordinates": False,
+                      "data-browser-indexed-history": destination.get("collection") == "all"})
+    return destination
