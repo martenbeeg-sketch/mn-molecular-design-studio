@@ -11,7 +11,7 @@ from mn_molecular_design_studio.database_browser_labels import descriptive_targe
 from mn_molecular_design_studio.md_browser import MD_FIELDS
 
 
-_MEMBER_FIELDS = ("design_target_molecule_id", "target_molecule_id", "design_target_name", "target_name",
+_MEMBER_FIELDS = ("dataset_input", "design_target_molecule_id", "target_molecule_id", "design_target_name", "target_name",
                   "studio_naming", "native_candidate_id",
                   "target_identity_type", "output_kind", "source_to_prediction_components", "protein_chains",
                   "target_chains", "binder_chains", "source_stage", "stage", "source_tool", "workflow_role",
@@ -189,6 +189,8 @@ def build_browser_index(database, user, *, project_id="", scope="all", methods=N
                 "member_receipts": {}, "has_coordinates": False,
             })
             metadata = dict(zip(_MEMBER_FIELDS, json.loads(row["metadata_fields"])))
+            if metadata.get("dataset_input") is True:
+                molecule.setdefault("input_dataset_groups", set()).add(row["group_id"])
             receipt = {key: metadata[key] for key in ("source_stage", "stage", "source_tool", "workflow_role",
                        "generator_engine", "prediction_engine", "acceptance_status", "design_target_molecule_id") if metadata.get(key) is not None}
             for field in ("validation_acceptance", "distributed_campaign"):

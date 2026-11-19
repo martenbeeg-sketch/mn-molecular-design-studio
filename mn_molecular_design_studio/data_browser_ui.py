@@ -11,7 +11,7 @@ import streamlit as st
 
 from mn_molecular_design_studio.data_browser import (
     ReadOnlyLibrary, admission_measurements, concise_result_label, expand_scope, listed_results, load_saved_record,
-    navigation_tree, producing_evaluations, saved_receptor_file, scope_path, source_collection_scope,
+    navigation_tree, producing_evaluations, saved_receptor_file, scope_path, source_collection_scope, dataset_results_scope,
 )
 from mn_molecular_design_studio.database_browser_cache import BrowserCache
 from mn_molecular_design_studio.database_browser_labels import calculation_label, run_label, tool_label
@@ -347,13 +347,16 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
         database = ReadOnlyLibrary(Path(configured) if configured else None)
     st.markdown('<style>[data-testid="stMainBlockContainer"]{padding:1.5rem 1.6rem;max-width:none}.stMarkdown h4{overflow-wrap:anywhere}</style>', unsafe_allow_html=True)
     destination = database_destination(st.session_state)
-    st.title("Database")
-    st.caption("Saved SQL data · projects, molecules and experiments. Original jobs and batches remain in provenance.")
+    dataset_request = st.session_state.pop("dataset-results-request", None)
+    if destination and dataset_request and destination.get("group_id") == dataset_request["group_id"]:
+        st.session_state["data-browser-dataset-context"] = dataset_request
+    st.title("Data browser")
+    st.caption("Saved scientific outcomes, structures and attached analyses. Reusable input libraries are managed in Datasets.")
     from mn_molecular_design_studio.entity_properties_ui import render_notice
     render_notice()
-    render_library_actions(database, user, projects)
+    render_library_actions(database, user, projects, browser_only=True)
     if not database.path.is_file():
-        st.info("No molecular SQL database is available yet. Use Library actions to import molecules, or admit passing results from a run.")
+        st.info("No saved SQL data is available yet. Import reusable inputs in Datasets, or admit passing results from a run.")
         return
     cache = _cache(database)
     with st.spinner("Opening saved data…"):
@@ -366,7 +369,9 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
     if destination is not None:
         st.session_state["data-browser-source-group"] = destination.get("group_id")
     source_group = st.session_state.get("data-browser-source-group")
+    dataset_context = st.session_state.get("data-browser-dataset-context")
     scopes_key = ("scientific-tree-v3-cached-navigation", cache.index_key, id(index), source_group,
+        tuple(sorted((dataset_context or {}).items())),
         tuple((row["id"], row["name"]) for row in projects))
     if st.session_state.get("data-browser-scopes-key") != scopes_key:
         st.session_state["data-browser-scopes"] = scientific_scopes(index, projects)
@@ -376,15 +381,20 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
     scopes = st.session_state["data-browser-scopes"]
     if source_scope := source_collection_scope(index, source_group):
         scopes[source_scope["id"]] = scopes.get(source_scope["id"], source_scope)
+    connected_scope = dataset_results_scope(scopes, index, dataset_context["group_id"],
+        dataset_context.get("molecule_id", "")) if dataset_context else None
+    if dataset_context and dataset_context.get("molecule_id") and connected_scope is None:
+        st.warning("No unique connected-data route was found for this dataset member. Its input data remains available in Datasets; result relationships have not been guessed.")
     if destination is not None:
         desired = "collection:" + str(destination["group_id"]) if destination.get("group_id") else (
             "project:" + (destination.get("project_id") or "personal") if "project_id" in destination else "projects")
+        desired = connected_scope or desired
         if desired not in scopes:
             st.warning("The requested collection or project has no accessible saved data in this view. No other collection has been substituted.")
             desired = "collections" if destination.get("group_id") else "projects"
         st.session_state.update({"data-browser-entry-v2": scope_path(scopes, desired)[0],
             "data-browser-scope": desired, "data-browser-folder": desired,
-            "data-browser-focus-molecule": destination.get("molecule_id") or ""})
+            "data-browser-focus-molecule": "" if connected_scope else destination.get("molecule_id") or ""})
     for ancestor in st.session_state.get("data-browser-scope-path", []):
         if ancestor in scopes:
             expand_scope(scopes, index, ancestor)
@@ -412,6 +422,7 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
         inventory = cache.get_saved_results(database, index, scope["subject"], run_view=scope["run_view"],
             include_references=collection_view, fallback_references=(scope.get("entity") or {}).get("kind") == "target" or
                 scope.get("route") == "scientific-project")
+        inventory = [outcome for outcome in inventory if outcome["outcome_kind"] not in {"Imported molecule", "Reference molecule"}]
     if scope.get("prepared_snapshot") != scopes_key:
         scope_counts(scopes, index, scope, inventory)
         children, selections = scientific_branches(index, scope, inventory)
@@ -482,6 +493,11 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
         if selected_id == scope_id:
             render_folder_properties(database, user, index, scope, projects,
                 read_only=read_only_workspace(), key_prefix="data-browser-folder")
+            if (scope.get("entity") or {}).get("kind") == "dataset":
+                if st.button("Open dataset input members", icon=":material/library_books:", key="data-browser-dataset-members"):
+                    from mn_molecular_design_studio.navigation import open_datasets
+                    open_datasets(st.session_state, group_id=scope["entity"]["group_id"])
+                    st.rerun()
         result_controls = st.container() if layout == "Split" else st.popover("Results, filters & analysis", icon=":material/table_view:")
         md_selected = bool(selection.get("md_outcome_id"))
         with result_controls:
@@ -522,7 +538,7 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
             if match:
                 page_selection["focused"] = match["id"]
             else:
-                st.info("The requested molecular record has no displayed saved result at this level. It may remain unreviewed in its source collection; no passing result has been inferred.")
+                st.info("The requested molecular record has no saved scientific outcome at this level. It may be a reusable input or unreviewed run output; no passing result has been inferred.")
         selected_entries = []
         if visible and md_selected:
             focused = visible[0]
@@ -590,7 +606,7 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
                         on_click=_reset_folder_refinements, args=(scope_id, selected_id),
                         help="Clear the search and result refinements without changing any saved records.")
             else:
-                st.info("This folder has no saved results at this level. Designs appear only after a recorded filter pass or explicit later selection. Run history is not imported into the library here.")
+                st.info("This folder has no saved scientific outcomes at this level. Reusable inputs remain in Datasets. Designs appear only after a recorded filter pass or explicit later selection; run history is not imported here.")
         from mn_molecular_design_studio.binderscope_ui import render_browser_action
         if analysis_toolbar is not None:
             with analysis_toolbar:

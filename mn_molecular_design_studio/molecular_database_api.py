@@ -39,6 +39,21 @@ class ImportRequest(BaseModel):
     include_ligands: bool = True
     records: list[dict] = Field(default_factory=list)
     identifier_source: str = "PDB"
+    reusable_dataset: bool = False
+    project_references: list[str] = Field(default_factory=list)
+
+
+class DatasetRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    name: str
+    project_references: list[str] = Field(default_factory=list)
+    molecule_ids: list[str] = Field(default_factory=list)
+
+
+class DatasetProjectsRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    project_references: list[str] = Field(default_factory=list)
+    expected_revision: str = Field(min_length=64, max_length=64)
 
 
 class SelectionRequest(BaseModel):
@@ -71,8 +86,11 @@ def install(app, current_user):
     router = APIRouter(prefix="/api/v1/molecules", tags=["molecular database"])
 
     def call(function, *args, **kwargs):
+        from mn_molecular_design_studio.datasets import DatasetConflictError
         try:
             return function(*args, **kwargs)
+        except DatasetConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
         except (PermissionError, FileNotFoundError) as exc:
             raise HTTPException(404, "Molecular record not found or inaccessible.") from exc
         except (ValueError, TypeError, OSError) as exc:
@@ -81,6 +99,24 @@ def install(app, current_user):
     @router.get("/groups")
     def groups(project_id: str = "", scope: str = "organization", collection: str = "all", user=Depends(current_user)):
         return {"items": call(MolecularDatabase().groups, user, project_id=project_id, scope=scope, collection=collection)}
+
+    @router.get("/datasets")
+    def datasets(project_id: str = "", query: str = "", kind: str = "", user=Depends(current_user)):
+        from mn_molecular_design_studio.datasets import catalog
+        items = call(catalog, MolecularDatabase(), user, project_id=project_id, query=query, kind=kind)
+        return {"items": items, "total": len(items)}
+
+    @router.post("/datasets", status_code=201)
+    def create_dataset(payload: DatasetRequest, user=Depends(current_user)):
+        from mn_molecular_design_studio.datasets import create_dataset as create
+        return call(create, MolecularDatabase(), user, payload.name, molecule_ids=payload.molecule_ids,
+            project_ids=payload.project_references)
+
+    @router.patch("/datasets/{group_id}/projects")
+    def dataset_projects(group_id: str, payload: DatasetProjectsRequest, user=Depends(current_user)):
+        from mn_molecular_design_studio.datasets import save_project_references
+        return call(save_project_references, MolecularDatabase(), user, group_id, payload.project_references,
+            expected_revision=payload.expected_revision)
 
     @router.get("/output-vocabulary")
     def output_vocabulary(user=Depends(current_user)):
@@ -189,8 +225,19 @@ def install(app, current_user):
                 records = [{"name": row.get("name"), "components": row["components"], "metadata": row.get("metadata") or {}} for row in payload.records]
             else:
                 raise ValueError("Supported methods: table, fasta, sequences, smiles, sdf, structure, zip, identifier, records.")
-            return MolecularDatabase().import_records(user, records, name=payload.name, project_id=payload.project_id,
-                group_id=payload.group_id, import_audit=audit, source_content=data if audit else None)
+            database = MolecularDatabase()
+            origin = None
+            if payload.reusable_dataset:
+                from mn_molecular_design_studio.datasets import input_origin, input_records, is_dataset
+                if payload.group_id and not is_dataset(database.group(payload.group_id, user, write=True)):
+                    raise ValueError("Import reusable inputs into a dataset, not an automatic result collection.")
+                references = [*payload.project_references, *([payload.project_id] if payload.project_id else [])]
+                origin = input_origin(user, references)
+                records = input_records(records)
+            elif payload.project_references:
+                raise ValueError("Project references require a reusable dataset import.")
+            return database.import_records(user, records, name=payload.name, project_id="" if payload.reusable_dataset else payload.project_id,
+                group_id=payload.group_id, origin=origin, import_audit=audit, source_content=data if audit else None)
         return call(operation)
 
     @router.post("/selections")

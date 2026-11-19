@@ -310,7 +310,7 @@ def test_collection_keeps_every_saved_structure_of_each_member(database, method,
     assert {row["structure_id"] for row in listed_results(saved, structures=True)} == {"pose-1", "pose-2"}
 
 
-def test_reference_collection_ui_is_not_empty(database, monkeypatch):
+def test_reference_only_inputs_are_not_presented_as_scientific_outcomes(database, monkeypatch):
     from mn_molecular_design_studio import data_browser_ui
     from mn_molecular_design_studio.scientific_browser_tree import scientific_scopes
 
@@ -329,8 +329,11 @@ def test_reference_collection_ui_is_not_empty(database, monkeypatch):
         "from mn_molecular_design_studio.data_browser_ui import render_data_browser\n"
         f"render_data_browser({USER!r}, [])", default_timeout=30).run()
     assert not app.exception
-    assert any(element.value == "All 1 matching entries · no paging" for element in app.caption)
-    assert any(element.value == "Reference molecules · Reference" for element in app.caption)
+    assert any(element.value == "All 0 matching entries · no paging" for element in app.caption)
+    assert not any(element.value == "Reference molecules · Reference" for element in app.caption)
+    assert app.button(key="data-browser-open-datasets")
+    from mn_molecular_design_studio.datasets import catalog
+    assert catalog(database, USER)[0]["id"] == imported["group_id"]
 
 
 def test_collection_reference_listing_does_not_promote_legacy_docking_inputs_to_results(database):

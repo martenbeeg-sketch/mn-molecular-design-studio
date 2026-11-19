@@ -93,6 +93,9 @@ def outcome_kind(index, result):
     role = receipt.get("role") or ""
     run = index["runs"].get(result.get("run_key"), {})
     group = index["groups"][result["group_id"]]
+    from mn_molecular_design_studio.datasets import is_input_dataset
+    if is_input_dataset(group) or result["group_id"] in index["molecules"][result["molecule_id"]].get("input_dataset_groups", set()):
+        return "Reference"
     if role == "post_analysis" or analysis_results([result]):
         return "Analysis"
     if role == "design_validation" or receipt.get("design_refold") and role != "independent_prediction":

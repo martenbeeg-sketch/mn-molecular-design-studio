@@ -105,6 +105,10 @@ def _dismiss_library_dialog():
     st.session_state.pop("data-browser-management", None)
 
 
+def _dismiss_import_dialog():
+    st.session_state["molecular-import-open"] = False
+
+
 def _guess(columns, names):
     return next((column for column in columns if column.lower().replace(" ", "_") in names), "")
 
@@ -280,21 +284,41 @@ def _report_csv(rows):
     return frame.to_csv(index=False).encode("utf-8-sig")
 
 
-@st.dialog("Import molecules", width="large")
-def render_import_dialog(user, projects, *, database=None):
+@st.dialog("Import molecules", width="large", on_dismiss=_dismiss_import_dialog)
+def render_import_dialog(user, projects, *, database=None, dataset_mode=False, default_reference_project=""):
     database = database if database is not None else MolecularDatabase()
     step = st.session_state.get("molecular-import-step", 0)
-    st.caption("Group  ›  What are you importing?" if step == 0 else "Group  ›  Import molecules")
+    st.caption(("Dataset" if dataset_mode else "Group") + ("  ›  What are you importing?" if step == 0 else "  ›  Import molecules"))
     if step == 0:
         groups = [row for row in database.groups(user, collection="library") if row["owner_id"] == user["id"] or user.get("role") == "admin"]
-        group_id = st.selectbox("Group *", ["", *[row["id"] for row in groups]], format_func=lambda value: next((row["name"] for row in groups if row["id"] == value), "+ Create a new group"), key="molecular-import-group")
-        name = st.text_input("New group name", placeholder="e.g. ALK2 screening compounds", key="molecular-import-group-name") if not group_id else next(row["name"] for row in groups if row["id"] == group_id)
-        project = _projects(projects, "molecular-import-project") if not group_id else next(row["project_id"] for row in groups if row["id"] == group_id)
+        if dataset_mode:
+            from mn_molecular_design_studio.datasets import display_labels, is_dataset
+            groups = [row for row in groups if is_dataset(row) and not row["read_only"]]
+            st.info("Reusable inputs, independent of a project. Importing does not create a design acceptance decision or a completed calculation.")
+        labels = display_labels(groups, projects) if dataset_mode else {row["id"]: row["name"] for row in groups}
+        if st.session_state.get("molecular-import-group") not in {"", *(row["id"] for row in groups)}:
+            st.session_state["molecular-import-group"] = ""
+        group_id = st.selectbox("Dataset *" if dataset_mode else "Group *", ["", *[row["id"] for row in groups]], format_func=lambda value: labels.get(value, "+ Create a new dataset" if dataset_mode else "+ Create a new group"), key="molecular-import-group")
+        name = st.text_input("New dataset name" if dataset_mode else "New group name", placeholder="e.g. ALK2 screening compounds", key="molecular-import-group-name") if not group_id else next(row["name"] for row in groups if row["id"] == group_id)
+        project = _projects(projects, "molecular-import-project", default=default_reference_project,
+            label="Project reference (optional)" if dataset_mode else "Project",
+            empty_label="No project — reusable library" if dataset_mode else "None") if not group_id else next(row["project_id"] for row in groups if row["id"] == group_id)
+        if dataset_mode:
+            st.caption("Project references organise reuse; they do not transfer ownership or grant access. You can link more projects later.")
         left, right = st.columns([1, 1])
         if left.button("Cancel", key="molecular-import-cancel-0"):
             _reset_import()
         if right.button("Next", type="primary", disabled=not name.strip(), key="molecular-import-next"):
             st.session_state["molecular-import-destination"] = {"group_id": group_id or None, "name": name, "project_id": project}
+            if dataset_mode:
+                from mn_molecular_design_studio.datasets import input_origin
+                st.session_state["molecular-import-destination"]["project_id"] = ""
+                if not group_id:
+                    try:
+                        st.session_state["molecular-import-destination"]["origin"] = input_origin(user, [project] if project else [])
+                    except (ValueError, PermissionError, OSError) as exc:
+                        st.error(str(exc))
+                        return
             st.session_state["molecular-import-instance"] = uuid.uuid4().hex
             st.session_state["molecular-import-step"] = 1
             st.rerun(scope="app")
@@ -396,6 +420,9 @@ def render_import_dialog(user, projects, *, database=None):
     commit_label = "Save validation report" if audit and not records else "Import molecules"
     if commit.button(commit_label, type="primary", disabled=not can_commit, key="molecular-import-commit"):
         try:
+            if dataset_mode:
+                from mn_molecular_design_studio.datasets import input_records
+                records = input_records(records)
             result = database.import_records(user, records, **destination, import_audit=audit, source_content=source_content)
             st.session_state["molecular-preselect-group"] = result["group_id"]
             st.session_state["molecular-preselect-collection"] = "library"
@@ -411,6 +438,11 @@ def render_import_dialog(user, projects, *, database=None):
             else:
                 st.session_state["molecular-database-flash"] = f"Imported {result['imported_count']:,} rows as {result['unique_count']:,} unique molecules."
             st.session_state["database-selection"] = []
+            if dataset_mode:
+                from mn_molecular_design_studio.navigation import open_datasets
+                open_datasets(st.session_state, group_id=result["group_id"])
+                st.session_state.pop("molecular-preselect-group", None)
+                st.session_state.pop("molecular-preselect-collection", None)
             _reset_import()
         except (ValueError, PermissionError, OSError) as exc:
             st.error(str(exc))
@@ -819,16 +851,22 @@ def _render_evaluation_measurements(result, *, compact=False):
 
 
 @st.dialog("Create molecule group", width="small", on_dismiss=_dismiss_library_dialog)
-def render_group_dialog(user, projects, ids, default_project="", *, database=None):
+def render_group_dialog(user, projects, ids, default_project="", *, database=None, dataset_mode=False):
     database = database if database is not None else MolecularDatabase()
-    st.caption(f"{len(ids):,} selected molecules. Their existing structures and scores stay linked.")
+    st.caption(f"{len(ids):,} selected molecules. " + ("Reusable identity membership only; original models and calculations remain in Data browser. "
+        "Import reference structure files when you want stored input coordinates." if dataset_mode else "Their existing structures and scores stay linked."))
     name = st.text_input("Group name", key="molecular-group-name")
-    project = _projects(projects, "molecular-group-project", default=default_project)
+    project = _projects(projects, "molecular-group-project", default=default_project,
+        label="Project reference (optional)" if dataset_mode else "Project")
     if st.button("Create group", type="primary", disabled=not name.strip(), key="molecular-group-save"):
         try:
-            group_id = database.create_group(user, name, project_id=project)
-            if ids:
-                database.add_to_group(user, group_id, ids)
+            if dataset_mode:
+                from mn_molecular_design_studio.datasets import create_dataset
+                group_id = create_dataset(database, user, name, molecule_ids=ids, project_ids=[project] if project else [])["id"]
+            else:
+                group_id = database.create_group(user, name, project_id=project)
+                if ids:
+                    database.add_to_group(user, group_id, ids)
         except (ValueError, PermissionError, OSError, sqlite3.Error) as exc:
             st.error(str(exc))
             return
@@ -836,6 +874,11 @@ def render_group_dialog(user, projects, ids, default_project="", *, database=Non
         st.session_state["molecular-preselect-collection"] = "library"
         st.session_state["database-group-request"] = None
         _dismiss_library_dialog()
+        if dataset_mode:
+            from mn_molecular_design_studio.navigation import open_datasets
+            open_datasets(st.session_state, group_id=group_id)
+            st.session_state.pop("molecular-preselect-group", None)
+            st.session_state.pop("molecular-preselect-collection", None)
         st.rerun()
 
 

@@ -30,9 +30,12 @@ def _open_collection(group_id, *, historical=False):
 
 
 @st.dialog("Manage collections", width="large", on_dismiss=_dismiss_actions)
-def _collections_dialog(database, user, projects):
+def _collections_dialog(database, user, projects, *, dataset_mode=False):
     historical = st.checkbox("Include historical indexed collections", key="data-browser-manage-history")
     groups = database.groups(user, collection="all" if historical else "library")
+    if dataset_mode:
+        from mn_molecular_design_studio.datasets import is_dataset
+        groups = [group for group in groups if is_dataset(group)]
     groups.sort(key=lambda group: (group["name"].casefold(), group["id"]))
     if not groups:
         st.info("No accessible collections. Import molecules or create a collection from Library actions.")
@@ -47,6 +50,11 @@ def _collections_dialog(database, user, projects):
     group = lookup[group_id]
     st.caption(f"{group['molecule_count']:,} molecules · membership and measurements remain attached to this source collection.")
     if st.button("Open collection", type="primary", key="data-browser-manage-open"):
+        if dataset_mode:
+            from mn_molecular_design_studio.navigation import open_datasets
+            _dismiss_actions()
+            open_datasets(st.session_state, group_id=group_id)
+            st.rerun(scope="app")
         _open_collection(group_id, historical=historical)
     can_edit = user.get("role") == "admin" or group["owner_id"] == user["id"]
     if st.button("Add metadata column", disabled=not can_edit or read_only_workspace() or bool(group["origin"].get("_replica_node")),
@@ -81,34 +89,44 @@ def _collections_dialog(database, user, projects):
             st.rerun(scope="app")
 
 
-def render_library_actions(database, user, projects):
+def render_library_actions(database, user, projects, *, dataset_mode=False, browser_only=False, reference_project=""):
     from mn_molecular_design_studio.database_ui import render_column_dialog, render_group_dialog, render_import_dialog
 
     read_only = read_only_workspace()
+    if browser_only and st.button("Datasets / import data", icon=":material/library_books:", key="data-browser-open-datasets"):
+        from mn_molecular_design_studio.navigation import open_datasets
+        open_datasets(st.session_state)
+        st.rerun()
     with st.popover("Library actions", icon=":material/settings:"):
         if read_only:
             st.caption("Read-only preview: importing and collection changes are disabled.")
-        if st.button("Import molecules", key="data-browser-import", disabled=read_only):
+        if not browser_only and st.button("Import molecules", key="data-browser-import", disabled=read_only):
             st.session_state.update({"molecular-import-open": True, "molecular-import-step": 0})
-        if st.button("New collection", key="data-browser-new-collection", disabled=read_only):
+        if not browser_only and st.button("New collection", key="data-browser-new-collection", disabled=read_only):
             st.session_state["data-browser-management"] = {"kind": "group", "ids": []}
         if st.button("Manage collections", key="data-browser-manage-collections", disabled=not database.path.is_file()):
             st.session_state["data-browser-management"] = {"kind": "collections"}
-        st.checkbox("Include historical indexed data", key="data-browser-indexed-history",
-            help="Advanced inspection of saved SQL history. This does not admit unreviewed designs or import run folders.")
+        if not dataset_mode:
+            st.checkbox("Include historical indexed data", key="data-browser-indexed-history",
+                help="Advanced inspection of saved SQL history. This does not admit unreviewed designs or import run folders.")
     if message := st.session_state.pop("molecular-database-flash", None):
         st.success(message)
     if st.session_state.get("molecular-import-open"):
+        if browser_only:
+            from mn_molecular_design_studio.navigation import open_datasets
+            open_datasets(st.session_state)
+            st.rerun()
         if not read_only:
-            render_import_dialog(user, projects, database=MolecularDatabase(database.root))
+            render_import_dialog(user, projects, database=MolecularDatabase(database.root), dataset_mode=dataset_mode,
+                default_reference_project=reference_project)
         return
     request = st.session_state.get("data-browser-management") or {}
     if request.get("kind") == "collections":
-        _collections_dialog(database, user, projects)
+        _collections_dialog(database, user, projects, dataset_mode=dataset_mode)
     elif not read_only and request.get("kind") in {"group", "column"}:
         if request["kind"] == "group":
             render_group_dialog(user, projects, request["ids"], request.get("project_id", ""),
-                database=MolecularDatabase(database.root))
+                database=MolecularDatabase(database.root), dataset_mode=dataset_mode)
         else:
             render_column_dialog(user, request["group_id"], database=MolecularDatabase(database.root))
 
@@ -128,6 +146,8 @@ def _selection_dialog(database, user, projects, entries, project_id):
     if st.button("Create collection from these molecules", disabled=read_only, key="data-browser-collect-selection"):
         st.session_state["data-browser-management"] = {"kind": "group", "ids": ids, "project_id": project_id}
         _dismiss_selection()
+        from mn_molecular_design_studio.navigation import open_datasets
+        open_datasets(st.session_state)
         st.rerun(scope="app")
     if not read_only:
         render_use_selection(database, user, projects, ids, project_id)
@@ -142,7 +162,7 @@ def _selection_dialog(database, user, projects, entries, project_id):
             st.download_button("Download " + export_format, content, file_name="selected-molecules." + suffix,
                 mime=mime, key="data-browser-molecule-export-download")
     st.caption("Molecule exports include accessible saved molecular data. For exact displayed results and their linked analyses, use Table columns & CSV export.")
-    if st.toggle("Compare these saved results", key="data-browser-compare-selection"):
+    if not getattr(database, "input_only", False) and st.toggle("Compare these saved results", key="data-browser-compare-selection"):
         from mn_molecular_design_studio.comparison_ui import render_comparison
         from mn_molecular_design_studio.data_browser import load_saved_record
 

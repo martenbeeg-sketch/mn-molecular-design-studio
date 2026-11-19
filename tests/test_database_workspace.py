@@ -11,14 +11,16 @@ from mn_molecular_design_studio.molecular_database import MolecularDatabase
 from test_database_browser import OTHER, USER, database
 
 
-def _app(database, monkeypatch, *, state=None, projects=()):
+def _app(database, monkeypatch, *, state=None, projects=(), inputs=False):
     monkeypatch.setenv("MDS_DATA_BROWSER_DATABASE_ROOT", str(database.root))
     monkeypatch.setattr(data_browser_ui, "render_tree", lambda *args, **kwargs: None)
     monkeypatch.setattr(data_browser_ui, "_render_details", lambda *args, **kwargs: None)
+    renderer = "datasets_ui import render_datasets" if inputs else "data_browser_ui import render_data_browser"
+    function = "render_datasets" if inputs else "render_data_browser"
     return AppTest.from_string("import streamlit as st\n"
         f"for key,value in {(state or {})!r}.items(): st.session_state.setdefault(key,value)\n"
-        "from mn_molecular_design_studio.data_browser_ui import render_data_browser\n"
-        f"render_data_browser({USER!r}, {list(projects)!r})", default_timeout=30).run()
+        f"from mn_molecular_design_studio.{renderer}\n"
+        f"{function}({USER!r}, {list(projects)!r})", default_timeout=30).run()
 
 
 def _library(database, *, user=USER, name="Research compounds", **kwargs):
@@ -41,15 +43,16 @@ def _select_rows(app, marker, rows):
 
 def test_single_database_navigation_accepts_old_browser_sessions():
     assert [page for page in navigation.WORKSPACE_PAGES if page[2] in {"Database", "Data Browser"}] == [
-        ("Database", ":material/storage:", "Database")]
+        ("Data browser", ":material/folder_copy:", "Data Browser")]
+    assert any(page[2] == "Datasets" for page in navigation.WORKSPACE_PAGES)
     app = AppTest.from_string("import streamlit as st\n"
-        "st.session_state.setdefault('page','Data Browser')\n"
+        "st.session_state.setdefault('page','Database')\n"
         "from mn_molecular_design_studio.navigation import render_workspace_navigation\n"
         f"render_workspace_navigation({USER!r})").run()
     assert not app.exception
-    assert app.session_state["page"] == "Database"
-    assert app.button(key="nav-database").proto.type == "primary"
-    assert not any(button.label == "Data browser" for button in app.button)
+    assert app.session_state["page"] == "Data Browser"
+    assert app.button(key="nav-data-browser").proto.type == "primary"
+    assert not any(button.label == "Database" for button in app.button)
 
 
 def test_both_database_routes_dispatch_only_the_new_browser():
@@ -113,7 +116,7 @@ def test_empty_database_keeps_import_and_creation_accessible(database, monkeypat
     calls = []
     monkeypatch.setattr("mn_molecular_design_studio.database_ui.render_import_dialog",
         lambda user, projects, **kwargs: calls.append(kwargs["database"].root))
-    app = _app(database, monkeypatch)
+    app = _app(database, monkeypatch, inputs=True)
     assert not app.exception
     assert not app.button(key="data-browser-import").disabled
     app.button(key="data-browser-import").click().run()
@@ -122,7 +125,7 @@ def test_empty_database_keeps_import_and_creation_accessible(database, monkeypat
 
 
 def test_import_into_configured_database_opens_the_new_collection(database, monkeypatch):
-    app = _app(database, monkeypatch)
+    app = _app(database, monkeypatch, inputs=True)
     app.button(key="data-browser-import").click().run()
     app.text_input(key="molecular-import-group-name").set_value("New research library").run()
     app.button(key="molecular-import-next").click().run()
@@ -134,18 +137,18 @@ def test_import_into_configured_database_opens_the_new_collection(database, monk
     app.button(key="molecular-import-commit").click().run()
     assert not app.exception
     assert database.groups(USER)[0]["name"] == "New research library"
-    assert app.session_state["data-browser-scope"] == "collection:" + database.groups(USER)[0]["id"]
+    assert app.session_state["datasets-selected"] == database.groups(USER)[0]["id"]
 
 
 def test_new_empty_collection_is_not_lost_and_metadata_columns_are_accessible(database, monkeypatch):
-    app = _app(database, monkeypatch)
+    app = _app(database, monkeypatch, inputs=True)
     app.button(key="data-browser-new-collection").click().run()
     app.text_input(key="molecular-group-name").set_value("New empty dataset").run()
     app.button(key="molecular-group-save").click().run()
     assert not app.exception
     group = database.groups(USER)[0]
     assert group["molecule_count"] == 0
-    assert app.session_state["data-browser-scope"] == "collection:" + group["id"]
+    assert app.session_state["datasets-selected"] == group["id"]
     app.button(key="data-browser-manage-collections").click().run()
     app.button(key="data-browser-manage-column").click().run()
     app.text_input(key="molecular-column-name").set_value("Research notes").run()
@@ -157,7 +160,7 @@ def test_new_empty_collection_is_not_lost_and_metadata_columns_are_accessible(da
 def test_read_only_preview_does_not_open_write_dialogs(database, monkeypatch):
     _library(database)
     monkeypatch.setenv("MDS_READ_ONLY_PREVIEW", "1")
-    app = _app(database, monkeypatch, state={"molecular-import-open": True,
+    app = _app(database, monkeypatch, inputs=True, state={"molecular-import-open": True,
         "data-browser-management": {"kind": "group", "ids": []}})
     assert not app.exception
     assert app.button(key="data-browser-import").disabled

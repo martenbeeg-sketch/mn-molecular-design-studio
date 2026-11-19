@@ -16,21 +16,46 @@ The Results folder starts empty, defaults to the same data volume as the
 previous app, and can be changed in Settings. The Database includes only
 molecule sets imported or created through Molecular Design Studio.
 
-### Database workspace
+### Datasets: reusable inputs
 
-The single **Database** sidebar entry opens the folder-based browser: choose
-and refine folders on the left, select saved results in the center, and inspect
-structures, scores and attached analyses on the right. **Workspace** can expand
-the table or structure pane, with folders pinned beside it or available as an
-overlay. The former **Data browser** session route opens this same workspace;
-the legacy Database screen is no longer a separate application destination.
+**Datasets** is the home for small-molecule libraries, sequence collections and
+reference structures. **Import data** is visible in the page header. A project
+is not required: new datasets belong to their owner, with optional references
+to several projects, not a project-owned copy of every molecule. A Projects
+shortcut preselects a project reference without making that project the owner.
 
-**Library actions** retains molecule imports, collection creation and management,
-including metadata columns and explicitly confirmed collection-member removal.
+Browse datasets by input type or project references; search and select members,
+including members without coordinates. Input previews and exports do not borrow
+another run's scores or pose. Properties edits use canonical SQL labels and
+aliases. Library actions retains metadata columns and confirmed member removal.
+The page shows an input-library and project-reference summary, not calculation
+results. Connected-result links leave Datasets and open Data browser.
+Existing project-shared datasets keep their access rules. Project references
+never grant access, transfer ownership or duplicate scientific identities.
+Deleting a source project is blocked if its older project-bound dataset has
+additional project references. New independent datasets are not owned by any
+referenced project's cleanup scope.
+
+Importing inputs never asserts a design pass or a completed calculation. A
+collection made from selected results reuses molecular identity membership;
+original calculations and models remain in Data browser, rather than silently
+copying every evaluation. Import reference structure files to register stored
+input coordinates. Normal run-result registration and design admission stay
+separate from input imports.
+
+### Data browser: connected results
+
+**Data browser** opens the scientific folder tree, result table and linked
+structure/analysis viewer. The old **Database** session route redirects here;
+the legacy screen is not a separate destination. **Workspace** can expand the
+table or structure pane, with folders pinned beside it or available as an overlay.
+Input-only library rows are not presented as scientific outcomes. Dataset and
+member links connect to their accessible saved results using the same SQL IDs.
+
 Select table rows and choose **Data actions** to collect, export, compare or reuse
-their molecules in another tool. Contextual **Properties** handles descriptive
-editing; **Table columns & CSV export** exports the matching scientific results
-across every page. Project/run cleanup remains on **Projects**.
+molecules. Contextual **Properties** handles descriptive editing;
+**Table columns & CSV export** exports matching scientific results across every
+page. Project/run cleanup remains on **Projects**.
 
 The default view remains the curated library. **Include historical indexed data**
 is an explicit advanced inspection option, not admission or evidence of passing.

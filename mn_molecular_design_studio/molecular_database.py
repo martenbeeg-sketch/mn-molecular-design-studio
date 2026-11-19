@@ -364,6 +364,8 @@ class MolecularDatabase:
         install_lineage(connection)
         from mn_molecular_design_studio.entity_names import install_schema as install_names
         install_names(connection)
+        from mn_molecular_design_studio.datasets import install_schema as install_datasets
+        install_datasets(connection)
         identity = self.path.stat()
         browser_key = (schema_key, identity.st_dev, identity.st_ino)
         browser_installed = browser_key not in _BROWSER_REVISION_SCHEMA_READY

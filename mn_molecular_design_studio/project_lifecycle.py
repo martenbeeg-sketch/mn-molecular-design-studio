@@ -324,6 +324,11 @@ class ProjectNode:
             for raw in local_groups:
                 group = dict(raw)
                 origin = json.loads(group["origin"])
+                from mn_molecular_design_studio.datasets import cleanup_references
+                reused_in = cleanup_references({**group, "origin": origin}, project_id)
+                if reused_in and (mode == "delete" or include_collections):
+                    blocked.append("Reusable dataset “" + group["name"] + "” is referenced by other projects. "
+                        "Review its dataset references before removing its source project or collection.")
                 if origin.get("_replica_node"):
                     if mode == "delete" and origin["_replica_node"] not in expected_participants:
                         blocked.append("A project collection belongs to an uncovered workstation: " + str(origin["_replica_node"]))

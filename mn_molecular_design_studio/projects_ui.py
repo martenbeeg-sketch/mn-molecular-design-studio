@@ -12,7 +12,8 @@ from mn_molecular_design_studio.projects import cleanup_plan, project_inventory
 
 
 def render_projects(user, projects, *, load_inventory, on_create, on_results, on_database,
-                    read_only=False, physical_purge=True, on_archive=None, coordinator=None, on_cancel=None, on_rename=None):
+                    read_only=False, physical_purge=True, on_archive=None, coordinator=None, on_cancel=None, on_rename=None,
+                    on_datasets=None):
     title, create, refresh = st.columns([0.50, 0.28, 0.22], vertical_alignment="center")
     title.title("Projects")
     from mn_molecular_design_studio.entity_properties_ui import render_notice
@@ -87,11 +88,14 @@ def render_projects(user, projects, *, load_inventory, on_create, on_results, on
                                         (item["runs"], len(item["finished"]), len(item["blocked"]), len(item["collections"]))):
             column.metric(label, value)
         st.caption("A run can contain several tool executions. SQL collections are saved memberships, not a count of unique passing designs.")
-        results, database = st.columns(2)
+        results, database, datasets = st.columns(3)
         if results.button("Open project results", icon=":material/query_stats:", key="projects-results", use_container_width=True):
             on_results(selected)
         if database.button("Open saved designs & molecules", icon=":material/storage:", key="projects-database", use_container_width=True):
             on_database(selected)
+        if datasets.button("Datasets", icon=":material/library_books:", key="projects-datasets",
+                disabled=on_datasets is None, use_container_width=True):
+            on_datasets(selected)
         overview, cleanup = st.tabs(["Runs & data", "Cleanup review"])
         with overview:
             if item["jobs"]:
@@ -120,7 +124,7 @@ def render_projects(user, projects, *, load_inventory, on_create, on_results, on
                                   for row in item["protected"]], hide_index=True, use_container_width=True)
                 else:
                     st.caption("No saved or imported collections are assigned here. Unassigned legacy data is not inferred to belong to this project.")
-            st.caption("Automatic run collections stay out of this overview. Open Database for admitted designs and their attached analyses.")
+            st.caption("Datasets are reusable inputs; Data browser shows admitted designs and their attached analyses. Automatic run collections stay out of this overview.")
         with cleanup:
             st.markdown("#### Review first — nothing is deleted without confirmation")
             st.write(f"{len(item['finished'])} finished executions to review; {len(item['blocked'])} active or unresolved executions are blocked.")

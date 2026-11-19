@@ -8,14 +8,15 @@ WORKSPACE_PAGES = (
     ("Projects", ":material/folder_open:", "Projects"),
     ("Pipelines", ":material/account_tree:", "Pipelines"),
     ("My results", ":material/query_stats:", "My runs"),
-    ("Database", ":material/storage:", "Database"),
+    ("Datasets", ":material/library_books:", "Datasets"),
+    ("Data browser", ":material/folder_copy:", "Data Browser"),
     ("Complex Analysis", ":material/biotech:", "Complex Analysis"),
 )
 
 
 def render_workspace_navigation(user, *, development=False):
-    if st.session_state.get("page") == "Data Browser":
-        st.session_state["page"] = "Database"
+    if st.session_state.get("page") == "Database":
+        st.session_state["page"] = "Data Browser"
     st.markdown("""<style>
         [data-testid="stSidebar"] { background: #f7f8f7; }
         [data-testid="stSidebar"] [class*="st-key-nav-"] button {
@@ -84,9 +85,21 @@ def open_project_database(state, project_id):
             state.pop(key, None)
         elif str(key).startswith("molecular-method-"):
             state[key] = True
-    state.update({"page": "Database", "molecular-project-filter": project_id,
+    state.update({"page": "Data Browser", "molecular-project-filter": project_id,
                   "database-browser-view": "Molecules", "molecular-scope": "All",
                   "molecular-collection-view": "Library", "data-browser-open": {"project_id": project_id}})
+
+
+def open_datasets(state, *, project_id="", group_id="", molecule_id=""):
+    state.update({"page": "Datasets", "datasets-project": project_id, "datasets-open-group": group_id,
+        "datasets-focus-molecule": molecule_id, "datasets-query": "", "datasets-member-query": ""})
+    state.pop("datasets-page-selection", None)
+
+
+def open_dataset_results(state, group_id, molecule_id=""):
+    state.update({"page": "Data Browser", "molecular-preselect-group": group_id,
+        "molecular-preselect-molecule": molecule_id, "molecular-preselect-collection": "library",
+        "dataset-results-request": {"group_id": group_id, "molecule_id": molecule_id}})
 
 
 def database_destination(state):
@@ -101,6 +114,7 @@ def database_destination(state):
             if str(key).startswith(("data-browser-activity-", "data-browser-construct-")) or key in {
                 "data-browser-page-selection", "data-browser-scope-path", "data-browser-expanded",
                 "data-browser-source-group", "binderscope-browser-preflight",
+                "data-browser-dataset-context",
             }:
                 state.pop(key, None)
         state.update({"data-browser-result-query": "", "data-browser-folder-query": "",

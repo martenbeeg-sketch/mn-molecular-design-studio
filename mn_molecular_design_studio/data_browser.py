@@ -137,6 +137,26 @@ def source_collection_scope(index, group_id):
         "entity": {"kind": "dataset", "group_id": group_id}, "search": group["name"]}
 
 
+def dataset_results_scope(scopes, index, group_id, molecule_id=""):
+    identifier = "collection:" + group_id
+    if identifier not in scopes:
+        source = source_collection_scope(index, group_id)
+        if source is None:
+            return None
+        scopes[identifier] = source
+    expand_scope(scopes, index, identifier)
+    children = [scope for scope in scopes.values() if scope["parent"] == identifier]
+    if molecule_id:
+        matches = [scope for scope in children if molecule_id in scope["subject"].get("molecule_ids", set())]
+        return matches[0]["id"] if len(matches) == 1 else None
+    subject = dict(scopes[identifier]["subject"])
+    for field in ("group_ids", "molecule_ids", "direct_molecule_ids", "target_record_ids", "target_run_keys", "run_keys", "pdb_md_run_keys"):
+        subject[field] = set(subject.get(field, set())).union(*(scope["subject"].get(field, set()) for scope in children))
+    subject["id"] = "dataset-connected:" + group_id
+    scopes[identifier]["subject"] = subject
+    return identifier
+
+
 def _scope_label(name, fallback, identifier):
     return str(name) if friendly(name) else fallback
 

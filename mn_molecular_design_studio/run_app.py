@@ -607,7 +607,7 @@ CURRENT_USER = _render_authentication_gate()
 st.session_state["_molecular_database_user"] = CURRENT_USER
 if os.environ.get("MDS_ANALYSIS_WORKSPACE") == "1":
     st.info("Live analysis workspace · uses your real saved Database. Analyses run only after you confirm Queue; results attach to the selected designs.")
-    st.session_state.setdefault("page", "Database")
+    st.session_state.setdefault("page", "Data Browser")
 
 
 def search_jobs(**kwargs):
@@ -9982,7 +9982,7 @@ def _render_user_access() -> None:
 
 def _render_projects() -> None:
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
-    from mn_molecular_design_studio.navigation import open_project_database, open_project_results
+    from mn_molecular_design_studio.navigation import open_datasets, open_project_database, open_project_results
     from mn_molecular_design_studio.projects import load_project_jobs
     from mn_molecular_design_studio.projects_ui import render_projects
     from mn_molecular_design_studio.job_dependencies import request_cancellation
@@ -10004,6 +10004,10 @@ def _render_projects() -> None:
         open_project_database(st.session_state, project_id)
         st.rerun()
 
+    def datasets(project_id):
+        open_datasets(st.session_state, project_id=project_id)
+        st.rerun()
+
     from mn_molecular_design_studio.project_lifecycle import archive_project, runtime_coordinator
     def archive(project_id, archived):
         archive_project(CURRENT_USER, project_id, archived)
@@ -10013,6 +10017,7 @@ def _render_projects() -> None:
     from mn_molecular_design_studio.entity_names import rename_project
     render_projects(CURRENT_USER, _studio_projects(include_archived=True), load_inventory=load_inventory,
                     on_create=_render_project_dialog, on_results=results, on_database=database,
+                    on_datasets=datasets,
                     physical_purge=True, on_archive=archive, coordinator=runtime_coordinator(),
                     on_rename=lambda project_id, name, **kwargs: rename_project(CURRENT_USER, project_id, name, **kwargs),
                     on_cancel=lambda row: request_cancellation(
@@ -10127,6 +10132,9 @@ elif page == "Job details":
     _render_job_details()
 elif page in {"Database", "Data Browser"}:
     _render_database()
+elif page == "Datasets":
+    from mn_molecular_design_studio.datasets_ui import render_datasets
+    render_datasets(CURRENT_USER, _studio_projects(include_archived=True))
 elif page == "Complex Analysis":
     from mn_molecular_design_studio.complex_analysis_ui import initialize_workspace_view, render_complex_analysis_workspace
     initialize_workspace_view(st.session_state)

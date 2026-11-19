@@ -4,7 +4,7 @@ from __future__ import annotations
 TABLES = (
     "molecules", "molecule_groups", "molecule_members", "molecule_sources", "molecule_structures",
     "molecule_observations", "complex_review_annotations", "complex_reference_contexts",
-    "entity_names", "entity_name_details",
+    "entity_names", "entity_name_details", "dataset_project_links",
 )
 
 
