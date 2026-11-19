@@ -441,11 +441,9 @@ def test_per_design_settings_survive_authorization_and_change_collection_identit
 
 
 def test_api_validates_saved_collection_without_running_it(database, tmp_path, monkeypatch):
-    from mn_molecular_design_studio import api, complex_analysis_sources
+    from mn_molecular_design_studio import api, binderscope_submission
     imported, saved, selector = saved_subject(database, tmp_path)
-    original = complex_analysis_sources.build_saved_structure_collection
-    monkeypatch.setattr(complex_analysis_sources, "build_saved_structure_collection",
-                        lambda *args, **kwargs: original(*args, **kwargs, database=database))
+    monkeypatch.setattr(binderscope_submission, "ReadOnlyLibrary", lambda: database)
     payload = {"schema_version": 1, "workflow": "analysis.binderscope", "project_id": None,
                "binderscope_collection": {"schema": "studio.binderscope_selection.v1", "sources": [selector]},
                "parameters": {"bfactors_are_plddt": True, "component_format": "linear protein", "cpu_cores": 1}}

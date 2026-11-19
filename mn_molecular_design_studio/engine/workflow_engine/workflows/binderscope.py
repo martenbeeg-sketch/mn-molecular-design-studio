@@ -26,6 +26,50 @@ METRICS = {
 }
 
 
+def run_saved_binderscope(selection_file: Path, selection_sha256: str, cpu_cores: int = 4,
+                         use_recorded_settings: bool = True, bfactors_are_plddt: bool = False,
+                         component_format: str = "unspecified") -> Path:
+    from mn_molecular_design_studio.auth import list_users, require_project_access, user_input_root, is_development_mode, development_user
+    from mn_molecular_design_studio.complex_analysis_sources import build_saved_structure_collection
+    from mn_molecular_design_studio.data_browser import ReadOnlyLibrary
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import pending_job_creation_dir
+    from mn_molecular_design_studio.job_dependencies import cancellation_requested
+
+    run = pending_job_creation_dir()
+    if run is None:
+        raise PermissionError("Saved BinderScope preparation requires an owned queued job.")
+    metadata = read_json(run / "metadata.json")
+    owner = str(metadata.get("studio_owner_id") or "")
+    user = next((actor for actor in list_users() if actor["id"] == owner and not actor["disabled"] and not actor["must_change_password"]), None)
+    if user is None and is_development_mode() and metadata.get("studio_development_mode"):
+        actor = development_user()
+        user = actor if actor["id"] == owner else None
+    if user is None:
+        raise PermissionError("The submitting account is unavailable.")
+    project = str(metadata.get("studio_project_id") or "")
+    require_project_access(user, project or None)
+    selection_file = selection_file.resolve(strict=True)
+    selection_file.relative_to(user_input_root(owner).resolve())
+    if file_digest(selection_file) != selection_sha256:
+        raise ValueError("The queued design selection changed after submission.")
+    selection = read_json(selection_file)
+    total = len(selection.get("sources") or [])
+
+    def progress(completed, count):
+        if cancellation_requested(run, read_json(run / "metadata.json")):
+            raise RuntimeError("BinderScope preparation was cancelled.")
+        if completed == 0 or completed == count or completed % 10 == 0:
+            update_status(run, "running", current_phase=f"Preparing saved complexes · {completed}/{count}")
+
+    progress(0, total)
+    adapter = build_saved_structure_collection(user, selection, workflow_id="analysis.binderscope",
+        project_id=project or None, database=ReadOnlyLibrary(), progress=progress)
+    progress(total, total)
+    update_status(run, "running", current_phase=f"Running BinderScope · {total} saved complexes")
+    return run_binderscope(Path(adapter["source_run_dir"]), Path(adapter["candidates_jsonl"]), cpu_cores=cpu_cores,
+        use_recorded_settings=use_recorded_settings, bfactors_are_plddt=bfactors_are_plddt, component_format=component_format)
+
+
 def validate_request(parameters, *, require_files=True):
     native = parameters.get("native_run_dirs") or []
     saved = parameters.get("source_run_dir") or parameters.get("candidates_jsonl")

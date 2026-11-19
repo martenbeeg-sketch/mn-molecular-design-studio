@@ -34,6 +34,36 @@ def test_unchanged_metadata_and_results_are_reused_without_hydration(database, m
     cache.close()
 
 
+def test_unrelated_bookkeeping_and_noop_edits_do_not_rebuild_the_tree(database):
+    _import(database)
+    cache = BrowserCache(database.path)
+    first = cache.get_index(database, USER, scope="all", include_related=True)
+    with database.connection() as connection:
+        connection.execute("UPDATE molecule_members SET name=name")
+        connection.execute("CREATE TABLE unrelated_bookkeeping (value INTEGER)")
+        connection.execute("INSERT INTO unrelated_bookkeeping VALUES (1)")
+        connection.execute("UPDATE molecule_evaluations SET preferred=preferred")
+    assert cache.get_index(database, USER, scope="all", include_related=True) is first
+    with database.connection() as connection:
+        connection.execute("UPDATE molecule_members SET name='Renamed design'")
+    assert cache.get_index(database, USER, scope="all", include_related=True) is not first
+    cache.close()
+
+
+def test_metadata_index_can_be_reused_in_a_new_session_without_sharing_mutable_navigation(database, monkeypatch):
+    _import(database)
+    first_cache = BrowserCache(database.path)
+    first = first_cache.get_index(database, USER, scope="all", include_related=True)
+    first["project_names"] = {"private-navigation": "first session"}
+    monkeypatch.setattr(database_browser_cache, "build_browser_index", lambda *args, **kwargs: pytest.fail("Reuse the verified metadata snapshot"))
+    second_cache = BrowserCache(database.path)
+    second = second_cache.get_index(database, USER, scope="all", include_related=True)
+    assert second is not first and second["molecules"] == first["molecules"]
+    assert "project_names" not in second
+    first_cache.close()
+    second_cache.close()
+
+
 def test_peer_edits_invalidate_cache_without_a_local_capture_revision(database):
     imported = _import(database)
     observation = database.add_observation(imported["group_id"], imported["molecule_ids"][0], "tool", "run-1", {"score": 1})

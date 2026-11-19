@@ -636,6 +636,9 @@ def validate_workflow(
     is_interface_collection = isinstance(request_payload.get("interface_clustering_collection"), dict)
     is_foldseek_collection = isinstance(request_payload.get("foldseek_collection"), dict)
     is_binderscope_collection = isinstance(request_payload.get("binderscope_collection"), dict)
+    if is_binderscope_collection:
+        from mn_molecular_design_studio.binderscope_submission import validate_submission
+        return _call(validate_submission, request_payload, user, project_id)
     request_payload = _prepare_database_analysis_request(request_payload, user, project_id)
     request_payload = _prepare_interface_clustering_collection_request(request_payload, user, project_id)
     request_payload = _prepare_foldseek_collection_request(request_payload, user, project_id)
@@ -676,6 +679,10 @@ def workflow_placement_options(
     is_interface_collection = isinstance(request_payload.get("interface_clustering_collection"), dict)
     is_foldseek_collection = isinstance(request_payload.get("foldseek_collection"), dict)
     is_binderscope_collection = isinstance(request_payload.get("binderscope_collection"), dict)
+    if is_binderscope_collection:
+        from mn_molecular_design_studio.binderscope_submission import validate_submission
+        _call(validate_submission, request_payload, user, project_id)
+        return {"placement": "local", "candidates": []}
     request_payload = _prepare_database_analysis_request(request_payload, user, project_id)
     request_payload = _prepare_interface_clustering_collection_request(request_payload, user, project_id)
     request_payload = _prepare_foldseek_collection_request(request_payload, user, project_id)
@@ -708,6 +715,10 @@ def submit_workflow(
     is_interface_collection = isinstance(request_payload.get("interface_clustering_collection"), dict)
     is_foldseek_collection = isinstance(request_payload.get("foldseek_collection"), dict)
     is_binderscope_collection = isinstance(request_payload.get("binderscope_collection"), dict)
+    if is_binderscope_collection:
+        from mn_molecular_design_studio.binderscope_submission import queue_submission
+        return _submit_once(request_payload, project_id, user, "workflow", idempotency_key,
+                            lambda: _call(queue_submission, request_payload, user, project_id))
     request_payload = _prepare_database_analysis_request(request_payload, user, project_id)
     request_payload = _prepare_interface_clustering_collection_request(request_payload, user, project_id)
     request_payload = _prepare_foldseek_collection_request(request_payload, user, project_id)

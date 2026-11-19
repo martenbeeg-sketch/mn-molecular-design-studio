@@ -1,4 +1,4 @@
-"""Session-local metadata snapshots, invalidated by all SQLite commits and fresh ACLs."""
+"""Session-local metadata snapshots, invalidated by scientific edits and fresh ACLs."""
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -13,6 +13,8 @@ from mn_molecular_design_studio.database_outcomes import scientific_outcomes
 
 MAX_SAVED_SCOPES = 8
 MAX_SAVED_ROWS = 32000
+_SHARED_INDEXES = OrderedDict()
+_SHARED_INDEX_LOCK = threading.RLock()
 
 
 def _subject_key(subject):
@@ -51,7 +53,10 @@ class BrowserCache:
             self.connection.execute("PRAGMA query_only=ON")
             self.identity = identity
             self.generation += 1
-        return (*identity, self.generation, self.connection.execute("PRAGMA data_version").fetchone()[0])
+        from mn_molecular_design_studio.browser_revision import revision
+        current = revision(self.connection)
+        token = ("browser", current) if current is not None else ("sqlite", self.connection.execute("PRAGMA data_version").fetchone()[0])
+        return (*identity, self.generation, token)
 
     def get_index(self, database, user, **filters):
         with self.lock:
@@ -64,7 +69,17 @@ class BrowserCache:
             key = (token, user["id"], user.get("role"), json.dumps(filters, sort_keys=True),
                    tuple(sorted(row["id"] for row in visible)), tuple(sorted(row["id"] for row in accessible)))
             if key != self.index_key:
-                index = build_browser_index(database, user, **filters)
+                shared_key = (str(self.path), *token[:2], token[-1], *key[1:]) if token[-1][0] == "browser" else None
+                with _SHARED_INDEX_LOCK:
+                    if shared_key is not None and shared_key in _SHARED_INDEXES:
+                        index = dict(_SHARED_INDEXES[shared_key])
+                        _SHARED_INDEXES.move_to_end(shared_key)
+                    else:
+                        index = build_browser_index(database, user, **filters)
+                        if shared_key is not None and token == self._token():
+                            _SHARED_INDEXES[shared_key] = dict(index)
+                            while len(_SHARED_INDEXES) > 2:
+                                _SHARED_INDEXES.popitem(last=False)
                 self.results.clear()
                 self.outcomes.clear()
                 self.saved.clear()

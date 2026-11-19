@@ -27,6 +27,7 @@ IMPORT_METHODS = {"user_uploads": "User uploads", "tool_inputs": "Tool inputs", 
 COLLECTION_KINDS = {"curated", "generated", "reference", "inputs", "evaluation", "intermediate"}
 _SYNC_TIMES: dict[str, float] = {}
 _CAPTURE_REVISION_SCHEMA_READY: set[str] = set()
+_BROWSER_REVISION_SCHEMA_READY: set[tuple] = set()
 
 
 class ReviewConflictError(ValueError):
@@ -363,9 +364,17 @@ class MolecularDatabase:
         install_lineage(connection)
         from mn_molecular_design_studio.entity_names import install_schema as install_names
         install_names(connection)
+        identity = self.path.stat()
+        browser_key = (schema_key, identity.st_dev, identity.st_ino)
+        browser_installed = browser_key not in _BROWSER_REVISION_SCHEMA_READY
+        if browser_installed:
+            from mn_molecular_design_studio.browser_revision import install_schema as install_browser_revision
+            install_browser_revision(connection)
         try:
             with connection:
                 yield connection
+            if browser_installed:
+                _BROWSER_REVISION_SCHEMA_READY.add(browser_key)
         finally:
             connection.close()
 

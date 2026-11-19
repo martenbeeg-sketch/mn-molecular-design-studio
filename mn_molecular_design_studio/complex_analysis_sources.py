@@ -231,7 +231,13 @@ def authorize_database_structure(
     molecule_id = _string(selection.get("molecule_id"), "record ID")
     structure_id = _string(selection.get("structure_id"), "structure ID")
     group_id = _string(selection.get("group_id"), "source group ID")
-    rows = database.list_molecules(user, molecule_ids=[molecule_id], collection="all", limit=1)["items"]
+    if workflow_id == "analysis.binderscope":
+        from mn_molecular_design_studio.data_browser import load_saved_record
+        saved = load_saved_record(database, user, {"molecule_id": molecule_id, "group_id": group_id,
+            "structure_ids": [structure_id], "evaluation_id": ""})
+        rows = [saved] if saved else []
+    else:
+        rows = database.list_molecules(user, molecule_ids=[molecule_id], collection="all", limit=1)["items"]
     if not rows:
         raise PermissionError("This Database record is unavailable or you do not have access to it.")
     record = rows[0]
@@ -924,6 +930,7 @@ def build_saved_structure_collection(
     workflow_id: str,
     project_id: str | None,
     database=None,
+    progress=None,
 ) -> dict[str, Any]:
     """Authorize and stage saved structures for a registered cohort workflow.
 
@@ -976,7 +983,7 @@ def build_saved_structure_collection(
     from mn_molecular_design_studio import complex_analysis_ui as workspace
 
     requested_project = str(project_id or "")
-    jobs = workspace._accessible_result_jobs(user)
+    jobs = workspace._accessible_result_jobs(user) if any(isinstance(source, dict) and source.get("kind") == "results" for source in sources) else []
     jobs_by_identity = {
         (str(job.get("task_group") or ""), str(job.get("run_id") or "")): job
         for job in jobs
@@ -1163,6 +1170,8 @@ def build_saved_structure_collection(
                     {**component, **({"role": "binder"} if component.get("chain") in binder_chains else
                                      {"role": "target"} if component.get("chain") in target_chains else {})}
                     for component in authorized["parsed_components"]]
+        if progress is not None:
+            progress(len(resolved), len(sources))
 
     reference = resolved[0]
     if workflow_id == "analysis.interface_clustering":
