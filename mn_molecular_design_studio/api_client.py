@@ -50,9 +50,13 @@ class StudioClient:
             identity = await client.get("/api/v1/auth/me", headers=request_headers)
             if identity.status_code != 200:
                 raise StudioAPIError(f"Studio authentication failed ({identity.status_code}).")
-            actor = identity.json()
-            development = actor.get("development_mode") or actor.get("id") == "00000000000000000000000000000001"
-            if development and (http_client or not self.allow_development):
+            try:
+                actor = identity.json()
+            except ValueError as exc:
+                raise StudioAPIError("Studio did not declare a valid authentication mode.") from exc
+            if not isinstance(actor, dict) or type(actor.get("development_mode")) is not bool:
+                raise StudioAPIError("Studio did not declare a valid authentication mode.")
+            if actor["development_mode"] and (http_client or not self.allow_development):
                 raise StudioAPIError("Studio uses development access. Use production accounts for HTTP clients; local stdio may explicitly opt into development access.")
             async with client.stream(method, path, params=query, json=body if content_bytes is None else None,
                                      content=content_bytes, headers=request_headers) as response:

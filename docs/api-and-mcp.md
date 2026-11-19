@@ -22,6 +22,12 @@ Other paths below are relative to `/api/v1`. Normal calls use
 the existing temporary-password change flow applies. Node credentials remain a
 separate internal contract.
 
+`GET /auth/me` declares `development_mode` as a boolean. Clients use this
+explicit flag, not the account ID: a production instructor can legitimately
+retain the former development owner's ID to preserve existing data. HTTP/MCP
+clients still reject development access, and missing or invalid mode declarations
+fail closed. Local stdio development access requires an explicit opt-in.
+
 ### LocalFold
 
 Use workflow `refolding.optimized_prediction` with `parameters.engine` set to

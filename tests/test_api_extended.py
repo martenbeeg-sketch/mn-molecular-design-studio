@@ -724,7 +724,7 @@ def test_binary_download_descriptors_retain_encoded_query_parameters():
 
     def transport(request):
         if request.url.path == "/api/v1/auth/me":
-            return httpx.Response(200, json={"id": "student", "role": "user"})
+            return httpx.Response(200, json={"id": "student", "role": "user", "development_mode": False})
         return httpx.Response(200, content=b"coordinates", headers={"content-type": "chemical/x-pdb"})
 
     async def request():

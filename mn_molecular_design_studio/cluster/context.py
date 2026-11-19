@@ -22,8 +22,8 @@ def tag_created_job(run_dir, metadata):
         return
     import json
     from . import config
-    from mn_molecular_design_studio.auth import development_user
-    development_mode = command["owner_id"] == development_user()["id"]
+    from mn_molecular_design_studio.auth import development_user, is_development_mode
+    development_mode = is_development_mode() and command["owner_id"] == development_user()["id"]
     metadata.update(cluster_submission_id=command["job_id"], cluster_job_id=command["job_id"],
                     execution_node_id=config.identity(), project_id=command["project_id"],
                     studio_owner_id=command["owner_id"], studio_development_mode=development_mode)

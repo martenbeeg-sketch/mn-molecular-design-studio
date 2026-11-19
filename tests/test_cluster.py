@@ -819,12 +819,14 @@ def test_agent_catalog_uses_cluster_submission_id_after_scheduler_rewrites_metad
     assert item["status"] == "completed"
 
 
-def test_submission_context_writes_both_cluster_job_id_fields(monkeypatch, tmp_path):
+@pytest.mark.parametrize("auth_mode,expected_development", [("production", False), ("development", True)])
+def test_submission_context_writes_both_cluster_job_id_fields(monkeypatch, tmp_path, auth_mode, expected_development):
     from mn_molecular_design_studio.cluster import context
     from mn_molecular_design_studio.auth import development_user
 
     node_id = str(uuid.uuid4())
     submission_id = str(uuid.uuid4())
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_AUTH_MODE", auth_mode)
     monkeypatch.setattr(config, "identity", lambda: node_id)
     run = tmp_path / "design" / "run-1"
     run.mkdir(parents=True)
@@ -847,8 +849,8 @@ def test_submission_context_writes_both_cluster_job_id_fields(monkeypatch, tmp_p
     with context.submission(dev_command):
         context.tag_created_job(dev_run, dev_metadata)
     dev_marker = json.loads((dev_run / "molecular_design_studio.json").read_text())
-    assert dev_metadata["studio_development_mode"] is True
-    assert dev_marker["studio_development_mode"] is True
+    assert dev_metadata["studio_development_mode"] is expected_development
+    assert dev_marker["studio_development_mode"] is expected_development
 
 
 def test_heartbeat_promotes_legacy_fallback_job_to_submission_id_and_replicates_tombstone(cluster, monkeypatch):
