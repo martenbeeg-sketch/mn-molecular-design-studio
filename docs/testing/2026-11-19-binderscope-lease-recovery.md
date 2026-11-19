@@ -54,6 +54,24 @@ The original job folder, report and consistent molecular/authentication database
 snapshots are retained in the private production recovery directory. Production
 authentication and design admission decisions are not changed.
 
+## Cross-workstation attachment correction
+
+End-to-end verification exposed a separate latent defect: local SQL analysis
+registration preferred a group's human-readable `workstation` name over the
+cluster node ID. The calculation and its local attachment were correct, but
+receivers could not resolve owner-qualified references such as `pc002975` against
+UUID-authored source records. Earlier synthetic tests used workstation names as
+node IDs, masking this production distinction.
+
+New local registrations now use the authoritative cluster identity; remote
+registrations retain the source record's authoritative identity. A scoped,
+dry-run-capable repair normalizes the two owner-node fields of this run's local
+observations only after checking the exact source group, molecule, structure and
+coordinate digest. It neither changes measurements nor creates observation
+revisions. Ordinary peer capture/replay replaces the existing replicated rows
+with correctly qualified links. It does not fabricate missing source structures
+or conflate an Evaluation collection with its structure-owning collection.
+
 ## Verification
 
 - 243 focused isolated regressions pass across scheduler/dependencies, workflow
@@ -69,6 +87,11 @@ authentication and design admission decisions are not changed.
   exact-mount isolation and a successful result followed by a heartbeat error.
 - The original 505-result production report independently matches all original
   request fields, authorized source selections and input-file digests.
+- An additional 52-test owner-identity/SQL-peer/recovery suite passes (one image
+  test is skipped in isolation and covered by the enabled image run). New tests
+  distinguish a real UUID from a display name, reproduce the unresolved peer
+  link, verify scoped dry-run/repair and reject digest mismatch, then replay twice
+  and re-ingest without duplicating observations or changing measurements.
 
 These checks do not simulate an extended production network partition, daemon
 failure or an OS kill of the entire bridge. They do not guarantee that future

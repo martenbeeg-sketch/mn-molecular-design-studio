@@ -736,9 +736,9 @@ def _database_analysis_subject(database, user, owner, project, source):
         else:
             try:
                 from mn_molecular_design_studio.cluster.config import identity as node_identity
-                source_owner_node = str(origin.get("workstation") or origin.get("source_workstation") or node_identity())
+                source_owner_node = str(node_identity())
             except (OSError, RuntimeError, ValueError):
-                source_owner_node = str(origin.get("workstation") or origin.get("source_workstation") or "")
+                return None
             source_owner_group_id = group_id
             source_owner_structure_id = structure_id
         return {"molecule_id": molecule_id, "structure_id": structure_id, "group_id": group_id,
@@ -754,6 +754,44 @@ def _database_analysis_subject(database, user, owner, project, source):
                 "source_structure_owner_structure_id": source_owner_structure_id}
     except (FileNotFoundError, OSError, PermissionError, ValueError, TypeError):
         return None
+
+
+def repair_local_analysis_owner_nodes(run_id, *, database=None, dry_run=True):
+    from mn_molecular_design_studio.cluster.config import identity as node_identity
+
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError("Owner-reference repair requires one explicit run ID.")
+    database = database or MolecularDatabase()
+    node = str(node_identity())
+    changes = []
+    with database.connection() as connection:
+        rows = connection.execute("SELECT id,context FROM molecule_observations WHERE run_id=?", (run_id,)).fetchall()
+        for row in rows:
+            context = json.loads(row["context"])
+            owner = context.get("source_structure_owner_node")
+            if not owner or owner == node or context.get("_replica_node"):
+                continue
+            group = connection.execute("SELECT origin FROM molecule_groups WHERE id=?",
+                (context.get("source_structure_owner_group_id"),)).fetchone()
+            if group is None:
+                continue
+            origin = json.loads(group["origin"])
+            if origin.get("_replica_node") or owner not in {origin.get("workstation"), origin.get("source_workstation")}:
+                continue
+            structure = connection.execute("SELECT path FROM molecule_structures WHERE id=? AND group_id=? AND molecule_id=?",
+                (context.get("source_structure_owner_structure_id"), context.get("source_structure_owner_group_id"),
+                 context.get("source_molecule_id"))).fetchone()
+            digest = context.get("source_structure_digest")
+            if structure is None or not digest or _file_sha256(Path(structure["path"])) != digest:
+                raise ValueError("Cannot verify the exact source structure for owner-reference repair.")
+            context["source_structure_owner_node"] = node
+            if context.get("source_node") == owner:
+                context["source_node"] = node
+            changes.append((_json(context), row["id"]))
+        if not dry_run:
+            connection.executemany("UPDATE molecule_observations SET context=? WHERE id=?", changes)
+    return {"run_id": run_id, "owner_node": node, "matched": len(changes),
+            "updated": 0 if dry_run else len(changes), "dry_run": dry_run}
 
 
 def _selected_representation_components(content, filename, context):
