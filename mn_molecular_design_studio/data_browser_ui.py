@@ -207,7 +207,7 @@ def _render_structure(database, user, record, preferred):
             from mn_molecular_design_studio.docking_results import pose_visualizations
             visualizations = pose_visualizations(path.read_text(errors="replace"), path.name,
                 include_pocket_sidechains=False)
-            if not any(item.representation_type == "cartoon" for item in visualizations):
+            if not getattr(database, "input_only", False) and not any(item.representation_type == "cartoon" for item in visualizations):
                 try:
                     receptor = saved_receptor_file(database, user, structure)
                     visualizations = pose_visualizations(path.read_text(errors="replace"), path.name,

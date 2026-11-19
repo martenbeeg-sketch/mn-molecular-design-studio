@@ -152,3 +152,23 @@ def test_saved_reference_structure_is_rendered_as_cartoon_without_result_scores(
     assert len(rendered) == 1 and rendered[0].representation_type == "cartoon"
     assert app.get("download_button")
     assert not any("Original result scores" in item.value for item in app.markdown)
+
+
+def test_input_ligand_preview_does_not_borrow_a_calculated_receptor(database, monkeypatch):
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+    from mn_molecular_design_studio import data_browser_ui
+    from mn_molecular_design_studio.engine.workflow_engine.app.components import molstar_viewer
+    molecule = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    AllChem.EmbedMolecule(molecule, randomSeed=7)
+    imported = _library(database)
+    database.attach_structure(imported["group_id"], imported["molecule_ids"][0], {
+        "name": "reference.pdb", "content": Chem.MolToPDBBlock(molecule).encode()},
+        context={"database_structure_policy": "best_docking_pose"})
+    rendered = []
+    monkeypatch.setattr(molstar_viewer, "molstar_custom_component", lambda visualizations, **kwargs: rendered.extend(visualizations))
+    monkeypatch.setattr(data_browser_ui, "saved_receptor_file", lambda *args: (_ for _ in ()).throw(
+        AssertionError("Input previews must not hydrate calculation contexts")))
+    app = _app(database, monkeypatch, inputs=True, state={"datasets-focus-molecule": imported["molecule_ids"][0]})
+    assert not app.exception
+    assert rendered and all(item.representation_type != "cartoon" for item in rendered)
