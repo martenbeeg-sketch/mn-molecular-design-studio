@@ -119,11 +119,13 @@ candidate's run lineage, project and stored structure digest. A missing decision
 or a different saved representation is shown explicitly. Select a row to see
 its recorded decision details and open a matching BinderScope assessment.
 The link requires the saved representation, input digest and chain roles to agree.
-A refold with recorded source lineage opens as **Saved model** with its own
-structure and assessment.
+A saved refold with matching lineage is the default design model in Data Browser.
+When its BinderScope assessment is available, Results opens it first as
+**Refolded model**. Other matching assessments can be opened on their own models.
 A remote job shows this information after loading full Results from its workstation.
 The local MCP `result_presentation` tool returns the same per-candidate
-`binder_outcome` evidence with the existing pagination.
+`binder_outcome` evidence with the existing pagination, including the preferred
+assessment's observation ID when available.
 
 ## Verification
 

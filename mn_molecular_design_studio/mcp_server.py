@@ -300,7 +300,7 @@ def create_server(client=None):
 
     @server.tool(annotations=read)
     async def result_presentation(reference: str, ctx: Context, offset: int = 0, limit: int = 100) -> dict[str, Any]:
-        """Page local result candidates, metrics, binder acceptance stages and exact saved model or BinderScope references."""
+        """Page local result candidates, binder acceptance and saved models, including the preferred BinderScope assessment."""
         return await call(ctx, "GET", f"/api/v1/jobs/{job_segment(reference)}/presentation", query={"offset": offset, "limit": limit})
 
     @server.tool(annotations=write)

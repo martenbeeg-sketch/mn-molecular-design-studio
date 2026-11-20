@@ -21,6 +21,17 @@ def _label(status):
     return str(status or "not_evaluated").replace("_", " ").capitalize()
 
 
+def _assessment_choices(row):
+    roles = {"refolded_validation": "Refolded model", "generated_design": "Generated model"}
+    choices = [
+        {**item, "relation": roles.get(item["representation_role"], label)}
+        for field, label in (("binderscope", "Results model"), ("binderscope_derived", "Saved model"))
+        for item in row[field]
+    ]
+    choices.sort(key=lambda item: item["observation_id"] != row["preferred_binderscope_observation_id"])
+    return choices
+
+
 def render_binder_outcomes(job, candidates, user, *, inputs=None, digests=None, database=None, key="binder"):
     if not binder_results(job, candidates, inputs):
         return False
@@ -41,14 +52,14 @@ def render_binder_outcomes(job, candidates, user, *, inputs=None, digests=None, 
         except (OSError, ValueError, sqlite3.Error) as exc:
             st.warning(f"Could not verify saved structure links: {exc}")
             return False
+        assessments_by_row = [_assessment_choices(row) for row in outcomes]
         table = [{
             "Design": row["candidate_id"],
             "Native filter": _label(row["native_filter"]["status"]),
             "Final acceptance": _label(row["final_acceptance"]["status"]),
             "Database": _DATABASE_LABELS[row["database"]["status"]],
-            "BinderScope": ("Results model" if row["binderscope"] else
-                            "Saved model" if row["binderscope_derived"] else "—"),
-        } for row in outcomes]
+            "BinderScope": assessments[0]["relation"] if assessments else "—",
+        } for row, assessments in zip(outcomes, assessments_by_row)]
         selection = st.dataframe(table, hide_index=True, use_container_width=True,
                                  on_select="rerun", selection_mode="single-row", key=f"{key}-table-{page}")
         indexes = selection.selection.rows if selection else []
@@ -59,8 +70,7 @@ def render_binder_outcomes(job, candidates, user, *, inputs=None, digests=None, 
         reasons += [str(reason) for reason in row["final_acceptance"]["reasons"]]
         if explanation := " · ".join(text for text in reasons if text):
             st.caption(explanation)
-        assessments = [dict(item, relation="Results model") for item in row["binderscope"]]
-        assessments.extend(dict(item, relation="Saved model") for item in row["binderscope_derived"])
+        assessments = assessments_by_row[indexes[0]]
         if not assessments:
             return True
         selected = assessments[0] if len(assessments) == 1 else st.selectbox(

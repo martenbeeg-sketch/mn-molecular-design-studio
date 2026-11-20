@@ -104,6 +104,24 @@ def test_structure_listing_never_includes_post_analysis_only_coordinates(databas
     assert len(rows) == 2
 
 
+def test_scoped_result_prefers_saved_refold_and_keeps_explicit_model_selection(database, design):
+    _pass_design(database, design)
+    _, _, outcomes = inventory(database)
+    outcome = next(row for row in outcomes if row["outcome_kind"] == "Design")
+    primary = outcome["primary"]
+    generated = {**primary, "id": "generated", "structure_ids": ["generated-structure"]}
+    refold = {**primary, "id": "refold", "structure_ids": ["refold-structure"],
+              "receipt": {**primary["receipt"], "representation_role": "refolded_validation"}}
+    scoped = {**outcome, "originals": [primary, generated, refold]}
+    automatic = listed_results([scoped], selection={"original_ids": ["generated", "refold"]})
+    assert automatic[0]["result"]["structure_ids"] == ["refold-structure"]
+    explicit = listed_results([scoped], structures=True, selection={"original_ids": ["generated"]})
+    assert explicit[0]["structure_id"] == "generated-structure"
+    refold["structure_ids"] = []
+    automatic = listed_results([scoped], selection={"original_ids": ["generated", "refold"]})
+    assert automatic[0]["result"]["structure_ids"] == ["generated-structure"]
+
+
 def test_md_results_are_not_mistaken_for_unadmitted_designs(database, design):
     index, raw, outcomes = inventory(database)
     source = next(row for row in raw if row["observation_id"] == design["observation"])

@@ -188,6 +188,7 @@ def _saved_models(database, user, job, anchors):
                     "structure_id": row["id"], "molecule_id": row["molecule_id"], "group_id": row["group_id"],
                     "label": row["label"], "sha256": _saved_digest(database, row, context),
                     "source_sha256": context.get("source_structure_digest") or "",
+                    "representation_role": str(context.get("design_representation_role") or ""),
                     "binder_chains": sorted(context.get("binder_chains") or []),
                     "target_chains": sorted(context.get("target_chains") or []),
                     "target_molecule_id": context.get("design_target_molecule_id") or context.get("target_molecule_id") or "",
@@ -228,14 +229,14 @@ def _assessments(database, user, models):
             assessments[model["structure_id"]].append({
                 "observation_id": row["id"], "molecule_id": row["molecule_id"], "group_id": row["group_id"],
                 "run_id": row["run_id"], "structure_id": model["structure_id"], "sha256": digest,
-                "model_label": model["label"],
+                "model_label": model["label"], "representation_role": model["representation_role"],
                 "binder_chains": evaluation["binder_chains"], "target_chains": evaluation["target_chains"],
             })
     return assessments
 
 
 def binder_outcomes(database, user, job, candidates, *, digests=None):
-    """Tri-state evidence; database membership requires a scoped, exact saved model."""
+    """Link decisions to saved models through scoped lineage and digests."""
     if not candidates:
         return []
     if digests is None:
@@ -265,10 +266,14 @@ def binder_outcomes(database, user, job, candidates, *, digests=None):
             if all((model.get(key) or sorted(row.get(key) or [])) == item[key]
                    for key in ("binder_chains", "target_chains"))
         ]
-        database_status = ("registered" if exact else "structure_unverified" if not digest else
+        preferred = min(linked + derived_assessments,
+                        key=lambda item: item["representation_role"] != "refolded_validation", default=None)
+        registered = bool(exact) or any(model["representation_role"] == "refolded_validation" for model in derived)
+        database_status = ("registered" if registered else "structure_unverified" if not digest else
                            "different_saved_representation" if models else "not_registered")
         results.append({"candidate_id": row["candidate_id"], "native_filter": native,
                         "final_acceptance": final, "database": {"status": database_status,
                             "structures": exact, "derived_structures": derived},
-                        "binderscope": linked, "binderscope_derived": derived_assessments})
+                        "binderscope": linked, "binderscope_derived": derived_assessments,
+                        "preferred_binderscope_observation_id": preferred["observation_id"] if preferred else ""})
     return results

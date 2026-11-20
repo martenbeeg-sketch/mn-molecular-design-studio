@@ -21,6 +21,10 @@ def _status(value):
     return "Needs review"
 
 
+def has_saved_refold(row):
+    return bool(row["structure_ids"]) and (row.get("receipt") or {}).get("representation_role") == "refolded_validation"
+
+
 def outcome_receipt(context, *, source=None, member=None, origin=None, native_flags=None):
     source, member, origin = _object(source), _object(member), _object(origin)
     candidate = _object(context.get("candidate"))
@@ -204,9 +208,9 @@ def scientific_outcomes(index, results):
         eligibility = next((state for state in ("Passed", "Recorded", "Manually selected", "Needs review")
                             if any(row["eligibility"] == state for row in retained)), "Needs review")
         selected = [row for row in retained if row["eligibility"] == eligibility]
-        selected.sort(key=lambda row: (row.get("receipt", {}).get("representation_role") != "refolded_validation",
-                                      not bool(row["structure_ids"]), not bool(row["evaluation_id"]),
-                                      row.get("run_key") or "", row.get("candidate") or "", row["model"], row["id"]))
+        selected.sort(key=lambda row: (not has_saved_refold(row), not bool(row["structure_ids"]),
+                                      not bool(row["evaluation_id"]), row.get("run_key") or "",
+                                      row.get("candidate") or "", row["model"], row["id"]))
         primary = selected[0]
         admitted = [row for row in retained if row["eligibility"] in {"Passed", "Recorded", "Manually selected"}] or selected
         evaluated_runs = {row["run_key"] for row in admitted if row["evaluation_id"]}

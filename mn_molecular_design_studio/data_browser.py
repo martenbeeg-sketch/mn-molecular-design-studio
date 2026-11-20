@@ -10,7 +10,7 @@ import sqlite3
 
 from mn_molecular_design_studio.database_browser import component_subjects, molecular_subjects, run_subjects
 from mn_molecular_design_studio.database_browser_labels import run_label, tool_label, target_label
-from mn_molecular_design_studio.database_outcomes import filter_outcomes, scientific_outcomes
+from mn_molecular_design_studio.database_outcomes import filter_outcomes, has_saved_refold, scientific_outcomes
 from mn_molecular_design_studio.molecular_database import MolecularDatabase
 from mn_molecular_design_studio.output_vocabulary import sql_common_metrics
 from mn_molecular_design_studio.scientific_naming import design_name, meaningful_name
@@ -650,7 +650,7 @@ def listed_results(results, *, selection=None, query="", structures=False):
             if not originals:
                 continue
             primary = result["primary"] if result["primary"] in originals else min(originals,
-                key=lambda row: (not bool(row["structure_ids"]), not bool(row["evaluation_id"]), row["id"]))
+                key=lambda row: (not has_saved_refold(row), not bool(row["structure_ids"]), not bool(row["evaluation_id"]), row["id"]))
             result = {**result, "primary": primary, "originals": originals,
                 "origin_tools": ([selection["tool"]] if selection.get("tool") else
                     result["origin_tools"] if result["outcome_kind"] == "Design" else sorted({row["tool"] for row in originals})),

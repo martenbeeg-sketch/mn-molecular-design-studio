@@ -29,6 +29,7 @@ def test_results_and_mcp_only_link_registered_exact_models(api_data):
     from mcp import Client
     from mn_molecular_design_studio.api_client import StudioClient
     from mn_molecular_design_studio.binder_result_evidence import binder_outcomes
+    from mn_molecular_design_studio.binder_results_ui import _assessment_choices
     from mn_molecular_design_studio.engine.workflow_engine.core import candidates, jobs
     from mn_molecular_design_studio.mcp_server import create_server
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
@@ -74,7 +75,8 @@ def test_results_and_mcp_only_link_registered_exact_models(api_data):
             refold = db.attach_structure(group, molecule, {"name": "refold.pdb", "content": saved_refold,
                                         "label": "Refolded validation complex"},
                                         context={"run_id": job.run_id, "candidate_id": candidate_id,
-                                                 "source_structure_digest": digest, "binder_chains": ["B"],
+                                                 "source_structure_digest": digest, "design_representation_role": "refolded_validation",
+                                                 "binder_chains": ["B"],
                                                  "target_chains": ["A"]})
             derived = db.add_observation(group, molecule, "binderscope", "refold-report", {"contact_count": 1},
                 context={"representation_id": refold, "source_structure_digest": refold_digest,
@@ -99,6 +101,10 @@ def test_results_and_mcp_only_link_registered_exact_models(api_data):
     assert [a["observation_id"] for a in observed["exact"]["binderscope"]] == [matching]
     assert [a["observation_id"] for a in observed["exact"]["binderscope_derived"]] == [derived]
     assert observed["exact"]["binderscope_derived"][0]["structure_id"] == refold
+    assert observed["exact"]["preferred_binderscope_observation_id"] == derived
+    assert [(a["observation_id"], a["relation"]) for a in _assessment_choices(observed["exact"])] == [
+        (derived, "Refolded model"), (matching, "Results model")]
+    assert "refolded_validation" == observed["exact"]["database"]["derived_structures"][0]["representation_role"]
     assert observed["alternate"]["database"]["status"] == "different_saved_representation"
     assert observed["alternate"]["binderscope"] == observed["alternate"]["binderscope_derived"] == []
     assert observed["elsewhere"]["database"]["status"] == "not_registered"
@@ -119,6 +125,16 @@ def test_results_and_mcp_only_link_registered_exact_models(api_data):
             assert report.structured_content["items"][0]["binder_outcome"] == observed["exact"]
 
     asyncio.run(journey())
+
+    with db.connection() as connection:
+        primary_id = observed["exact"]["database"]["structures"][0]["structure_id"]
+        connection.execute("DELETE FROM molecule_structures WHERE id=?", (primary_id,))
+        connection.commit()
+    only_refold = binder_outcomes(db, data["student"], {"run_id": job.run_id, "project_id": project}, rows,
+                                  digests={"exact": digest})[0]
+    assert only_refold["database"]["status"] == "registered"
+    assert only_refold["database"]["structures"] == []
+    assert only_refold["preferred_binderscope_observation_id"] == derived
 
 
 def test_binder_results_panel_renders_a_bounded_page_and_empty_run(api_data):
