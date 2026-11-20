@@ -94,6 +94,8 @@ def test_batch_runner_accepts_partial_output_without_any_rescue(tmp_path, monkey
 def test_docking_round_runs_both_local_gpu_workers_and_steals_pending_batches(tmp_path, monkeypatch):
     import threading
     import time
+    from mn_molecular_design_studio.bound_docking import _canonical_isomeric_smiles
+
     rows = [dict(library_id='lib', compound_key=i, compound_id=f'c{i}', smiles='CCO',
                  fingerprint=bytes(128)) for i in range(16)]
     workers = [dict(node_id='local', node_name='Organizer', local=True, cpu_cores=16,
@@ -101,9 +103,12 @@ def test_docking_round_runs_both_local_gpu_workers_and_steals_pending_batches(tm
     fast_finished = threading.Event()
     calls, simultaneous, maximum = [], set(), [0]
     lock = threading.Lock()
-    monkeypatch.setattr(controller, '_docking_params', lambda *args, worker, **kw: {
-        'cpu_cores': worker['cpu_cores'], 'gpu_device': worker['gpu_device']})
+    monkeypatch.setattr(controller, '_docking_params', lambda docking, *_args, worker, **_kwargs: {
+        'cpu_cores': worker['cpu_cores'], 'gpu_device': worker['gpu_device'],
+        'retained_pose_count': docking['batch_retained_pose_count']})
     def dispatch(*, worker, request, **kwargs):
+        # Both inputs in each shard are the same chemical identity.
+        assert request['parameters']['retained_pose_count'] == 2
         with lock:
             calls.append(worker['gpu_device'])
             simultaneous.add(worker['gpu_device'])
@@ -123,8 +128,9 @@ def test_docking_round_runs_both_local_gpu_workers_and_steals_pending_batches(tm
     monkeypatch.setattr(controller, '_dispatch_docking_shard', dispatch)
     monkeypatch.setattr(controller, '_read_worker_scores', scores)
     scored, failed = controller._dock_round(campaign=tmp_path, round_number=1, rows=rows, workers=workers,
-        docking={'worker_batch_size': 2}, target={}, owner_id='owner', project_id='project',
-        ssh_user='compute', work_directory=tmp_path / 'round', cancel_check=lambda: False, worker_progress=progress)
+        docking={'worker_batch_size': 2, 'batch_retained_pose_count': 1}, target={}, owner_id='owner', project_id='project',
+        ssh_user='compute', work_directory=tmp_path / 'round', cancel_check=lambda: False,
+        worker_progress=progress, canonicalize=_canonical_isomeric_smiles)
     assert len(scored) == 16 and not failed
     assert len({row['compound_key'] for row in scored}) == 16
     assert maximum[0] == 2
@@ -198,3 +204,17 @@ def test_remote_pose_transfer_and_pruning_check_child_identity(tmp_path, monkeyp
     assert not source.exists()
     assert scores.read_text() == "score evidence"
     assert (campaign / retained[0]).read_text() == "POSE ONE"
+
+
+def test_chemical_pose_retention_keeps_best_source_alias_and_distinct_stereoisomers():
+    from mn_molecular_design_studio.bound_docking import _canonical_isomeric_smiles
+
+    ranked = [
+        {"compound_key": 1, "smiles": "CCO"},
+        {"compound_key": 2, "smiles": "OCC"},
+        {"compound_key": 3, "smiles": "C[C@H](O)F"},
+        {"compound_key": 4, "smiles": "C[C@@H](O)F"},
+    ]
+    winners = controller._chemical_pose_winners(ranked, 3, _canonical_isomeric_smiles)
+    assert [row["compound_key"] for row in winners] == [1, 3, 4]
+    assert len({row["canonical_isomeric_smiles"] for row in winners}) == 3

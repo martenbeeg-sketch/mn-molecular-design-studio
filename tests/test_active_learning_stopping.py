@@ -24,7 +24,7 @@ def _compound(key: int, library_id: str = "screening-library") -> dict:
         "compound_key": key,
         "compound_id": f"compound-{key}",
         "compound_name": f"Compound {key}",
-        "source_smiles": "CCO",
+        "source_smiles": "C" * key + "O",
         "fingerprint": bytes(128),
         "selection_reason": "centroid_seed",
         "predicted_probability": None,
@@ -291,6 +291,7 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     assert all(row["worker_cleanup_completed"] for row in history["rounds"])
     assert all(row["retained_pose_count"] == retained_limit for row in history["rounds"])
     assert history["retained_pose_limit"] == retained_limit
+    assert history["pose_identity"] == "canonical_isomeric_smiles"
     for row in history["rounds"]:
         summaries = {group["top_n"]: group for group in row["score_summaries"]}
         assert {100, 1000, 10000}.issubset(summaries)

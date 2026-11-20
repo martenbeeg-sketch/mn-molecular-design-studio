@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 from pathlib import Path
 
 from mn_molecular_design_studio.active_learning_settings import ActiveLearningSettings
@@ -536,6 +537,7 @@ def _save_score_table(path: Path, scores: list[dict]) -> None:
         ("first_round", pa.uint32()), ("best_round", pa.uint32()),
         ("pose_path", pa.string()), ("worker_node_id", pa.string()), ("worker_node_name", pa.string()),
         ("worker_host", pa.string()), ("worker_job_code", pa.string()),
+        ("retained_pose_rank", pa.uint64()), ("canonical_isomeric_smiles", pa.string()),
     ])
     records = [{**row, "rank": rank} for rank, row in enumerate(scores, start=1)]
     pq.write_table(pa.Table.from_pylist(records, schema=schema), path, compression="zstd")
@@ -552,6 +554,21 @@ def _save_failed_compound_table(path: Path, failures: list[dict]) -> None:
         ("worker_host", pa.string()), ("worker_job_code", pa.string()),
     ])
     pq.write_table(pa.Table.from_pylist(failures, schema=schema), path, compression="zstd")
+
+
+def _chemical_pose_winners(ranked: list[dict], limit: int, canonicalize) -> list[dict]:
+    """Use the best ranked source row for each distinct registered chemistry."""
+    seen, winners = set(), []
+    for row in ranked:
+        if len(winners) == limit:
+            break
+        identity = canonicalize(row["smiles"])
+        if not identity:
+            raise RuntimeError("A scored compound has no valid chemical identity. Worker outputs were preserved.")
+        if identity not in seen:
+            seen.add(identity)
+            winners.append({**row, "canonical_isomeric_smiles": identity})
+    return winners
 
 
 def _collect_best_poses(campaign: Path, scores: list[dict], count: int, *, ssh_user: str,
@@ -585,7 +602,8 @@ def _collect_best_poses(campaign: Path, scores: list[dict], count: int, *, ssh_u
             and old.get("score") == row["best_score"])
         item = {"library_id": key[0], "compound_key": key[1], "compound_id": row["compound_id"],
                 "score": row["best_score"], "worker_node_id": row.get("worker_node_id"),
-                "worker_job_code": row.get("worker_job_code"), "source_pose_id": source_id}
+                "worker_job_code": row.get("worker_job_code"), "source_pose_id": source_id,
+                "canonical_isomeric_smiles": row.get("canonical_isomeric_smiles")}
         if same_source and old_path.parent == destination.resolve() and old_path.is_file():
             local_path = old_path
             item["sha256"] = old.get("sha256") or hashlib.sha256(local_path.read_bytes()).hexdigest()
@@ -651,14 +669,16 @@ def _prune_superseded_poses(data_root: Path, pose_paths: list[str]) -> None:
 
 def _publish_ranked_scores(data_root: Path, ranked: list[dict], score_field: str, score_units: str) -> None:
     manifest = read_json_raw(data_root / "retained_poses.json")
-    retained = {(str(item["library_id"]), int(item["compound_key"])): str(item["path"])
-                for item in manifest.get("poses", [])}
+    retained = {(str(item["library_id"]), int(item["compound_key"])): {
+        "pose_path": str(item["path"]), "retained_pose_rank": rank,
+        "canonical_isomeric_smiles": item.get("canonical_isomeric_smiles"),
+    } for rank, item in enumerate(manifest.get("poses", []), start=1)}
     final_path = data_root / "docking_scores.parquet"
     pending = final_path.with_suffix(".pending")
     try:
         _save_score_table(pending, [
             {**row, "score": row["best_score"], "score_field": score_field, "score_units": score_units,
-             "pose_path": retained.get((str(row["library_id"]), int(row["compound_key"])), "")}
+             **retained.get((str(row["library_id"]), int(row["compound_key"])), {"pose_path": ""})}
             for row in ranked])
         pending.replace(final_path)
     finally:
@@ -826,8 +846,14 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
     state_path = data_root / "state.json"
     state = read_json(state_path) or {"schema_version": "studio.active-learning-state.v1", "rounds": [],
                                       "docking_runs": [], "stable_rounds": 0, "previous_top_scores": None,
-                                      "prune_completed_rounds": bool(docking.get("cleanup_after_round", True))}
+                                      "prune_completed_rounds": bool(docking.get("cleanup_after_round", True)),
+                                      "pose_identity": "canonical_isomeric_smiles"}
     compact = state.get("prune_completed_rounds", False)
+    chemical_poses = state.get("pose_identity") == "canonical_isomeric_smiles"
+    canonicalize = None
+    if chemical_poses:
+        from mn_molecular_design_studio.bound_docking import _canonical_isomeric_smiles
+        canonicalize = lru_cache(maxsize=250_000)(_canonical_isomeric_smiles)
     if compact:
         from mn_molecular_design_studio.cluster import config as cluster_config
         parent_node = cluster_config.identity()
@@ -865,7 +891,8 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                    "screening_feature_manifest": str(features["feature_manifest_path"]),
                    "centroid_library_id": seed_node["library_id"],
                    "centroid_manifest": str(features["centroid_manifest"]),
-                   "retained_pose_limit": retain_poses, "prune_completed_rounds": compact}
+                   "retained_pose_limit": retain_poses, "prune_completed_rounds": compact,
+                   "pose_identity": state.get("pose_identity", "library_and_compound_key")}
         if pose_paths is not None:
             history["retained_poses"] = pose_paths
         write_json(data_root / "round_history.json", history)
@@ -928,7 +955,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                     campaign=campaign, round_number=round_number, rows=selection_rows, workers=workers,
                     docking=docking, target=target, owner_id=owner_id, project_id=project_id,
                     ssh_user=str(docking.get("ssh_user") or "compute"), work_directory=round_folder,
-                    cancel_check=cancelled, worker_progress=worker_progress,
+                    cancel_check=cancelled, worker_progress=worker_progress, canonicalize=canonicalize,
                 )
                 accounted_count = len(all_results) + len(failed_results)
                 if accounted_count != len(selection_rows):
@@ -948,7 +975,8 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             ranked = _ranked_rows(score_db, direction)
             history_item = state["rounds"][-1] if state["rounds"] else {}
             if history_item.get("round") != round_number:
-                pose_paths = _collect_best_poses(campaign, ranked, retain_poses, ssh_user=ssh_user,
+                winners = _chemical_pose_winners(ranked, retain_poses, canonicalize) if chemical_poses else ranked[:retain_poses]
+                pose_paths = _collect_best_poses(campaign, winners, retain_poses, ssh_user=ssh_user,
                                                  require_complete=compact)
                 _publish_ranked_scores(data_root, ranked, score_field, score_units)
                 current_top, stable_now, max_delta, same_order = _top_vector(ranked, top_n, state.get("previous_top_scores"), tolerance)
@@ -970,7 +998,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                     "successful_count": pending["scores"]["docked_count"],
                     "failed_count": pending["scores"]["failed_count"],
                     "retained_pose_count": len(pose_paths), "retained_pose_limit": retain_poses,
-                    "retained_cutoff_score": ranked[len(pose_paths) - 1]["best_score"] if pose_paths and compact else None,
+                    "retained_cutoff_score": winners[-1]["best_score"] if pose_paths and len(pose_paths) == len(winners) else None,
                     "unique_tested_count": len(ranked), "best_score": ranked[0]["best_score"] if ranked else None,
                     "binder_percent": settings.percentile(round_number), "top_n": top_n,
                     "top_n_stable": stable_now, "stable_round_count": state["stable_rounds"],
@@ -1081,8 +1109,9 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                   worker_nodes=[model_worker])
 
         ranked = _ranked_rows(score_db, direction)
-        if not compact or not (data_root / "docking_scores.parquet").is_file():
-            _collect_best_poses(campaign, ranked, retain_poses, ssh_user=ssh_user, require_complete=compact)
+        if not (data_root / "docking_scores.parquet").is_file() or not chemical_poses:
+            winners = _chemical_pose_winners(ranked, retain_poses, canonicalize) if chemical_poses else ranked[:retain_poses]
+            _collect_best_poses(campaign, winners, retain_poses, ssh_user=ssh_user, require_complete=compact)
         _publish_ranked_scores(data_root, ranked, score_field, score_units)
         pose_paths = [str(item["path"]) for item in read_json_raw(data_root / "retained_poses.json").get("poses", [])]
         _prune_superseded_poses(data_root, pose_paths)
@@ -1169,7 +1198,8 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
 
 def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers: list[dict],
                 docking: dict, target: dict, owner_id: str, project_id: str,
-                ssh_user: str, work_directory: Path, cancel_check, worker_progress=None) -> tuple[list[dict], list[dict]]:
+                ssh_user: str, work_directory: Path, cancel_check, worker_progress=None,
+                canonicalize=None) -> tuple[list[dict], list[dict]]:
     import numpy as np
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -1183,10 +1213,6 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
     launch_batch_size = int(docking.get("worker_batch_size") or 2_000)
     if not 1 <= launch_batch_size <= MAX_COMPOUNDS_PER_LAUNCH:
         raise ValueError(f"Each computer's UniDock Pro batch must be between 1 and {MAX_COMPOUNDS_PER_LAUNCH:,} compounds.")
-    if docking.get("batch_retained_pose_count") and len({
-        (row["library_id"], row["compound_key"]) for row in rows
-    }) != len(rows):
-        docking = {**docking, "batch_retained_pose_count": 0}
     random = np.random.default_rng(int(docking.get("sampling_seed") or 42) + round_number)
     indexes = random.permutation(len(rows))
     assignments = _weighted_batch_assignments(rows, workers, indexes, launch_batch_size)
@@ -1224,6 +1250,14 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
             pq.write_table(pa.Table.from_pylist(table_rows, schema=schema), rows_file, compression="zstd")
             parameters = _docking_params(docking, target, compound_file, round_number=round_number,
                                          worker=worker, limit=len(batch_rows))
+            cap = parameters["retained_pose_count"]
+            if 0 < cap < len(batch_rows):
+                # Duplicates can push a winning chemistry below the batch's raw top N.
+                if canonicalize is not None:
+                    identities = {canonicalize(row.get("source_smiles") or row["smiles"]) for row in batch_rows}
+                else:
+                    identities = {(row["library_id"], row["compound_key"]) for row in batch_rows}
+                parameters["retained_pose_count"] = min(len(batch_rows), cap + len(batch_rows) - len(identities))
             request = {"schema_version": _DOCKING_WORKER_SCHEMA, "round_number": round_number,
                        "local_work_dir": str(node_directory), "parameters": parameters,
                        "owner_id": owner_id, "project_id": project_id}

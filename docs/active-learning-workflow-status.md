@@ -42,11 +42,13 @@ unrelated job relations survive. Publish replica tombstones before resuming sync
 
 Set **Keep poses for the best unique compounds** in **Accumulate docking results**
 before launch. Set it to 200,000 for a campaign whose best 200,000 poses will be
-used downstream. The canvas default is 1,000. Each campaign uses the pair
-`(library_id, compound_key)` as its compound identity, retaining the best recorded
-score and accompanying pose per identity. The identity is stable across rounds
-and workstations. Distinct registered identities can share a chemical structure.
-At a score tie, the library and compound keys give a reproducible rank order.
+used downstream. The canvas default is 1,000. Pose selection preserves one
+winner per distinct canonical isomeric SMILES across all rounds and workstations.
+This combines equivalent source aliases while preserving stereoisomers. The
+winning score and pose come from the same source record. At a score tie, the
+library and compound keys give a reproducible rank order. The full table
+continues to use `(library_id, compound_key)` for source and training records.
+The saved `retained_pose_rank` orders the chemical winners within that table.
 
 With **Prune worker files after each round** enabled, the organizer copies and
 verifies cumulative winners, publishes the ranked table and then removes bulky
@@ -77,7 +79,8 @@ after cleanup.
 
 Each November 20 redock (`20261120-010933-21e95836` hybrid,
 `20261120-010936-06cca2a9` classic) recorded 199,997 new scores with poses from
-200,000 requested compounds, with three failures. Their organizer-side active
+200,000 requested compounds, with three failures. In both selections, the
+200,000 compounds had distinct canonical isomeric SMILES. Their organizer-side active
 learning folders used 909 MiB and 923 MiB at inspection. They used new docking
 seeds and carry independent scores. A future campaign can reuse its retained
 poses directly and avoid a final redock for pose recovery. A new scoring protocol

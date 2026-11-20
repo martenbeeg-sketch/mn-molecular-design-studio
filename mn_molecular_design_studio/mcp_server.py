@@ -230,11 +230,17 @@ def create_server(client=None):
         result = await call(ctx, "POST", f"/api/v1/screening/{segment(task_group)}/{segment(run_id)}/search",
                             body={"offset": offset, "limit": limit, "query": query,
                                   "score_min": score_min, "score_max": score_max})
+        retained = "artifacts/active_learning/retained_poses/"
         for row in result["items"]:
-            match = re.fullmatch(r"artifacts/active_learning/retained_poses/([A-Za-z0-9_.-]+[.]pdbqt)",
-                                 str(row.get("pose_path") or ""))
+            path = str(row.get("pose_path") or "")
+            prefix = f"/{task_group}/{run_id}/{retained}" if path.startswith("/") else retained
+            tail = path.partition(prefix)
+            if not tail[1] or (tail[0] and not path.startswith("/")):
+                continue
+            match = re.fullmatch(r"(?:(lane-[0-9]+-batch-[0-9]+)/)?([A-Za-z0-9_.-]+[.]pdbqt)", tail[2])
             if match:
-                row["pose_uri"] = f"studio://screening/{segment(task_group)}/{segment(run_id)}/poses/{segment(match[1])}"
+                folder, filename = match[1] or "direct", match[2]
+                row["pose_uri"] = f"studio://screening/{segment(task_group)}/{segment(run_id)}/poses/{folder}/{filename}"
         return result
 
     @server.tool(annotations=read)
@@ -421,14 +427,17 @@ def create_server(client=None):
         content = await call(ctx, "GET", f"/api/v1/molecules/structures/{segment(structure_id)}/file", content=True)
         return content.decode("utf-8")
 
-    @server.resource("studio://screening/{task_group}/{run_id}/poses/{filename}")
-    async def screening_pose_resource(task_group: str, run_id: str, filename: str, ctx: Context) -> str:
+    @server.resource("studio://screening/{task_group}/{run_id}/poses/{folder}/{filename}")
+    async def screening_pose_resource(task_group: str, run_id: str, folder: str, filename: str, ctx: Context) -> str:
         """Read a retained docking pose from an accessible campaign."""
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+[.]pdbqt", filename):
+        if not re.fullmatch(r"direct|lane-[0-9]+-batch-[0-9]+", folder) or not re.fullmatch(
+            r"[A-Za-z0-9_.-]+[.]pdbqt", filename
+        ):
             raise ResourceError("Choose a retained PDBQT pose from screening results.")
         reference = job_segment(f"{task_group}/{run_id}")
+        name = filename if folder == "direct" else f"{folder}/{filename}"
         content = await call(ctx, "GET", f"/api/v1/jobs/{reference}/artifact", content=True,
-                             query={"path": f"artifacts/active_learning/retained_poses/{filename}"})
+                             query={"path": f"artifacts/active_learning/retained_poses/{name}"})
         return content.decode("utf-8")
 
     return server

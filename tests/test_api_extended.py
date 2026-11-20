@@ -1531,9 +1531,14 @@ def test_screen_retention_settings_and_round_results_through_mcp(api_data, monke
     pose = saved / "artifacts/active_learning/retained_poses/winner.pdbqt"
     pose.parent.mkdir()
     pose.write_text("REMARK winning pose fixture\n")
+    old_pose = pose.parent / "lane-02-batch-005/legacy.pdbqt"
+    old_pose.parent.mkdir()
+    old_pose.write_text("REMARK older pose fixture\n")
     score_file = saved / "artifacts/active_learning/docking_scores.parquet"
     saved_scores = pq.read_table(score_file).to_pylist()
     saved_scores[0]["pose_path"] = pose.relative_to(saved).as_posix()
+    saved_scores[1]["pose_path"] = str(pose)
+    saved_scores[2]["pose_path"] = old_pose.relative_to(saved).as_posix()
     pq.write_table(pa.Table.from_pylist(saved_scores), score_file)
     (saved / "artifacts/active_learning/round_history.json").write_text(json.dumps({
         "retained_pose_limit": 200_000, "prune_completed_rounds": True,
@@ -1575,12 +1580,14 @@ def test_screen_retention_settings_and_round_results_through_mcp(api_data, monke
             assert not rounds.is_error, rounds.content
             assert rounds.structured_content["retained_pose_limit"] == 200_000
             assert rounds.structured_content["rounds"][0]["retained_pose_count"] == 11
-            page = await client.call_tool("screening_results", {"task_group": "campaign", "run_id": saved.name, "limit": 3})
+            page = await client.call_tool("screening_results", {"task_group": "campaign", "run_id": saved.name, "limit": 4})
             assert not page.is_error, page.content
             items = page.structured_content["items"]
-            assert len(items) == 3
-            assert "pose_uri" not in items[1]
-            pose_content = await client.read_resource(items[0]["pose_uri"])
-            assert pose_content.contents[0].text == pose.read_text()
+            assert len(items) == 4
+            assert items[0]["pose_uri"] == items[1]["pose_uri"]
+            assert "pose_uri" not in items[3]
+            for item, selected in ((items[0], pose), (items[2], old_pose)):
+                pose_content = await client.read_resource(item["pose_uri"])
+                assert pose_content.contents[0].text == selected.read_text()
 
     asyncio.run(journey())
