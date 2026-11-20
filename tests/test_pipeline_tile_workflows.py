@@ -89,6 +89,16 @@ def test_tool_input_digests_track_explicit_files_and_preserve_inline_values(tmp_
     assert tiles.input_digests(settings, tmp_path) != initial
 
 
+def test_tool_input_digests_leave_peer_paths_for_the_owning_worker(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster import config
+
+    monkeypatch.setattr(config, "identity", lambda: "local-workstation")
+    local = tmp_path / "explicit.cif"
+    local.write_text("data_target\n")
+    remote = "cluster://peer-workstation/refolding-validation/saved/artifacts/normalized_candidates/candidates.jsonl"
+    assert set(tiles.input_digests({"candidates_jsonl": remote, "target_pdb": str(local)}, tmp_path)) == {str(local)}
+
+
 def test_saved_run_uses_the_exact_candidate_manifest_for_acceptance():
     kind = "tile_validation_acceptance"
     settings = {"acceptance_policy": {"rules": []}}

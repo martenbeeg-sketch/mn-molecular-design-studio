@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -183,6 +184,13 @@ def input_digests(parameters: dict, run_dir: Path) -> dict[str, str]:
         for item in value if isinstance(value, list) else [value]:
             if not isinstance(item, str) or not item:
                 continue
+            if item.startswith("cluster://"):
+                from mn_molecular_design_studio.cluster import config
+
+                # The authorized Run snapshot identifies peer-owned files.
+                # Only the source workstation can resolve them to local paths.
+                if urlsplit(item).netloc != config.identity():
+                    continue
             path = resolve_stored_path(item, run_dir=run_dir, must_exist=True)
             if path is not None and path.is_file():
                 digests[str(path)] = file_digest(path)
