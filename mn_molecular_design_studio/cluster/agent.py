@@ -708,6 +708,11 @@ class Agent:
                 # The coordinator has already authorized this source job. Run
                 # results also include native batches hidden from normal lists.
                 response = inspect_job(ref, include_hidden=True) | {"results": job_results(ref, include_candidates=True, include_hidden=True)}
+                from mn_molecular_design_studio.binder_result_evidence import binder_results, structure_digests
+                candidates = response["results"].get("candidates") or []
+                if binder_results(response["job"], candidates, response.get("input")):
+                    actor = {"id": command["owner_id"], "role": "student"}
+                    response["candidate_structure_digests"] = structure_digests(response["job"], candidates, actor)
             elif command["kind"] == "md_source_options":
                 from mn_molecular_design_studio.auth import list_users
                 from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import resolve_job

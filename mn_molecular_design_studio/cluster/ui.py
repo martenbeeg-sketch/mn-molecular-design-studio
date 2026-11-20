@@ -2725,6 +2725,11 @@ def render_job(reference, user, token, submit):
             from mn_molecular_design_studio.distributed_campaign_ui import render_campaign_context
             render_campaign_context(st, data.get("distributed_campaign_context"))
             candidates = data.get("results", {}).get("candidates", [])
+            from mn_molecular_design_studio.binder_results_ui import render_binder_outcomes
+            job_identity = {**(data.get("job") or {}), **row}
+            render_binder_outcomes(job_identity, candidates, user,
+                inputs=data.get("input"), digests=data.get("candidate_structure_digests", {}),
+                key=f"cluster-binder-outcomes-{jid}")
             if candidates:
                 tool = " ".join(
                     str(row.get(key) or "")

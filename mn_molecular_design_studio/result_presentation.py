@@ -8,6 +8,7 @@ import math
 
 
 def candidate_state_rows(candidates):
+    from mn_molecular_design_studio.binder_result_evidence import binder_decisions
     from mn_molecular_design_studio.output_vocabulary import candidate_evidence
     from mn_molecular_design_studio.workflow_modes import native_ranking
     rows = []
@@ -22,12 +23,7 @@ def candidate_state_rows(candidates):
         source_candidate_id = (collection.get("native_candidate_id") or collection.get("native_backbone_identity")
                                or raw.get("native_candidate_id") or raw.get("pipeline_original_candidate_id")
                                or source.get("candidate_id") or candidate.get("candidate_id"))
-        native_acceptance = (collection.get("native_filter") or raw.get("native_filter")
-                             or candidate.get("metrics", {}).get("native_pass_filters"))
-        if native_acceptance is True:
-            native_acceptance = "passed"
-        elif native_acceptance is False:
-            native_acceptance = "failed"
+        native_acceptance = binder_decisions(candidate)[0]["status"]
         validation = raw.get("validation_acceptance")
         validation = validation if isinstance(validation, dict) else {}
         shared_filter = collection.get("shared_filter")
@@ -136,7 +132,7 @@ def render_workflow_results_summary(run_dir):
     import streamlit as st
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
     summary = read_json(Path(run_dir) / 'result.json').get('outputs', {}).get('workflow_summary')
-    if not summary or not summary.get('preset_mode'):
+    if not isinstance(summary, dict) or not summary.get('preset_mode'):
         return
     with st.expander('Scientific workflow outcomes', expanded=True):
         st.write(summary['effective_label'])

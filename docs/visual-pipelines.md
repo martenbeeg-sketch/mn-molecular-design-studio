@@ -110,6 +110,21 @@ every connected calculation step. Cofolding Inputs can reference a Database
 compound snapshot or a FASTA sequence collection; all selected records are passed
 to the engine's native batch runner in one job. See [automatic collection execution](automatic-collections.md).
 
+## Binder and IDR outcomes
+
+Open a completed design or pipeline in **My Results** and expand **Binder design
+outcomes**. **Native filter** reads the generator receipt. **Final acceptance**
+reads the recorded validation or campaign policy. **Database** checks the
+candidate's run lineage, project and stored structure digest. A missing decision
+or a different saved representation is shown explicitly. Select a row to see
+its recorded decision details and open a matching BinderScope assessment.
+The link requires the saved representation, input digest and chain roles to agree.
+A refold with recorded source lineage opens as **Saved model** with its own
+structure and assessment.
+A remote job shows this information after loading full Results from its workstation.
+The local MCP `result_presentation` tool returns the same per-candidate
+`binder_outcome` evidence with the existing pagination.
+
 ## Verification
 
 The graph/API/queue tests use temporary files and simulated child jobs; they do not launch

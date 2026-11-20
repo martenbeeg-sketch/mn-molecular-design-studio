@@ -122,9 +122,16 @@ def install(app, current_user, *, resolve_job, call):
                          user=Depends(current_user)):
         row = resolve_job(reference, user)
         candidates = call(read_candidates, Path(row["run_dir"]))
+        visible = candidates[offset:offset + limit]
         items = [{"candidate_id": c["candidate_id"], "stage": c.get("stage"), "metrics": c.get("metrics", {}),
                   "binder_chains": c.get("binder_chains", []), "target_chains": c.get("target_chains", [])}
-                 for c in candidates[offset:offset + limit]]
+                 for c in visible]
+        from mn_molecular_design_studio.binder_result_evidence import binder_outcomes, binder_results
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+        if visible and binder_results(row, visible, read_json(Path(row["run_dir"]) / "input.json")):
+            from mn_molecular_design_studio.data_browser import ReadOnlyLibrary
+            for item, outcome in zip(items, call(binder_outcomes, ReadOnlyLibrary(), user, row, visible)):
+                item["binder_outcome"] = outcome
         return {"items": items, "total": len(candidates), "offset": offset, "limit": limit,
                 "metric_fields": sorted({key for c in candidates for key in c.get("metrics", {})}),
                 "reports_url": "/api/v1/jobs/" + quote(reference, safe="") + "/reports"}

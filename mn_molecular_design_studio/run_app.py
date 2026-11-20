@@ -7816,6 +7816,11 @@ def _render_job_details() -> None:
 
         from mn_molecular_design_studio.result_presentation import render_workflow_results_summary
         render_workflow_results_summary(run_dir)
+        from mn_molecular_design_studio.binder_results_ui import render_binder_outcomes
+        from mn_molecular_design_studio.job_catalog import get_job_access_record
+        result_identity = get_job_access_record(str(job.get("task_group") or ""), run_id) or {}
+        has_binder_outcomes = render_binder_outcomes({**job, **result_identity}, result_candidates, CURRENT_USER,
+            inputs=input_payload, key=f"binder-outcomes-{run_id}")
         if tool_runs := result_payload.get("tile_runs"):
             st.subheader("Pipeline tool results")
             selected_run = st.selectbox(
@@ -7830,7 +7835,7 @@ def _render_job_details() -> None:
         if candidates_path.is_file():
             if any((row.get("raw_metadata") or {}).get(key) for row in result_candidates for key in ("measurement_status", "selection", "source_candidate", "candidate_set")):
                 from mn_molecular_design_studio.result_presentation import candidate_state_rows
-                with st.expander("Candidate measurement and selection outcomes", expanded=True):
+                with st.expander("Candidate measurement and selection outcomes", expanded=not has_binder_outcomes):
                     st.caption("Campaign acceptance is shown separately from ranking. Selection refers to an explicit downstream shortlist; none of these computational outcomes establishes experimental activity.")
                     st.dataframe(candidate_state_rows(result_candidates[:10000]), hide_index=True, use_container_width=True)
                     from mn_molecular_design_studio.output_vocabulary import evidence_rows
