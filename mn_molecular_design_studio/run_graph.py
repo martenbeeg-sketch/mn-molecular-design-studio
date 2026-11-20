@@ -5,8 +5,12 @@ from pathlib import Path
 
 def compatible(kind):
     import inspect
+    from mn_molecular_design_studio.pipeline_tile_workflows import TILES
     from mn_molecular_design_studio.quality_tools import TOOLS
     if TOOLS.get(kind, {}).get("cohort"):
+        return False
+    if kind in TILES and TILES[kind].output != "candidates":
+        # The saved-Run batch collector merges normalized candidate manifests.
         return False
     from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, _get_function
@@ -42,6 +46,8 @@ def source_request(kind, params, source, name):
     from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import node_request
     if source.get("selected_pose_ids") and not compatible_docking_pose_analysis(kind):
         raise ValueError("Selected raw docking poses can connect only to a registered protein–ligand analysis such as PLIP.")
+    if not compatible(kind):
+        raise ValueError("Connect Run results to a tool with a compatible saved candidate collection.")
     if kind == "shared_filter":
         from mn_molecular_design_studio.validation_acceptance import campaign_policy_from_node
         return dict(schema_version=1, workflow="analysis.validation_acceptance", parameters={

@@ -7,6 +7,7 @@ from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline 
     _cache_valid, _tile_output, node_request,
 )
 from mn_molecular_design_studio.pipeline_graph import connection_compatibility
+from mn_molecular_design_studio.run_graph import source_request
 from mn_molecular_design_studio.tool_connections import connection_catalog
 
 
@@ -86,3 +87,24 @@ def test_tool_input_digests_track_explicit_files_and_preserve_inline_values(tmp_
     assert set(initial) == {str(inputs)}
     inputs.write_text('{"updated": true}')
     assert tiles.input_digests(settings, tmp_path) != initial
+
+
+@pytest.mark.parametrize("kind,settings", [
+    ("tile_binderscope", {}),
+    ("tile_validation_acceptance", {"acceptance_policy": {"rules": []}}),
+])
+def test_saved_run_uses_the_exact_candidate_manifest_in_tile_requests(kind, settings):
+    source = {"deferred_run_source": True, "run_dir": "/work/design/cohort",
+              "candidates_jsonl": "/work/design/cohort/artifacts/normalized_candidates/candidates.jsonl"}
+    request = source_request(kind, {"workflow_parameters": settings}, source, "Saved Run")
+    assert request["workflow"] == tiles.TILES[kind].workflow
+    assert request["parameters"]["source_run_dir"] == source["run_dir"]
+    assert request["parameters"]["candidates_jsonl"] == source["candidates_jsonl"]
+    assert all(request["parameters"][key] == value for key, value in settings.items())
+    assert connection_compatibility("run_source", kind, target_handle="candidates")["compatible"]
+
+
+def test_saved_run_rejects_outputs_the_batch_collector_cannot_merge():
+    assert not connection_compatibility("run_source", "tile_bioemu2", target_handle="candidates")["compatible"]
+    assert connection_compatibility("project_design_source", "tile_bioemu2", target_handle="candidates")["compatible"]
+    assert not connection_compatibility("run_source", "candidate_merge")["compatible"]

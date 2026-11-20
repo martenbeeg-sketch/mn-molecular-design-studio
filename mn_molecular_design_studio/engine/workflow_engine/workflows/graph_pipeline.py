@@ -506,14 +506,14 @@ def filter_candidates(rows: list[dict], settings: dict) -> list[dict]:
 
 def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
     """Turn a registered graph node into a workflow request."""
-    if kind in pipeline_tile_workflows.TILES:
-        return pipeline_tile_workflows.workflow_request(
-            pipeline_tile_workflows.TILES[kind], params["workflow_parameters"],
-            source.get("workflow_inputs", {}), name,
-        )
     if source.get("run_sources"):
         from mn_molecular_design_studio.run_graph import source_request, deferred_source
         return source_request(kind, params, deferred_source(source["run_sources"][0], source), name)
+    if kind in pipeline_tile_workflows.TILES:
+        inputs = {"candidates": source} if source.get("deferred_run_source") else source.get("workflow_inputs", {})
+        return pipeline_tile_workflows.workflow_request(
+            pipeline_tile_workflows.TILES[kind], params["workflow_parameters"], inputs, name,
+        )
     if source.get("deferred_run_source") and kind in OPTIMIZED_PREDICTION_NODE_ENGINES:
         return _optimized_prediction_request(OPTIMIZED_PREDICTION_NODE_ENGINES[kind], params, source, name)
     workflow = NODE_CATALOG[kind]["workflow"]

@@ -4,7 +4,9 @@ from __future__ import annotations
 from typing import Literal
 
 from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, workflow_catalog
-from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, capability_contract, matching_artifact_type
+from mn_molecular_design_studio.pipeline_graph import (
+    NODE_CATALOG, capability_contract, connection_restriction, matching_artifact_type,
+)
 from mn_molecular_design_studio.tool_catalog import AF2_TILE_WORKFLOW, TOOL_CATALOG_GROUPS, catalog_rows
 
 
@@ -68,7 +70,7 @@ def _connections(operation, direction):
             for output in source["outputs"]:
                 for input_port in target["inputs"]:
                     artifact_type = matching_artifact_type(output, input_port)
-                    if artifact_type:
+                    if artifact_type and not connection_restriction(source["id"], target["id"], artifact_type):
                         yield {"source": source["id"], "output": output["id"], "target": target["id"],
                                "input": input_port["id"], "artifact_type": artifact_type}
 

@@ -1,4 +1,5 @@
 from mn_molecular_design_studio import pipeline_graph
+from mn_molecular_design_studio.tool_connections import connection_catalog
 
 
 def test_registered_nodes_expose_one_uniform_contract():
@@ -43,3 +44,31 @@ def test_new_registered_metric_tool_automatically_connects_and_populates_filter(
          "metrics": {"runtime_metric": 0.5}, "raw_metadata": {}}
     ])
     assert any(item["field"] == "runtime_metric" and item["availability"] == "observed" for item in observed)
+
+
+def test_connection_catalog_matches_canvas_for_every_registered_port_pair():
+    page = connection_catalog(view="connections", query="", operation="", direction="both",
+                              artifact_type="", offset=0, limit=10000)
+    advertised = {(row["source"], row["output"], row["target"], row["input"]): row["artifact_type"]
+                  for row in page["items"]}
+    assert len(advertised) == page["total"]
+    for source_kind, source in pipeline_graph.NODE_CATALOG.items():
+        for output in source["outputs"]:
+            for target_kind, target in pipeline_graph.NODE_CATALOG.items():
+                for input_port in target["inputs"]:
+                    key = (source_kind, output["id"], target_kind, input_port["id"])
+                    result = pipeline_graph.connection_compatibility(
+                        source_kind, target_kind, source_handle=output["id"], target_handle=input_port["id"],
+                    )
+                    assert advertised.get(key) == result.get("artifact_type"), key
+                    assert (key in advertised) == result["compatible"], key
+
+
+def test_active_learning_catalogue_only_offers_connections_in_the_template():
+    graph = pipeline_graph.new_graph("unidock_active_learning")
+    pipeline_graph.validate_graph(graph)
+    kinds = {node["id"]: node["data"]["kind"] for node in graph["nodes"]}
+    expected = {(kinds[edge["source"]], kinds[edge["target"]]) for edge in graph["edges"]}
+    page = connection_catalog(view="connections", query="", operation="", direction="both",
+                              artifact_type="active_learning_state", offset=0, limit=100)
+    assert {(row["source"], row["target"]) for row in page["items"]} == expected

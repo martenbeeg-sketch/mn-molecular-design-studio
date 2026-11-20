@@ -208,6 +208,15 @@ NODE_CATALOG = {
 # Its feedback edge is marked in the graph and executed by the dedicated
 # controller; the generic DAG runner must not try to schedule these nodes.
 _ACTIVE_STATE = "active_learning_state"
+_ACTIVE_LEARNING_EDGES = (
+    ("active_seed", "active_docking"), ("active_target", "active_docking"),
+    ("active_docking", "active_accumulate"), ("active_accumulate", "active_decision"),
+    ("active_decision", "active_binder_rule"), ("active_binder_rule", "active_train"),
+    ("active_train", "active_predict"), ("active_predict", "active_select"),
+    ("active_library", "active_predict"), ("active_library", "active_select"),
+    ("active_decision", "active_results"),
+)
+_ACTIVE_LEARNING_FEEDBACK = ("active_select", "active_docking")
 NODE_CATALOG.update({
     "complex_analysis": _spec("complex_analysis", "Complex Analysis", "Collection",
         "Open exact saved complexes for comparison and analysis. Accepted-only requires a completed scientific policy; manual selection keeps acceptance separate. Rejected and unresolved designs remain in Results. Connect Biotite Interface, Interface Clustering or ligand tools after this node.",
@@ -910,17 +919,12 @@ def new_graph(template="foundry") -> dict[str, Any]:
             nodes.append({"id": f"{kind}-{index}", "type": "studio", "position": {"x": position["x"], "y": position["y"]},
                           "data": {"kind": kind, "label": labels[kind], "params": params}})
         by_kind = {node["data"]["kind"]: node["id"] for node in nodes}
-        pairs = [("active_seed", "active_docking"),
-                 ("active_target", "active_docking"), ("active_docking", "active_accumulate"),
-                 ("active_accumulate", "active_decision"), ("active_decision", "active_binder_rule"),
-                 ("active_binder_rule", "active_train"),
-                 ("active_train", "active_predict"), ("active_predict", "active_select"),
-                 ("active_library", "active_predict"), ("active_library", "active_select"),
-                 ("active_decision", "active_results")]
         edges = [{"id": f"edge-active-{index}", "source": by_kind[source], "sourceHandle": "out",
-                  "target": by_kind[target], "targetHandle": "in"} for index, (source, target) in enumerate(pairs)]
-        edges.append({"id": "edge-active-loop", "source": by_kind["active_select"], "sourceHandle": "out",
-                      "target": by_kind["active_docking"], "targetHandle": "in", "loop_back": True})
+                  "target": by_kind[target], "targetHandle": "in"}
+                 for index, (source, target) in enumerate(_ACTIVE_LEARNING_EDGES)]
+        feedback_source, feedback_target = _ACTIVE_LEARNING_FEEDBACK
+        edges.append({"id": "edge-active-loop", "source": by_kind[feedback_source], "sourceHandle": "out",
+                      "target": by_kind[feedback_target], "targetHandle": "in", "loop_back": True})
         return clean_graph({"schema_version": SCHEMA, "id": uuid.uuid4().hex,
                             "name": "Active-learning docking screen",
                             "nodes": nodes, "edges": edges,
@@ -2228,14 +2232,11 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> 
             raise ValueError('AlphaFold2 does not predict ligand complexes. Use RosettaFold3, or ESMFold for the binder alone.')
         for edge in incoming_edges[node_id]:
             source = edge["source"]
-            if nodes[source]["data"]["kind"] == "run_source":
-                from mn_molecular_design_studio.run_graph import compatible
-                if not compatible(kind):
-                    raise ValueError("Run results must connect to a tool with a compatible saved-collection input. Connect analysis before cohort ranking or merging.")
-                if nodes[source]["data"]["params"].get("selected_docking_poses") is not None:
-                    from mn_molecular_design_studio.run_graph import compatible_docking_pose_analysis
-                    if not compatible_docking_pose_analysis(kind):
-                        raise ValueError("Explicit docking-pose selections connect only to registered protein–ligand analysis tools such as PLIP.")
+            if (nodes[source]["data"]["kind"] == "run_source"
+                    and nodes[source]["data"]["params"].get("selected_docking_poses") is not None):
+                from mn_molecular_design_studio.run_graph import compatible_docking_pose_analysis
+                if not compatible_docking_pose_analysis(kind):
+                    raise ValueError("Explicit docking-pose selections connect only to registered protein–ligand analysis tools such as PLIP.")
             input_port = next(port for port in spec["inputs"] if port.get("id", "in") == edge.get("targetHandle", "in"))
             upstream_type = output_types[source]
             if upstream_type != "candidates" and upstream_type not in input_port.get("accepts", []):
@@ -2616,6 +2617,18 @@ def matching_artifact_type(output: dict, input_port: dict) -> str | None:
     return min(set(output["artifact_types"]) & set(input_port["artifact_types"]), default=None)
 
 
+def connection_restriction(source_kind: str, target_kind: str, artifact_type: str) -> str | None:
+    if source_kind == "run_source":
+        from mn_molecular_design_studio.run_graph import compatible
+        if not compatible(target_kind):
+            return ("Run results must connect to a tool with a compatible saved-collection input. "
+                    "Connect analysis before cohort ranking or merging.")
+    if (artifact_type == _ACTIVE_STATE
+            and (source_kind, target_kind) not in (*_ACTIVE_LEARNING_EDGES, _ACTIVE_LEARNING_FEEDBACK)):
+        return "Use the connections defined by the active-learning docking template."
+    return None
+
+
 def connection_compatibility(source_kind: str, target_kind: str, *, source_handle: str = "out", target_handle: str = "in") -> dict:
     """Explain compatibility using the ports exposed by registered contracts."""
     if source_kind not in NODE_CATALOG or target_kind not in NODE_CATALOG:
@@ -2628,6 +2641,8 @@ def connection_compatibility(source_kind: str, target_kind: str, *, source_handl
         return {"compatible": False, "reason": "The selected connection port is not declared by its operation."}
     artifact_type = matching_artifact_type(output, input_port)
     if artifact_type:
+        if restriction := connection_restriction(source_kind, target_kind, artifact_type):
+            return {"compatible": False, "reason": restriction}
         return {"compatible": True, "artifact_type": artifact_type, "reason": "Compatible scientific artifact types."}
     produced = output["artifact_types"]
     accepted = input_port["artifact_types"]
