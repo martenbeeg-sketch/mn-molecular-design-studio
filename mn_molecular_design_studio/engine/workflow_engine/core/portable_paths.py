@@ -152,7 +152,7 @@ def store_managed_paths(value: object, *, run_dir: Path | None = None, key: str 
 
 def resolve_managed_paths(value: object, *, run_dir: Path | None = None, key: str = "", provenance: bool = False) -> object:
     """Resolve stored managed path references in a JSON payload for current use."""
-    provenance = provenance or is_provenance_key(key)
+    provenance = provenance or key == "candidate_execution" or is_provenance_key(key)
     if isinstance(value, dict):
         return {
             child_key: resolve_managed_paths(child, run_dir=run_dir, key=str(child_key), provenance=provenance)
@@ -160,7 +160,8 @@ def resolve_managed_paths(value: object, *, run_dir: Path | None = None, key: st
         }
     if isinstance(value, list):
         return [resolve_managed_paths(child, run_dir=run_dir, key=key, provenance=provenance) for child in value]
-    if not isinstance(value, str) or provenance or _is_inline_content_key(key) or "\n" in value or "\r" in value:
+    if (not isinstance(value, str) or provenance or _is_inline_content_key(key)
+            or value.startswith("worker-path://") or "\n" in value or "\r" in value):
         return value
     if is_portable_path(value):
         resolved = resolve_stored_path(value, run_dir=run_dir)

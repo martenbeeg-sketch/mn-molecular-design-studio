@@ -336,7 +336,9 @@ def test_poll_collects_the_exact_structure_from_the_authorized_source_job(tmp_pa
     collection = 'artifacts/normalized_candidates/candidates.jsonl'
     source_ref = 'refolding-validation/source'
     structure = 'artifacts/output.cif'
-    row = {'candidate_id': 'native-id', 'complex_pdb': f'runs:///{source_ref}/{structure}'}
+    row = {'candidate_id': 'native-id', 'complex_pdb': f'runs:///{source_ref}/{structure}',
+           'raw_metadata': {'source_run_dir': f'runs:///{source_ref}',
+                            'input_provenance': f'runs:///{source_ref}/execution_inputs.json'}}
     for name, value in {'metadata.json': {'status': 'completed'}, 'input.json': {},
                         'result.json': {'success': True}, collection: row}.items():
         path = directory / name
@@ -385,4 +387,14 @@ def test_poll_collects_the_exact_structure_from_the_authorized_source_job(tmp_pa
     fetched = json.loads(Path(output['candidates_jsonl']).read_text())
     assert fetched['candidate_id'] == 'native-id'
     assert Path(fetched['complex_pdb']).read_text() == 'data_exact_source\n'
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+
+    normalized = read_candidates(Path(output['candidates_jsonl']))[0]
+    assert normalized['raw_metadata']['source_run_dir'] == f'worker-path://peer/{source_ref}'
+    assert normalized['raw_metadata']['input_provenance'] == f'worker-path://peer/{source_ref}/execution_inputs.json'
+    normalized['raw_metadata']['candidate_execution'] = {
+        'effective_request': batch['prepared_envelope']['payload']}
+    replay = tmp_path / 'replay.jsonl'
+    replay.write_text(json.dumps(normalized) + '\n')
+    assert read_candidates(replay)[0]['raw_metadata']['candidate_execution'] == normalized['raw_metadata']['candidate_execution']
     assert batch['output_transfer_bytes'] == len(b'data_exact_source\n')

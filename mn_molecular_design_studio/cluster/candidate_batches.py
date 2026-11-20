@@ -475,7 +475,9 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
             elif source_prefix and reference.startswith(source_prefix) and key in {'complex_pdb', 'binder_pdb', 'target_pdb'}:
                 return source_structure(reference)
             else:
-                return 'cluster://' + str(job['node_id']) + '/' + reference
+                # Other run references are origin provenance. The collected
+                # snapshot carries no local copy of those files.
+                return 'worker-path://' + str(job['node_id']) + '/' + reference
         elif value.startswith('run:///'):
             relative = value.removeprefix('run:///')
         elif remote_root and value.startswith(remote_root + '/'):
