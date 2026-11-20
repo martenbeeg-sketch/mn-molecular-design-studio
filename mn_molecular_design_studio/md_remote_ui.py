@@ -7,6 +7,7 @@ from pathlib import PurePosixPath
 from typing import Any, Callable
 
 from mn_molecular_design_studio.md_results_ui import (
+    _render_followup_button,
     _render_md_analysis_summary,
     _safe_relative_parts,
     render_md_results,
@@ -103,6 +104,9 @@ def render_remote_md_results(
         st.warning(str(exc))
         return
     if manifest is None:
+        if (str(row.get("tool") or "").casefold() in {"openmm", "openmm_md", "gromacs", "gromacs_md", "bound_ligand_md"}
+                or row.get("workflow") in {"ligand.md.openmm", "ligand.md.gromacs"}):
+            _render_followup_button(st, {**row, "cluster_job_id": job_id}, key=f"{prefix}-analyze-native", remote=True)
         # This may be a standalone trajectory-analysis job with no linked study.
         try:
             summary = load_json("artifacts/md_analysis/summary.json", "MD analysis summary")
@@ -125,4 +129,5 @@ def render_remote_md_results(
         text_loader=load_text,
         key_prefix=prefix,
         remote=True,
+        followup_job={**row, "cluster_job_id": job_id},
     )

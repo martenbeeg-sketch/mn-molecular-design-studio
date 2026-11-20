@@ -298,6 +298,30 @@ def test_legacy_docking_source_selects_only_best_poses_and_api_allows_missing_ca
     with pytest.raises(workflow_automation.AutomationError, match="no normalized candidates"):
         workflow_automation._resolve_source_job({}, "legacy", quality.run_sequence_qc, WORKFLOWS["analysis.sequence_qc"])
 
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import docking_pose_options
+    from mn_molecular_design_studio.results_followup_ui import selected_docking_option
+
+    options = docking_pose_options(source)
+    selection = {"row_index": 1, "pose_path": "pose-2.pdbqt", "compound_id": "CMP1"}
+    pose = selected_docking_option(options, selection)
+    with pytest.raises(ValueError, match="exact saved docking score row"):
+        selected_docking_option(options, {**selection, "row_index": 0})
+
+    normalized = source / "artifacts/normalized_candidates/candidates.jsonl"
+    normalized.parent.mkdir()
+    normalized.write_text("")
+    for method in ("plip", "pandamap", "posebusters"):
+        workflow_id = "analysis." + method
+        request = tmp_path / "request.json"
+        request.write_text(json.dumps({"schema_version": 1, "workflow": workflow_id,
+            "source_job": "legacy", "parameters": {"candidate_ids": [pose["pose_id"]]}}))
+        validated = validate_workflow_request(request)
+        assert validated["valid"]
+        assert validated["parameters"]["candidate_ids"] == [pose["pose_id"]]
+        assert not validated["parameters"].get("candidates_jsonl")
+    exact, = docking_candidates(source, [pose["pose_id"]])
+    assert exact["complex_pdb"].endswith("pose-2.pdbqt")
+
 
 def test_ligand_preparation_rejects_ambiguous_copies_and_uses_a_selected_chain(tmp_path):
     from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import prepare

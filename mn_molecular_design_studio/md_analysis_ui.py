@@ -617,6 +617,9 @@ def _remote_source_options_fragment(row: dict[str, Any], token: str, operation_k
             return
         if operation.get("status") == "failed":
             st.error(operation.get("error") or "The source workstation could not list this MD source.")
+            if st.button("Retry source lookup", key=operation_key + "-retry"):
+                st.session_state.pop(operation_key, None)
+                st.rerun(scope="app")
             return
         if operation.get("status") != "completed":
             st.info("Waiting for the owning workstation to inspect the recorded MD source paths…")
@@ -654,6 +657,27 @@ def _portable_source_path(path: Path, source_run_dir: Path, row: dict[str, Any])
     return str(resolved)
 
 
+def result_source_options(options, selection):
+    """Keep source options for the single production item chosen in Results."""
+    if selection is None:
+        return options
+    if not selection.get("segment_id"):
+        return [option for option in options if not option.get("lineage_known")]
+    fields = ("study_id", "result_path", "trajectory_path")
+    matched = []
+    for option in options:
+        if str((option.get("segment") or {}).get("run_id") or "") != str(selection["segment_id"]):
+            continue
+        receipt = {
+            "study_id": (option.get("study") or {}).get("study_id"),
+            "result_path": option.get("source_result_path"),
+            "trajectory_path": option.get("trajectory_relative_path"),
+        }
+        if all(not selection.get(field) or str(selection[field]) == str(receipt[field]) for field in fields):
+            matched.append(option)
+    return matched
+
+
 def render_md_analysis_setup(
     schema: dict[str, Any],
     *,
@@ -662,14 +686,18 @@ def render_md_analysis_setup(
     project_selector: Callable[..., str | None],
     submit: Callable[..., None],
     title: str = "MD Analysis",
+    source: dict[str, Any] | None = None,
 ) -> None:
     """Render the setup form and submit through the Studio workflow callback."""
     from mn_molecular_design_studio.auth import accessible_project_ids, is_development_mode
     owner_id = str(owner_id or user.get("id") or "")
     workflow_id = "ligand.md.analysis"
-    project_id = project_selector("md-analysis")
-    st.caption("This executable MD Analysis tool is also available as a visual pipeline step: Saved MD run → MD Analysis → Results.")
-    if project_id and st.button("Use MD Analysis in a pipeline", key="md-analysis-create-pipeline"):
+    source_job = source["job"] if source else {}
+    source_selection = source["selection"] if source else None
+    project_id = str(source_job.get("project_id") or "") if source else project_selector("md-analysis")
+    if not source:
+        st.caption("This executable MD Analysis tool is also available as a visual pipeline step: Saved MD run → MD Analysis → Results.")
+    if not source and project_id and st.button("Use MD Analysis in a pipeline", key="md-analysis-create-pipeline"):
         from mn_molecular_design_studio.pipeline_graph import new_graph
         st.session_state["pipeline-pending-draft"] = {"project_id": project_id, "graph": new_graph("md_analysis")}
         st.session_state["page"] = "Pipelines"
@@ -683,18 +711,22 @@ def render_md_analysis_setup(
         st.error("You do not have access to the selected project.")
         return
     try:
-        jobs = _list_accessible_md_jobs(user, str(project_id))
+        jobs = [] if source_job.get("cluster_job_id") else _list_accessible_md_jobs(user, str(project_id))
+        if source:
+            jobs = [row for row in jobs if str(row.get("run_id")) == str(source_job.get("run_id"))]
     except Exception as exc:
         st.error(f"Could not load accessible MD Results jobs: {exc}")
         return
     token = str(st.session_state.get("studio-session-token") or ("development-mode" if is_development_mode() else ""))
     try:
-        remote_jobs = _list_remote_md_jobs(user, str(project_id), token)
+        remote_jobs = [] if source and not source_job.get("cluster_job_id") else _list_remote_md_jobs(user, str(project_id), token)
+        if source:
+            remote_jobs = [row for row in remote_jobs if row["_md_cluster_job_id"] == source_job.get("cluster_job_id")]
     except Exception as exc:
         st.warning(f"Could not list MD jobs on other workstations: {exc}")
         remote_jobs = []
     if not jobs and not remote_jobs:
-        st.info("No completed MD source jobs are available in this project.")
+        st.info("The selected MD source job is unavailable." if source else "No completed MD source jobs are available in this project.")
         return
     modes = (["This workstation"] if jobs else []) + (["Other workstation"] if remote_jobs else [])
     mode = st.radio("MD source location", modes, horizontal=True, key="md-analysis-source-location") if len(modes) > 1 else modes[0]
@@ -704,15 +736,16 @@ def render_md_analysis_setup(
             f"{row.get('campaign_name') or row.get('display_tool') or row.get('tool') or 'MD run'} · {row.get('job_code') or row.get('run_id')}"
             for row in jobs
         ]
-        selected_job_label = st.selectbox("Source MD job", job_labels, key="md-analysis-source-job")
+        selected_job_label = job_labels[0] if source else st.selectbox("Source MD job", job_labels, key="md-analysis-source-job")
         row = jobs[job_labels.index(selected_job_label)]
         try:
-            job_options = _cached_source_options_for_job(row)
+            job_options = result_source_options(_cached_source_options_for_job(row), source_selection)
         except (OSError, ValueError, RuntimeError) as exc:
             st.error(f"Could not inspect source Results metadata: {exc}")
             return
         if not job_options:
-            st.info("This completed MD job has no exact, usable trajectory and topology pair in its recorded outputs.")
+            st.info("The selected production segment has no verified trajectory and matching topology." if source else
+                    "This completed MD job has no exact, usable trajectory and topology pair in its recorded outputs.")
             return
         option_labels = [option["label"] for option in job_options]
         selected_option_label = st.selectbox("Production segment and trajectory", option_labels, key=f"md-analysis-source-segment-{row.get('run_id')}")
@@ -737,13 +770,13 @@ def render_md_analysis_setup(
             f"{row.get('campaign_name') or row.get('tool') or 'MD run'} · {row.get('job_code') or row.get('run_id')} · {row.get('node_name') or row.get('_md_source_node')}"
             for row in remote_jobs
         ]
-        selected_remote_label = st.selectbox("Source MD job", remote_labels, key="md-analysis-remote-source-job")
+        selected_remote_label = remote_labels[0] if source else st.selectbox("Source MD job", remote_labels, key="md-analysis-remote-source-job")
         row = remote_jobs[remote_labels.index(selected_remote_label)]
         operation_key = f"md-analysis-source-options-op-{row['_md_cluster_job_id']}"
         options_key = f"md-analysis-source-options-{row['_md_cluster_job_id']}"
         remote_options = st.session_state.get(options_key)
-        if not remote_options and not st.session_state.get(operation_key):
-            if st.button("Load recorded segments from owning workstation", key=f"md-analysis-request-source-{row['_md_cluster_job_id']}"):
+        if remote_options is None and not st.session_state.get(operation_key):
+            if source or st.button("Load recorded segments from owning workstation", key=f"md-analysis-request-source-{row['_md_cluster_job_id']}"):
                 try:
                     operation = cluster_ui._request(
                         "/jobs/" + row["_md_cluster_job_id"] + "/actions",
@@ -757,8 +790,12 @@ def render_md_analysis_setup(
         if st.session_state.get(operation_key):
             _remote_source_options_fragment(row, token, operation_key, options_key)
         remote_options = st.session_state.get(options_key)
-        if not remote_options:
+        if remote_options is None:
             st.caption("Only small source metadata is requested. Trajectory and topology files stay on the owning workstation.")
+            return
+        remote_options = result_source_options(remote_options, source_selection)
+        if not remote_options:
+            st.info("The source workstation found no usable trajectory and matching topology for this selection.")
             return
         option_labels = [str(option.get("label") or option.get("option_id")) for option in remote_options]
         selected_option_label = st.selectbox("Production segment and trajectory", option_labels, key=f"md-analysis-remote-segment-{row['_md_cluster_job_id']}")
@@ -804,6 +841,7 @@ def render_md_analysis_setup(
     if not selected.get("lineage_known"):
         st.info("This native MD job has no study manifest. The selected output is kept as one segment; unrecorded duration and continuation history remain unknown.")
     st.caption(f"Trajectory: {relative_trajectory}")
+    st.caption(f"Topology: {relative_topology}")
 
     selected_ligand = str(study.get("ligand_resname") or study.get("selected_ligand_resname") or "LIG")
     ligand_selection = st.text_input(
@@ -854,7 +892,8 @@ def render_md_analysis_setup(
         from mn_molecular_design_studio.cluster import config as cluster_config
         if cluster_config.enabled():
             owner_node = str(row.get("_md_source_node") or cluster_config.identity())
-            selected_placement = str(st.session_state.get("cluster-placement", cluster_config.load().get("default_placement", "auto")))
+            selected_placement = "auto" if source else str(st.session_state.get(
+                "cluster-placement", cluster_config.load().get("default_placement", "auto")))
             allowed_placements = {"auto", owner_node} if is_remote else {"auto", "local", owner_node}
             if selected_placement not in allowed_placements:
                 where = row.get("node_name") or "the source workstation" if is_remote else "this workstation"

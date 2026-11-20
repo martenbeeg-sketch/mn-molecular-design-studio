@@ -625,8 +625,17 @@ def _resolve_source_job(
     signature = inspect.signature(function)
     if "source_run_dir" in signature.parameters:
         parameters.setdefault("source_run_dir", run_dir)
+    # Exact docking pose selectors refer to the score table and consumed
+    # compound set, even when this job also published normalized candidates.
+    from mn_molecular_design_studio.quality_tools import WORKFLOWS as quality_workflows
+    ids = parameters.get("candidate_ids") or []
+    raw_pose_selection = (quality_workflows.get(spec.workflow_id, {}).get("kind") == "ligand"
+                          and bool(ids) and all(str(candidate).startswith("dockpose-") for candidate in ids))
     if "candidates_jsonl" in signature.parameters:
-        if not candidates.is_file():
+        if raw_pose_selection:
+            if not (run_dir / "artifacts" / "docking_scores.csv").is_file():
+                raise AutomationError("The source job's docking score table is unavailable.")
+        elif not candidates.is_file():
             if signature.parameters["candidates_jsonl"].default is not None:
                 raise AutomationError(f"Source job {row['run_id']} has no normalized candidates file: {candidates}")
         else:

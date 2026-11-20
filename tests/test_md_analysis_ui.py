@@ -13,6 +13,22 @@ def _write(path: Path, payload: bytes | dict) -> Path:
     return path
 
 
+def test_results_followup_only_offers_the_selected_study_segment_and_file():
+    first = {"study": {"study_id": "study-a"}, "segment": {"run_id": "prod-1"},
+             "source_result_path": "artifacts/a/result.json", "trajectory_relative_path": "artifacts/a/prod.xtc",
+             "lineage_known": True}
+    other_study = {**first, "study": {"study_id": "study-b"}}
+    other_segment = {**first, "segment": {"run_id": "prod-2"}}
+    other_file = {**first, "trajectory_relative_path": "artifacts/a/continuation.xtc"}
+    native = {**first, "lineage_known": False}
+    options = [other_study, other_segment, other_file, first]
+    selection = {"study_id": "study-a", "segment_id": "prod-1",
+                 "result_path": "artifacts/a/result.json", "trajectory_path": "artifacts/a/prod.xtc"}
+    assert md_analysis_ui.result_source_options(options, selection) == [first]
+    assert md_analysis_ui.result_source_options(options, {**selection, "segment_id": "purged"}) == []
+    assert md_analysis_ui.result_source_options([first, native], {}) == [native]
+
+
 def test_study_scanner_maps_exact_legacy_paths_and_preserves_segment_lineage(tmp_path):
     source = tmp_path / "aggregate"
     trajectory = _write(source / "artifacts/legacy/prod-99/production.xtc", b"trajectory")

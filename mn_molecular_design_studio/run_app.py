@@ -4919,8 +4919,11 @@ def _docking_pose_rows(run_dir: Path, artifact_paths: list[tuple[dict, Path]]) -
     rows: list[dict[str, Any]] = []
     if score_path is not None:
         try:
-            with score_path.open(newline="", encoding="utf-8", errors="replace") as handle:
-                for row in csv.DictReader(handle):
+            with score_path.open(newline="", encoding="utf-8-sig", errors="replace") as handle:
+                header = handle.readline()
+                handle.seek(0)
+                reader = csv.DictReader(handle, delimiter="\t" if "\t" in header else ",")
+                for row_index, row in enumerate(reader):
                     raw_pose = str(row.get("pose_path") or "").strip()
                     if not raw_pose:
                         continue
@@ -4939,6 +4942,8 @@ def _docking_pose_rows(run_dir: Path, artifact_paths: list[tuple[dict, Path]]) -
                     row["smiles"] = row.get("smiles") or identity.get("smiles") or ""
                     row["_pose_file"] = str(candidate)
                     row["_pose_label"] = _docking_pose_label(row, candidate)
+                    if score_path.resolve() == (run_dir / "artifacts/docking_scores.csv").resolve():
+                        row["_score_row_index"] = row_index
                     rows.append(row)
         except (OSError, UnicodeError, csv.Error):
             rows = []
@@ -5031,6 +5036,7 @@ def _render_docking_pose_preview(
     run_dir: Path,
     artifact_paths: list[tuple[dict, Path]],
     result: dict[str, Any],
+    job: dict[str, Any],
 ) -> None:
     from mn_molecular_design_studio import docking_results
 
@@ -5053,7 +5059,16 @@ def _render_docking_pose_preview(
         format_func=lambda index: poses[index]["_pose_label"],
         key=f"job-docking-pose-{run_id}",
     )
-    pose_path = Path(poses[selected]["_pose_file"])
+    pose_row = poses[selected]
+    pose_path = Path(pose_row["_pose_file"])
+    reason = ("This preview has no exact docking score row." if "_score_row_index" not in pose_row else
+              "The docking run must be completed and assigned to a project."
+              if job.get("status") not in {"completed", "succeeded"} or not job.get("project_id") else None)
+    if st.button("Analyze this pose", disabled=reason is not None, key=f"job-analyze-docking-pose-{run_id}", help=reason):
+        from mn_molecular_design_studio.results_followup_ui import open_followup
+        open_followup("dock", job, {"row_index": pose_row["_score_row_index"],
+            "pose_path": pose_path.relative_to(run_dir).as_posix(),
+            "compound_id": str(pose_row.get("compound_id") or pose_row.get("compound") or "").strip()})
     try:
         if pose_path.stat().st_size > 50 * 1024 * 1024:
             st.info("This pose is over 50 MB; download it from the Files tab to inspect it locally.")
@@ -7670,9 +7685,10 @@ def _render_job_details() -> None:
                     report_path.read_bytes(), file_name=f"{run_id}_acceptance.csv",
                     mime="text/csv", key=f"saved-evidence-acceptance-{run_id}",
                 )
-        if (run_dir / "artifacts/md/study.json").is_file() or str(job.get("tool")) == "md_analysis":
+        if (run_dir / "artifacts/md/study.json").is_file() or job.get("task_group") == "ligand-md" or job.get("tool") == "md_analysis":
             from mn_molecular_design_studio.md_results_ui import render_md_results
-            render_md_results(st, run_dir, result)
+            md_job = {**job, "project_id": project_id}
+            render_md_results(st, run_dir, result, followup_job=md_job)
         if "analysis." + analysis_tool in QUALITY_WORKFLOWS:
             from mn_molecular_design_studio.quality_ui import render_progress, render_contact_maps
             render_progress(run_dir, str(job.get("status") or ""), run_id)
@@ -8081,7 +8097,7 @@ def _render_job_details() -> None:
                 st.json(result)
 
         if is_docking_job:
-            _render_docking_pose_preview(run_id, run_dir, artifact_paths, result)
+            _render_docking_pose_preview(run_id, run_dir, artifact_paths, result, {**job, "project_id": project_id})
         elif (visible_structure_artifacts or trajectory_preview_artifacts) and not has_dedicated_prediction_results and not has_dedicated_surface_results:
             st.subheader("Structure preview")
             preview_options = [
@@ -9641,6 +9657,10 @@ elif page == "My runs":
     _render_runs()
 elif page == "Job details":
     _render_job_details()
+elif page == "Results follow-up":
+    from mn_molecular_design_studio.results_followup_ui import render_followup
+    render_followup(CURRENT_USER, workflow_schema=workflow_schema, project_selector=_render_project_selector,
+                    submit=_submit_cofolding_job)
 elif page in {"Database", "Data Browser"}:
     _render_database()
 elif page == "Datasets":

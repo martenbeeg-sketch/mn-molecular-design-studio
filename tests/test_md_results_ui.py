@@ -115,6 +115,35 @@ def _study_manifest():
     }
 
 
+def test_analyze_trajectory_button_opens_review_with_selected_segment(tmp_path):
+    from streamlit.testing.v1 import AppTest
+
+    run = tmp_path / "job"
+    manifest = _study_manifest()
+    production = manifest["studies"][0]["production_runs"][0]
+    production["trajectory_path"] = "artifacts/legacy/prod-1/production.xtc"
+    _json(run / "artifacts/md/study.json", manifest)
+    script = f"""
+import streamlit as st
+from mn_molecular_design_studio.md_results_ui import render_md_results
+if st.session_state.get("page") != "Results follow-up":
+    render_md_results(st, {str(run)!r}, {{}}, followup_job={{
+        "task_group": "ligand-md", "run_id": "md-job", "status": "completed", "project_id": "project"
+    }})
+"""
+    app = AppTest.from_string(script).run()
+    assert not app.exception
+    action = next(button for button in app.button if button.label == "Analyze trajectory")
+    action.click().run()
+    assert not app.exception
+    assert app.session_state["page"] == "Results follow-up"
+    source = app.session_state["results-followup"]
+    assert source["job"]["run_id"] == "md-job"
+    assert source["selection"] == {"study_id": "study-1", "segment_id": "prod-1",
+                                   "trajectory_path": production["trajectory_path"],
+                                   "result_path": production["result_path"]}
+
+
 def test_manifest_renderer_shows_study_lineage_replica_analysis_and_separate_endpoint_terms(tmp_path):
     run = tmp_path / "run"
     _json(run / "artifacts/md/study.json", _study_manifest())

@@ -132,6 +132,18 @@ The local MCP `result_presentation` tool returns the same per-candidate
 Follow `next_offset` until it is null. MCP retries with a smaller page when a
 response exceeds its size limit.
 
+## Follow-up analysis from My Results
+
+- Choose a saved **Docked pose** and open **Analyze this pose**. The review
+  page checks the score row, retained coordinates, receptor, and consumed
+  ligand record before offering PLIP, PandaMap, or PoseBusters.
+- Choose a completed **Production result** and open **Analyze trajectory**.
+  The MD Analysis form opens on that segment and shows the matching
+  trajectory and topology. Remote inputs stay on their owning workstation.
+
+The review page opens before submission. Use the queue or run button to start
+the analysis.
+
 ## Verification
 
 The graph/API/queue tests use temporary files and simulated child jobs; they do not launch

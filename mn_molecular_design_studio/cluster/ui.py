@@ -1515,11 +1515,15 @@ def _render_remote_docking_preview(jid, row, data, token):
     )
     pose_rows = []
     if score_text:
-        for item in csv.DictReader(io.StringIO(score_text)):
+        score_text = score_text.lstrip("\ufeff")
+        header = score_text.partition("\n")[0]
+        reader = csv.DictReader(io.StringIO(score_text), delimiter="\t" if "\t" in header else ",")
+        for row_index, item in enumerate(reader):
             pose_path = _safe_run_artifact_path(str(item.get("pose_path") or ""))
             if not pose_path:
                 continue
             item["pose_path"] = pose_path
+            item["_score_row_index"] = row_index
             compound = str(item.get("compound_id") or Path(pose_path).stem)
             details = []
             if item.get("replicate"):
@@ -1553,12 +1557,26 @@ def _render_remote_docking_preview(jid, row, data, token):
         format_func=lambda index: pose_rows[index]["_label"],
         key=f"cluster-docking-pose-{jid}",
     )
-    pose_path = pose_rows[selected]["pose_path"]
+    pose_row = pose_rows[selected]
+    pose_path = pose_row["pose_path"]
     pose_text = _fetch_remote_artifact_text(
         jid, pose_path, token, f"cluster-docking-pose-text-{jid}-{selected}", label="docked pose"
     )
     if pose_text is None:
         return
+    if st.button("Analyze this pose", key=f"cluster-analyze-docking-pose-{jid}",
+                 disabled=row.get("status") not in {"completed", "succeeded"} or not row.get("project_id")):
+        from mn_molecular_design_studio.results_followup_ui import open_followup
+        inputs = {pose_path, "artifacts/input/receptor.pdb", "artifacts/input/target.pdb"}
+        manifest = [item for item in row.get("artifacts", []) if isinstance(item, dict)
+                    and any(str(item.get("relative_path") or "") == path
+                            or str(item.get("relative_path") or "").endswith("/" + path) for path in inputs)]
+        metadata = data.get("metadata") or {}
+        source_identity = str(metadata.get("source_job_reference") or
+                              f"{metadata.get('task_group') or row['task_group']}:{metadata.get('run_id') or row['run_id']}")
+        open_followup("dock", {**row, "cluster_job_id": jid}, {"row_index": pose_row["_score_row_index"],
+            "pose_path": pose_path, "compound_id": str(pose_row.get("compound_id") or pose_row.get("compound") or "").strip(),
+            "artifacts": manifest, "source_identity": source_identity}, remote=True)
 
     artifacts = [
         _safe_run_artifact_path(str(item.get("relative_path") or ""))

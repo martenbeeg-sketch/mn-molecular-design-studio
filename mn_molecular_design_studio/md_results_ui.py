@@ -627,7 +627,21 @@ def _render_endpoint_details(st, endpoint: dict[str, Any], record: dict[str, Any
         st.warning(str(warnings))
 
 
-def _render_study(st, run_root: Path, study: dict[str, Any], *, json_loader=None, text_loader=None, key_prefix="md-results", remote=False) -> None:
+def _render_followup_button(st, job, *, key, remote=False, study=None, production=None):
+    if not job or job.get("task_group") != "ligand-md" or job.get("status") not in {"completed", "succeeded"}:
+        return
+    if production is not None and not production.get("run_id"):
+        return
+    if st.button("Analyze trajectory", key=key):
+        from mn_molecular_design_studio.results_followup_ui import open_followup
+        selected = production or {}
+        open_followup("md", job, {"study_id": (study or {}).get("study_id"),
+            "segment_id": selected.get("run_id"), "trajectory_path": selected.get("trajectory_path"),
+            "result_path": selected.get("result_path")}, remote=remote)
+
+
+def _render_study(st, run_root: Path, study: dict[str, Any], *, json_loader=None, text_loader=None,
+                  key_prefix="md-results", remote=False, followup_job=None) -> None:
     st.markdown("**Study identity and selection**")
     st.dataframe(_field_rows(study), use_container_width=True, hide_index=True)
 
@@ -697,7 +711,8 @@ def _render_study(st, run_root: Path, study: dict[str, Any], *, json_loader=None
 
     # Show one stored production report per selection. This remains available
     # when an aggregate report exists because aggregates omit rich per-run maps.
-    production_with_results = [item for item in production if item.get("result_path")]
+    production_with_results = [item for item in production if item.get("result_path") or
+                               (followup_job and item.get("trajectory_path"))]
     history = study.get("source_history")
     if isinstance(history, dict) and history:
         st.markdown("**Source analysis history**")
@@ -720,6 +735,8 @@ def _render_study(st, run_root: Path, study: dict[str, Any], *, json_loader=None
         if item.get("status") not in {"completed", "success"}:
             st.warning("This production run is not marked completed; its stored analytics are not shown as successful results.")
         else:
+            _render_followup_button(st, followup_job, key=f"{key_prefix}-analyze-{study.get('study_id', 'study')}",
+                                    remote=remote, study=study, production=item)
             production_result = _safe_optional_json(
                 st, run_root, item.get("result_path"),
                 f"Production {item.get('run_id') or ''}", json_loader=json_loader,
@@ -804,6 +821,7 @@ def render_md_results(
     text_loader: Callable[[str, str], str | None] | None = None,
     key_prefix: str | None = None,
     remote: bool = False,
+    followup_job: dict[str, Any] | None = None,
 ) -> None:
     """Render one selected MD study or the direct legacy MD result payload."""
     try:
@@ -826,7 +844,11 @@ def render_md_results(
             if summary is not None:
                 _render_md_analysis_summary(st, summary, run_root=root, text_loader=text_loader, key_prefix=key_prefix or f"md-results-{root.name}")
                 return
-        _render_legacy_result(st, root, result if isinstance(result, dict) else {}) if run_dir is not None and json_loader is None else st.info("No MD study manifest is available.")
+        if run_dir is not None and json_loader is None:
+            _render_followup_button(st, followup_job, key=f"{key_prefix or root.name}-analyze-native")
+            _render_legacy_result(st, root, result if isinstance(result, dict) else {})
+        else:
+            st.info("No MD study manifest is available.")
         return
     studies = _rows(manifest.get("studies"))
     if not studies:
@@ -835,4 +857,5 @@ def render_md_results(
     labels = [_study_label(study, index) for index, study in enumerate(studies)]
     prefix = key_prefix or f"md-results-{root.name}"
     selected = st.selectbox("MD study", labels, key=f"{prefix}-study")
-    _render_study(st, root, studies[labels.index(selected)], json_loader=json_loader, text_loader=text_loader, key_prefix=prefix, remote=remote)
+    _render_study(st, root, studies[labels.index(selected)], json_loader=json_loader, text_loader=text_loader,
+                  key_prefix=prefix, remote=remote, followup_job=followup_job)
