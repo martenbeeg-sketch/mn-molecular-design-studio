@@ -12,6 +12,7 @@ import re
 import time
 import zipfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import bundles, capabilities, config
 from .store import Store
@@ -436,6 +437,28 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
     # Portable paths belong to the execution worker; resolve only run-relative
     # files from its artifact catalog. Never interpret foreign absolute paths here.
     artifacts = {str(a.get('relative_path') or a.get('path') or '').removeprefix(remote_root + '/') for a in job.get('artifacts', [])}
+    parameters = ((batch.get('prepared_envelope') or {}).get('payload') or {}).get('parameters') or {}
+    source_uri = parameters.get('source_run_dir') if isinstance(parameters, dict) else None
+    source = urlsplit(str(source_uri or ''))
+    source_ref = source.path.strip('/')
+    source_prefix = source_ref + '/' if source.scheme == 'cluster' and source.netloc == job.get('node_id') else None
+
+    def source_structure(reference):
+        state = batch.setdefault('source_artifacts', {})
+        if not state.get('job_id'):
+            with store.connect() as db:
+                record = db.execute('SELECT id FROM jobs WHERE node_id=? AND local_ref=?',
+                                    (source.netloc, source_ref)).fetchone()
+            if not record or store.job(record['id'], user).get('project_id') != project_id:
+                raise ValueError('The saved source structure must belong to this project.')
+            state['job_id'] = record['id']
+        relative = reference[len(source_prefix):]
+        path = _artifact(state, state['job_id'], relative, user, directory / 'source',
+                         persist_transfers=persist_transfers)
+        if path is None:
+            missing.add(reference)
+        return str(path) if path is not None else 'cluster://' + source.netloc + '/' + reference
+
     def rewrite(value, key=''):
         if isinstance(value, dict):
             return {k: rewrite(v, k) for k, v in value.items()}
@@ -449,6 +472,8 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
             local_ref = str(job.get('local_reference') or '') + '/'
             if reference.startswith(local_ref):
                 relative = reference[len(local_ref):]
+            elif source_prefix and reference.startswith(source_prefix) and key in {'complex_pdb', 'binder_pdb', 'target_pdb'}:
+                return source_structure(reference)
             else:
                 return 'cluster://' + str(job['node_id']) + '/' + reference
         elif value.startswith('run:///'):
@@ -487,7 +512,8 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
     rebased = directory / collection_path.with_name(collection_path.stem + '.collected.jsonl')
     rebased.parent.mkdir(parents=True, exist_ok=True)
     rebased.write_text(''.join(json.dumps(r) + '\n' for r in rewritten))
-    batch['output_transfer_bytes'] = sum(t.get('bytes', 0) for t in batch.get('transfers', {}).values())
+    transfers = [batch.get('transfers', {}), batch.get('source_artifacts', {}).get('transfers', {})]
+    batch['output_transfer_bytes'] = sum(t.get('bytes', 0) for artifact_set in transfers for t in artifact_set.values())
     return ('partial' if partial else 'completed'), {'run_dir': str(directory), 'candidates_jsonl': str(rebased),
                          'candidate_count': len(rows), 'source_run_id': metadata.get('run_id') or job.get('local_ref'),
                          'source_provenance': dict(metadata=metadata, input=json.loads(paths['input.json'].read_text()),

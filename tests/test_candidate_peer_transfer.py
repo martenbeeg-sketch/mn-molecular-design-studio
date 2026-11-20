@@ -327,3 +327,62 @@ def test_poll_preserves_native_receipts_and_completed_partial_members(tmp_path, 
     assert row['candidate_id'] == 'exact-member' and row['parents'] == ['original']
     assert job['native_execution']['native_invocations'] == 1
     assert Path(row['complex_pdb']).read_text() == 'ATOM'
+
+
+def test_poll_collects_the_exact_structure_from_the_authorized_source_job(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    directory = tmp_path / 'batch.collected'
+    collection = 'artifacts/normalized_candidates/candidates.jsonl'
+    source_ref = 'refolding-validation/source'
+    structure = 'artifacts/output.cif'
+    row = {'candidate_id': 'native-id', 'complex_pdb': f'runs:///{source_ref}/{structure}'}
+    for name, value in {'metadata.json': {'status': 'completed'}, 'input.json': {},
+                        'result.json': {'success': True}, collection: row}.items():
+        path = directory / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value) + '\n')
+
+    class Store:
+        def connect(self):
+            return nullcontext(self)
+
+        def execute(self, query, bindings):
+            assert bindings == ('peer', source_ref)
+            return self
+
+        def fetchone(self):
+            return {'id': 'source-job'}
+
+        def job(self, job_id, _user):
+            if job_id == 'source-job':
+                return {'project_id': 'project'}
+            return {'status': 'completed', 'node_id': 'peer', 'local_reference': 'analysis/child'}
+
+    transfers = []
+
+    def artifact(state, job_id, relative, _user, destination, **_kwargs):
+        if job_id == 'source-job':
+            assert relative == structure and destination == directory / 'source'
+            transfers.append(job_id)
+            if len(transfers) == 1:
+                return None
+            path = destination / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('data_exact_source\n')
+            state['transfers'] = {relative: {'bytes': path.stat().st_size}}
+            return path
+        return directory / relative
+
+    monkeypatch.setattr(cb, 'Store', Store)
+    monkeypatch.setattr(cb, 'actor', lambda *a, **k: {})
+    monkeypatch.setattr(cb, '_artifact', artifact)
+    batch = {'cluster_job_id': 'child-job', 'manifest': str(tmp_path / 'batch.json'),
+             'prepared_envelope': {'payload': {'parameters': {'source_run_dir': f'cluster://peer/{source_ref}'}}}}
+    assert cb.poll(batch, owner_id='owner', project_id='project')[:2] == ('collecting', None)
+    status, output, _ = cb.poll(batch, owner_id='owner', project_id='project')
+    assert status == 'completed'
+    fetched = json.loads(Path(output['candidates_jsonl']).read_text())
+    assert fetched['candidate_id'] == 'native-id'
+    assert Path(fetched['complex_pdb']).read_text() == 'data_exact_source\n'
+    assert batch['output_transfer_bytes'] == len(b'data_exact_source\n')
