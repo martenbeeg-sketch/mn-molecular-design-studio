@@ -308,14 +308,14 @@ def design_assets(api_data):
     return api_data
 
 
-def candidate_run(data, *, tool="kejia_idr", status="completed", success=True):
+def candidate_run(data, *, tool="kejia_idr", task_group="design", status="completed", success=True):
     from mn_molecular_design_studio.runtime import runs_root
     from mn_molecular_design_studio.workspace import STUDIO_SOURCE_ID
-    root = Path(runs_root()) / "design" / ("api-" + tool)
+    root = Path(runs_root()) / task_group / ("api-" + tool)
     root.mkdir(parents=True)
     write_structure(root / "complex.pdb")
     for name, payload in {
-        "metadata.json": {"run_id": root.name, "task_group": "design", "tool": tool, "status": status,
+        "metadata.json": {"run_id": root.name, "task_group": task_group, "tool": tool, "status": status,
                           "job_type": tool, "created_at": "2026-10-26T00:00:00Z"},
         "input.json": {"params": {"generator_only": True}},
         "result.json": {"success": success},
@@ -443,6 +443,30 @@ def test_pipeline_continuation_validates_source_candidate_and_project(api_data, 
     assert client.post("/api/v1/pipelines/drafts", json={**request, "selected_candidate_ids": ["forged"]}).status_code == 422
     assert client.post("/api/v1/pipelines/drafts", json={**request, "parameters": {"source_run_dir": "/private"}}).status_code == 422
     assert client.post("/api/v1/pipelines/drafts", json=request, headers=headers(data, "other")).status_code == 404
+
+
+def test_canvas_complex_results_scope_accepts_only_the_exact_project_job(api_data):
+    from mn_molecular_design_studio.pipeline_graph import SCHEMA
+    from mn_molecular_design_studio.workspace import create_project
+
+    data, client = api_data, api_data["client"]
+    run = candidate_run(data, tool="optimized_prediction_boltz2", task_group="refolding-validation")
+    source = {"source_run_dir": str(run), "source_scope": "complex_results",
+              "selected_candidate_ids": ["generated-1"]}
+    graph = {"schema_version": SCHEMA, "id": "b67cb605c100419790e7f6531b1ac8aa", "name": "Saved complex",
+             "template_id": "blank",
+             "nodes": [{"id": "source", "data": {"kind": "project_design_source", "params": source}},
+                       {"id": "results", "data": {"kind": "results"}}],
+             "edges": [{"id": "handoff", "source": "source", "target": "results"}]}
+    endpoint = "/api/v1/pipelines/validate"
+    request = {"project_id": data["project"]["id"], "graph": graph}
+    response = client.post(endpoint, json=request, headers=headers(data, "student"))
+    assert response.status_code == 200, response.text
+    assert client.post(endpoint, json=request, headers=headers(data, "other")).status_code == 404
+    other_project = create_project("Separate project", owner_id=data["admin"]["id"])
+    assert client.post(endpoint, json={**request, "project_id": other_project["id"]}).status_code == 422
+    source["source_scope"] = "designs"
+    assert client.post(endpoint, json=request).status_code == 404
 
 
 def test_structure_preview_and_saved_camera_are_private(api_data):

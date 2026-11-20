@@ -323,7 +323,8 @@ def _validate_user_path_values(value: Any, user: dict[str, Any], request_dir: Pa
         )
 
 
-def _guard_source_job(payload: dict[str, Any], user: dict[str, Any], *, project_id: str) -> None:
+def _guard_source_job(payload: dict[str, Any], user: dict[str, Any], *, project_id: str,
+                      allow_complex_results: bool = False) -> None:
     parameters = payload.get("parameters")
     if isinstance(parameters, list):
         from mn_molecular_design_studio.batching import parameter_items
@@ -350,10 +351,11 @@ def _guard_source_job(payload: dict[str, Any], user: dict[str, Any], *, project_
             run_dir = resolve_stored_path(source.get("source_run_dir"), must_exist=True)
             if not run_dir or not run_dir.is_dir():
                 raise HTTPException(status_code=422, detail="A selected design campaign is unavailable.")
-            row = _resolve_api_job(f"design/{run_dir.name}", user)
+            task_group = run_dir.parent.name if allow_complex_results else "design"
+            row = _resolve_api_job(f"{task_group}/{run_dir.name}", user)
             if Path(row["run_dir"]).resolve() != run_dir.resolve():
                 raise HTTPException(status_code=422, detail="Select a managed design campaign.")
-            record = get_job_access_record("design", run_dir.name)
+            record = get_job_access_record(task_group, run_dir.name)
             if not record or str(record.get("project_id") or "") != project_id:
                 raise HTTPException(status_code=422, detail="Every selected design campaign must belong to the selected project.")
     source_job = payload.get("source_job")
@@ -1061,10 +1063,14 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
             _call(retained_source, node, project_id)
         if node["data"]["kind"] in {"design_source","generation_source","backbone_source","molecule_source","project_design_source"} and node["data"]["params"].get("source_run_dir"):
             params = node["data"]["params"]
-            _guard_source_job({"parameters": {"validation_sources": [{"source_run_dir": params["source_run_dir"]}]}}, user, project_id=project_id)
             kind=node['data']['kind']
+            complex_results = kind == "project_design_source" and params.get("source_scope") == "complex_results"
+            _guard_source_job({"parameters": {"validation_sources": [{"source_run_dir": params["source_run_dir"]}]}},
+                              user, project_id=project_id, allow_complex_results=complex_results)
             loader=(source_molecule_selection if kind == 'molecule_source' else source_project_designs if kind == 'project_design_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs)
             extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
+            if complex_results:
+                extra["include_complex_results"] = True
             _call(loader, params["source_run_dir"], project_id, params.get("selected_candidate_ids"),**extra)
     if runnable:
         plan = _call(validate_graph, graph, require_inputs=True)

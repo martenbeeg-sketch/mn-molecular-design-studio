@@ -978,6 +978,9 @@ def test_adapters_disable_hidden_downstream_pipelines_and_bind_existing_signatur
         if "workflow_parameters" in p:
             from mn_molecular_design_studio.pipeline_tile_workflows import parameters_for
             p["workflow_parameters"] = {name: None for name, required in parameters_for(spec["workflow"]) if required}
+            if spec["workflow"] == "analysis.binderscope":
+                p["workflow_parameters"].update(native_run_dirs=[str(source_run)],
+                                                target_pdb=source["target"]["target_pdb"])
         request=runner.node_request(kind,p,source,"test")
         inspect.signature(_get_function(WORKFLOWS[request["workflow"]])).bind(**request["parameters"])
         if kind in {"rfdiffusion","genie3","pxdesign","protpardelle"}:
