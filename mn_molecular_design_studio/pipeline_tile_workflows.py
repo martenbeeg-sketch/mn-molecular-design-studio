@@ -167,22 +167,17 @@ def input_digests(parameters: dict, run_dir: Path) -> dict[str, str]:
     """Hash explicit file inputs through the same keys as submission path validation."""
     from mn_molecular_design_studio.cache_provenance import file_digest
     from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import (
-        is_operational_path_key, resolve_stored_path,
+        is_user_input_path_key, resolve_stored_path,
     )
 
     digests = {}
-
-    def visit(value, key):
-        if isinstance(value, dict):
-            for field, item in value.items():
-                visit(item, field)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item, key)
-        elif isinstance(value, str) and value and is_operational_path_key(key):
-            path = resolve_stored_path(value, run_dir=run_dir, must_exist=True)
+    for key, value in parameters.items():
+        if not is_user_input_path_key(key):
+            continue
+        for item in value if isinstance(value, list) else [value]:
+            if not isinstance(item, str) or not item:
+                continue
+            path = resolve_stored_path(item, run_dir=run_dir, must_exist=True)
             if path is not None and path.is_file():
                 digests[str(path)] = file_digest(path)
-
-    visit(parameters, "")
     return digests

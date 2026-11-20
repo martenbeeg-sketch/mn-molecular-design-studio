@@ -91,6 +91,15 @@ def is_operational_path_key(key: str) -> bool:
     return any(part in lowered for part in _PATH_KEY_PARTS) or lowered.endswith(_PATH_KEY_SUFFIXES)
 
 
+def is_user_input_path_key(key: str) -> bool:
+    lowered = key.casefold()
+    if lowered == "source_job" or lowered in {"name", "type", "sequence", "chains", "chain"}:
+        return False
+    if lowered.endswith(("_name", "_type", "_sequence", "_chains", "_chain", "_id", "_code", "_goal", "_format", "_mode", "_count", "_strength")):
+        return False
+    return is_operational_path_key(lowered)
+
+
 def _is_inline_content_key(key: str) -> bool:
     """Distinguish pasted engine inputs from file references with similar names."""
     lowered = key.lower()

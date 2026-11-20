@@ -32,7 +32,7 @@ from mn_molecular_design_studio.auth import (
     user_input_root,
 )
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import (
-    is_operational_path_key,
+    is_user_input_path_key as _is_path_input_key,
     is_portable_path,
     resolve_stored_path,
 )
@@ -251,15 +251,6 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return True
     except (OSError, ValueError):
         return False
-
-
-def _is_path_input_key(key: str) -> bool:
-    lowered = key.casefold()
-    if lowered == "source_job" or lowered in {"name", "type", "sequence", "chains", "chain"}:
-        return False
-    if lowered.endswith(("_name", "_type", "_sequence", "_chains", "_chain", "_id", "_code", "_goal", "_format", "_mode", "_count", "_strength")):
-        return False
-    return is_operational_path_key(lowered)
 
 
 def _validate_user_path_values(value: Any, user: dict[str, Any], request_dir: Path, key: str = "") -> None:

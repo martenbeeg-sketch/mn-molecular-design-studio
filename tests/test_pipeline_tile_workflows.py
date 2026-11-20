@@ -81,7 +81,7 @@ def test_tool_input_digests_track_explicit_files_and_preserve_inline_values(tmp_
     unrelated = tmp_path / "unrelated.txt"
     unrelated.write_text("unrelated")
     inputs.write_text(json.dumps({"text": str(unrelated)}))
-    settings = {"source_files": [str(inputs)], "sequence": str(unrelated)}
+    settings = {"source_files": [str(inputs)], "sequence": str(unrelated), "source_name": str(unrelated)}
     initial = tiles.input_digests(settings, tmp_path)
     assert set(initial) == {str(inputs)}
     inputs.write_text('{"updated": true}')
