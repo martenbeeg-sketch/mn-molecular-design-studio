@@ -31,8 +31,8 @@ def _get_editor() -> Any:
     return _editors[asset_hash]
 
 
-@lru_cache(maxsize=1)
-def _localfold_editor_profiles() -> dict[str, Any]:
+@lru_cache(maxsize=2)
+def _localfold_editor_profiles(official_terms_accepted: bool = False) -> dict[str, Any]:
     """Ship model controls together so selecting a model needs no server round trip."""
     from mn_molecular_design_studio import localfold
     from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
@@ -40,7 +40,7 @@ def _localfold_editor_profiles() -> dict[str, Any]:
     for name in localfold.UI_MODEL_KEYS:
         profile = localfold.profile_for(ENGINE_PROFILES['localfold'], name, ui=True)
         profiles[name] = {
-            'prediction': prediction_settings_for(profile),
+            'prediction': prediction_settings_for(profile, official_terms_accepted=official_terms_accepted),
             'types': ['protein', *(['dna', 'rna', 'ligand'] if profile['molecule_inputs'] else [])],
             'ccd': bool(profile['molecule_inputs']), 'smiles': bool(profile['molecule_inputs']),
             'cyclic': profile['supports_cyclic'], 'modifications': profile['supports_modifications'],
@@ -235,6 +235,16 @@ def render_molecule_editor(
 ) -> tuple[dict[str, Any], dict[str, Any], bool]:
     state_key = f"{key_prefix}-editor-model"
     database_user = st.session_state.get("_molecular_database_user")
+    official_terms_accepted = False
+    has_official_terms_field = any(
+        field["key"] == "accept_terms" for field in (prediction_settings or {}).get("fields", ())
+    )
+    if database_user and (localfold or has_official_terms_field):
+        from mn_molecular_design_studio.localfold import has_terms_acceptance
+
+        official_terms_accepted = has_terms_acceptance(str(database_user["id"]), "alphafold3")
+        if official_terms_accepted and has_official_terms_field:
+            prediction_settings = _with_official_terms_accepted(prediction_settings)
     if database_user and not settings_only:
         from mn_molecular_design_studio.database_ui import render_molecule_picker
         from mn_molecular_design_studio.database_selections import set_editor_selection
@@ -311,7 +321,7 @@ def render_molecule_editor(
         "templates": supports_templates,
         "localfold": localfold, "localfold_models": localfold_models,
         "localfold_model": st.session_state.get('localfold-model', 'alphafold3') if localfold else '',
-        "localfold_profiles": _localfold_editor_profiles() if localfold else {},
+        "localfold_profiles": _localfold_editor_profiles(official_terms_accepted) if localfold else {},
         "localfold_crosslinkers": localfold_engine.CROSSLINKERS if localfold else (),
         "localfold_model_groups": localfold_engine.MODEL_UI_GROUPS if localfold else (),
         "localfold_esmfold2_variants": localfold_engine.ESMFOLD2_VARIANTS if localfold else (),
@@ -359,7 +369,17 @@ def render_molecule_editor(
     return values, model["settings"], submitted
 
 
-def prediction_settings_for(profile: dict[str, Any], *, extra_fields: tuple[dict, ...] = ()) -> dict[str, Any]:
+def _with_official_terms_accepted(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **config,
+        "fields": [field for field in config["fields"] if field["key"] != "accept_terms"],
+        "fixed_settings": [*config["fixed_settings"], "AlphaFold3 model-weight terms accepted for your account."],
+    }
+
+
+def prediction_settings_for(
+    profile: dict[str, Any], *, extra_fields: tuple[dict, ...] = (), official_terms_accepted: bool = False,
+) -> dict[str, Any]:
     """Describe an engine's controls for the shared Boltz-style editor."""
     fields = []
     if len(profile["modes"]) > 1:
@@ -398,4 +418,6 @@ def prediction_settings_for(profile: dict[str, Any], *, extra_fields: tuple[dict
               "sample_min_modes": {"exact": 2, "fast": 2} if profile.get("input_kind") == "boltzgen" else {}}
     if profile.get("parameter_presets"):
         config["parameter_presets"] = profile["parameter_presets"]
+    if profile.get("terms") and official_terms_accepted:
+        return _with_official_terms_accepted(config)
     return config

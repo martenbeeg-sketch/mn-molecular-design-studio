@@ -1250,19 +1250,27 @@ def _prepare_ambertools_topology_artifacts(
         charge_method = str(config.get("charge_method", "am1bcc") or "am1bcc").strip().lower()
         ac_charge_method = "bcc" if charge_method in {"am1bcc", "bcc"} else "gas"
         net_charge = int(config.get("ligand_charge", 0) or 0)
+        charge_input = ligand_sdf_path
         try:
             from rdkit import Chem
-            suppl = Chem.SDMolSupplier(str(ligand_sdf_path), removeHs=False)
-            mol = suppl[0] if suppl and len(suppl) > 0 else None
-            if mol is not None:
-                net_charge = int(Chem.GetFormalCharge(mol))
-        except Exception:
+        except ImportError:
             pass
+        else:
+            suppl = Chem.SDMolSupplier(str(ligand_sdf_path), removeHs=False)
+            mol = suppl[0] if len(suppl) > 0 else None
+            if mol is None or not mol.GetNumConformers():
+                raise ValueError("AmberTools ligand preparation needs a readable SDF molecule with pose coordinates.")
+            net_charge = int(Chem.GetFormalCharge(mol))
+            explicit = Chem.AddHs(mol, addCoords=True)
+            if explicit.GetNumAtoms() > mol.GetNumAtoms():
+                charge_input = amber_dir / "ligand_with_hydrogens.sdf"
+                with Chem.SDWriter(str(charge_input)) as writer:
+                    writer.write(explicit)
 
         subprocess.run(
             [
                 antechamber_bin,
-                "-i", str(ligand_sdf_path),
+                "-i", str(charge_input),
                 "-fi", "sdf",
                 "-o", str(ligand_mol2),
                 "-fo", "mol2",

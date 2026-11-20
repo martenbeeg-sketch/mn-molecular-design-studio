@@ -49,6 +49,19 @@ def test_queued_python_and_workspace_override_a_stale_demo_bridge(tmp_path, monk
     assert "UNRELATED_SECRET" not in environment
 
 
+def test_direct_job_descriptive_python_uses_the_worker_interpreter(tmp_path):
+    path = tmp_path / "command.json"
+    command = {"mode": "local_worker", "command": ["python", "-m",
+        "mn_molecular_design_studio.engine.workflow_engine.core.local_worker", "--run-dir", str(tmp_path)]}
+    path.write_text(json.dumps(command))
+    assert central_scheduler_worker._submitted_execution_context(tmp_path) == (sys.executable, {})
+
+    command["command"][0] = "other-python"
+    path.write_text(json.dumps(command))
+    with pytest.raises(ValueError, match="Python executable is unavailable"):
+        central_scheduler_worker._submitted_execution_context(tmp_path)
+
+
 @pytest.fixture
 def bridge_run(tmp_path, monkeypatch):
     from mn_molecular_design_studio import job_dependencies

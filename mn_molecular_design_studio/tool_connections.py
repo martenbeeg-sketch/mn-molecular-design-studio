@@ -1,0 +1,110 @@
+"""Read-only discovery of registered tools and supported artifact handoffs."""
+from __future__ import annotations
+
+from typing import Literal
+
+from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, workflow_catalog
+from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, capability_contract, matching_artifact_type
+from mn_molecular_design_studio.tool_catalog import AF2_TILE_WORKFLOW, TOOL_CATALOG_GROUPS, catalog_rows
+
+
+ConnectionView = Literal["tiles", "workflows", "operations", "connections", "handoffs"]
+ConnectionDirection = Literal["both", "incoming", "outgoing"]
+
+# These runners pass files or a source job reference outside the canvas.
+_STANDALONE_HANDOFFS = (
+    ("library.prepare", "library.centroids", "fingerprint_manifest", "parameters.feature_manifest", ("library_id",)),
+    ("library.centroids", "library.seed_dock", "centroid_manifest", "parameters.centroid_manifest",
+     ("library_id", "target_pdb", "center_x", "center_y", "center_z")),
+    *(("ligand.docking.vina", consumer, "docking_pose_and_receptor", "source_job", ())
+      for consumer in ("analysis.plip", "analysis.pandamap", "analysis.posebusters")),
+    ("refolding.optimized_prediction", "analysis.ipsae", "predicted_complex_with_pae", "source_job",
+     ("binder_chains", "target_chains")),
+    *(("refolding.optimized_prediction", consumer, "predicted_complex", "source_job", ("binder_chains", "target_chains"))
+      for consumer in ("analysis.biotite_interface", "analysis.rosetta")),
+)
+
+
+def _tile_modes(tile):
+    group = TOOL_CATALOG_GROUPS.get(tile["group_id"], {})
+    profiles = group.get("engine_profiles", {})
+    if group:
+        modes = [(label, workflow, profiles.get(label)) for label, workflow in tile["modes"].items()]
+    else:
+        modes = [(tile["title"], row["workflow"], tile.get("optimized_engine")) for row in tile["workflow_rows"]]
+    return [{
+        "label": label,
+        "workflow": AF2_TILE_WORKFLOW if workflow == "refolding.af2_initial_guess" else workflow,
+        "engine_profile": profile,
+        "pipeline_operations": [kind for kind, node in sorted(NODE_CATALOG.items())
+                                if (node.get("engine_profile") == profile if profile else node.get("workflow") == workflow)],
+    } for label, workflow, profile in modes]
+
+
+def _tiles():
+    for tile in catalog_rows(workflow_catalog()):
+        modes = _tile_modes(tile)
+        yield {"id": tile["key"], "title": tile["title"], "description": tile["description"],
+               "tags": tile["tags"], "modes": modes,
+               "pipeline_operations": sorted({kind for mode in modes for kind in mode["pipeline_operations"]})}
+
+
+def _operations():
+    for kind, spec in sorted(NODE_CATALOG.items()):
+        contract = capability_contract(kind, spec)
+        yield {"id": kind, "title": spec["label"], "category": spec["category"], "workflow": spec.get("workflow"),
+               "engine_profile": spec.get("engine_profile"), "inputs": contract["inputs"], "outputs": contract["outputs"],
+               "constraints": contract["constraints"]}
+
+
+def _connections(operation, direction):
+    operations = list(_operations())
+    for source in operations:
+        for target in operations:
+            if operation and not (direction != "incoming" and source["id"] == operation
+                                  or direction != "outgoing" and target["id"] == operation):
+                continue
+            for output in source["outputs"]:
+                for input_port in target["inputs"]:
+                    artifact_type = matching_artifact_type(output, input_port)
+                    if artifact_type:
+                        yield {"source": source["id"], "output": output["id"], "target": target["id"],
+                               "input": input_port["id"], "artifact_type": artifact_type}
+
+
+def _handoffs():
+    for source, target, artifact_type, transfer, additional_inputs in _STANDALONE_HANDOFFS:
+        yield {"source": source, "target": target, "artifact_type": artifact_type,
+               "transfer": transfer, "additional_inputs": list(additional_inputs)}
+    docking_workflows = sorted(workflow for workflow in WORKFLOWS if workflow.startswith("ligand.docking."))
+    for source in sorted(workflow for workflow in WORKFLOWS if workflow.startswith("ligand.generation.")):
+        for target in [*docking_workflows, "ligand.affinity.nesso"]:
+            required = ["target_pdb", "center_x", "center_y", "center_z"] if target in docking_workflows else ["target_pdb"]
+            yield {"source": source, "target": target, "artifact_type": "generated_compound_set",
+                   "transfer": "source_job", "additional_inputs": required}
+
+
+def connection_catalog(*, view: ConnectionView, query: str, operation: str, direction: ConnectionDirection,
+                       artifact_type: str, offset: int, limit: int) -> dict:
+    """Project live registry entries into a bounded, searchable result page."""
+    if view == "connections":
+        rows = _connections(operation, direction)
+        scope = "Declared canvas port matches. Validate a saved graph to check inputs, formats and scientific constraints."
+    elif view == "handoffs":
+        rows = _handoffs()
+        scope = "Documented standalone handoffs. The referenced job or manifest must be accessible and provide the required artifacts."
+    elif view == "operations":
+        rows = _operations()
+        scope = "Canvas operations with registered inputs, outputs and constraints."
+    elif view == "workflows":
+        rows = sorted(workflow_catalog(), key=lambda row: row["workflow"])
+        scope = "API workflows with their parameter types and required fields."
+    else:
+        rows = _tiles()
+        scope = "All tools tiles and their executable workflow modes."
+    query = query.strip().casefold()
+    matches = [row for row in rows
+               if (view not in {"connections", "handoffs"} or not artifact_type or row["artifact_type"] == artifact_type)
+               and (not query or query in str(row).casefold())]
+    return {"schema_version": 1, "view": view, "scope": scope, "items": matches[offset:offset + limit],
+            "total": len(matches), "offset": offset, "limit": limit}

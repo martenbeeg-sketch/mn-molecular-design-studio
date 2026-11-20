@@ -29,6 +29,24 @@ def test_reconcile_does_not_block_when_another_scan_is_running(tmp_path, monkeyp
     lock.release()
 
 
+def test_job_path_lookup_applies_owner_and_project_access(tmp_path, monkeypatch):
+    root = tmp_path / "runs"
+    run = root / "ligand-md" / "run-1"
+    _write_json(run / "metadata.json", {"status": "completed"})
+    _write_json(run / "molecular_design_studio.json", {"studio_owner_id": "owner", "project_id": "project"})
+    artifact = run / "artifacts" / "production.xtc"
+    artifact.parent.mkdir()
+    artifact.write_bytes(b"trajectory")
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(root))
+    monkeypatch.setattr(job_catalog, "catalog_path", lambda: tmp_path / "catalog.sqlite3")
+    monkeypatch.setattr(job_catalog, "_SCHEMA_READY_PATH", None)
+    job_catalog._upsert(root, run, refresh_artifacts=False)
+
+    assert job_catalog.path_is_within_accessible_job(artifact, access_owner_id="owner")
+    assert job_catalog.path_is_within_accessible_job(artifact, access_owner_id="member", accessible_project_ids=["project"])
+    assert not job_catalog.path_is_within_accessible_job(artifact, access_owner_id="outsider", accessible_project_ids=["other"])
+
+
 def test_metadata_refresh_reuses_success_when_result_file_is_unchanged(tmp_path, monkeypatch):
     root = tmp_path / "runs"
     run = root / "design" / "run-1"

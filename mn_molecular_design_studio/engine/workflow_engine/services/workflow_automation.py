@@ -157,7 +157,7 @@ _SPECS = (
     _spec("target.refolding_evaluation", "target_prep", "enqueue_target_refolding_evaluation", "target-refolding", "target_refolding_evaluation_engines", "target_refolding_evaluation", "Build target-only candidates and run selected refolding engines.", "target_refolding_evaluation"),
     _spec("detection.scannet", "detection", "run_scannet", "detection", "scannet", "ppi_detection", "Run ScanNet PPI/hotspot detection."),
     _spec("detection.pesto", "detection", "run_pesto", "detection", "pesto", "ppi_detection", "Run PeSTo interface detection."),
-    _spec("detection.surf2spot", "detection", "run_surf2spot", "detection", "surf2spot", "ppi_detection", "Run Surf2Spot hotspot detection."),
+    _spec("detection.surf2spot", "detection", "run_surf2spot", "hotspot-detection", "surf2spot", "hotspot_detection", "Run Surf2Spot hotspot detection."),
     _spec("detection.masif_seed", "detection", "run_masif_seed", "detection", "masif_seed", "ppi_detection", "Run MaSIF-seed surface/site detection."),
     _spec("detection.surface_analysis", "detection", "run_surface_analysis", "detection", "surface_analysis", "surface_analysis", "Run PeSTo, ScanNet, Surf2Spot, and MaSIF-seed together on one target."),
     _spec("design.rfdiffusion_classic", "design", "run_rfdiffusion_classic", "design", "rfdiffusion_classic", "design_campaign", "Run the RFdiffusion classic design workflow."),
@@ -392,6 +392,15 @@ def workflow_catalog(*, category: str | None = None, workflow_id: str | None = N
     return rows
 
 
+def _source_job_parameters(spec: WorkflowSpec, function) -> set[str]:
+    if spec.workflow_id.startswith("ligand.docking.") or spec.workflow_id == "ligand.affinity.nesso":
+        return {"compound_set_file"}
+    if spec.workflow_id == "campaign.validation_sequence":
+        return {"initial_source"}
+    candidate_inputs = {"source_run_dir", "candidates_jsonl"}
+    return candidate_inputs if candidate_inputs.issubset(inspect.signature(function).parameters) else set()
+
+
 def workflow_schema(workflow_id: str) -> dict[str, Any]:
     try:
         spec = WORKFLOWS[workflow_id]
@@ -400,9 +409,12 @@ def workflow_schema(workflow_id: str) -> dict[str, Any]:
     row = workflow_catalog(workflow_id=workflow_id)[0]
     function = _get_function(spec)
     request_fields = ["schema_version", "workflow", "parameters", "resources"]
-    if {"source_run_dir", "candidates_jsonl"}.issubset(inspect.signature(function).parameters) or workflow_id == "campaign.validation_sequence":
+    source_parameters = _source_job_parameters(spec, function)
+    if source_parameters:
         request_fields.append("source_job")
     schema = {"schema_version": WORKFLOW_SCHEMA_VERSION, **row, "request_fields": request_fields}
+    if "compound_set_file" in source_parameters:
+        schema["source_job_artifact"] = {"output": "generated_compound_set", "parameter": "compound_set_file"}
     from mn_molecular_design_studio.complex_analysis_batch import ASSESSMENT_METHODS, assessment_protocol
     if workflow_id in ASSESSMENT_METHODS or workflow_id in {"analysis.reference_placement", "analysis.reference_environment", "analysis.tag_fusion_context"}:
         schema["assessment_protocol"] = assessment_protocol(workflow_id)
@@ -579,6 +591,19 @@ def _resolve_source_job(
         raise AutomationError("source_job must be a visible job ID or code.")
     row = resolve_job(source_job, include_hidden=True)
     run_dir = Path(row["run_dir"]).resolve()
+    if "compound_set_file" in _source_job_parameters(spec, function):
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json_raw
+
+        result = read_json_raw(run_dir / "result.json")
+        outputs = result.get("outputs") or {}
+        artifact = outputs.get("generated_compound_set") if isinstance(outputs, dict) else None
+        if row.get("status") != "completed" or result.get("success") is not True or not isinstance(artifact, str) or not artifact:
+            raise AutomationError("Choose a completed ligand generation job with a saved compound set.")
+        path = (run_dir / artifact).resolve()
+        if not path.is_relative_to(run_dir) or not path.is_file():
+            raise AutomationError("The source job's compound set is no longer available in its Results folder.")
+        parameters["compound_set_file"] = path
+        return parameters
     candidates = run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
     if spec.workflow_id == "campaign.validation_sequence" and "initial_source" not in parameters:
         if not candidates.is_file():
@@ -666,15 +691,12 @@ def _validate_generic_parameters(
     if not isinstance(value, dict):
         raise AutomationError("parameters must be a JSON object.")
     function = _get_function(spec)
+    source_parameters = _source_job_parameters(spec, function)
     if source_job is not None and (
-        {"source_run_dir", "candidates_jsonl"}.intersection(value)
-        or (spec.workflow_id == "campaign.validation_sequence" and "initial_source" in value)
+        source_parameters.union({"source_run_dir", "candidates_jsonl"}).intersection(value)
     ):
         raise AutomationError("Use source_job or explicit source paths, not both.")
-    if source_job is not None and not (
-        {"source_run_dir", "candidates_jsonl"}.issubset(inspect.signature(function).parameters)
-        or spec.workflow_id == "campaign.validation_sequence"
-    ):
+    if source_job is not None and not source_parameters:
         raise AutomationError(f"source_job is not supported for {spec.workflow_id}.")
     public_parameters = _parameters_for(spec)
     unknown = sorted(set(value) - set(public_parameters))
@@ -685,7 +707,23 @@ def _validate_generic_parameters(
     for name, raw in value.items():
         parameter = public_parameters[name]
         annotation = hints.get(name, parameter.annotation)
+        if name == "msa_source" and spec.workflow_id in {"refolding.af3_jax_cofolding", "refolding.esmfold2_cofolding"}:
+            from mn_molecular_design_studio.cofolding_msa import normalize_msa_source
+
+            raw = normalize_msa_source(raw)
         normalized[name] = _convert(raw, annotation, request_file=request_file, field_name=name)
+    if spec.workflow_id in {"design.rfd4_proteina", "refolding.rfd4_proteina"}:
+        from mn_molecular_design_studio.rfd4_proteina_input import validate_run_counts
+
+        try:
+            validate_run_counts(normalized)
+        except ValueError as exc:
+            raise AutomationError(str(exc)) from exc
+    if spec.workflow_id == "refolding.rf3" and "n_recycles" in normalized:
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.refolding import RF3_MIN_RECYCLES
+
+        if normalized["n_recycles"] < RF3_MIN_RECYCLES:
+            raise AutomationError(f"RosettaFold3 candidate refolding requires at least {RF3_MIN_RECYCLES} recycles.")
     if "target_entries" in normalized:
         normalized["target_entries"] = _resolve_target_entries(normalized["target_entries"], request_file)
     if spec.workflow_id == "campaign.validation_sequence" and "initial_source" in normalized and normalized["initial_source"] is not None:
@@ -725,8 +763,7 @@ def _validate_generic_parameters(
         for name, parameter in public_parameters.items()
         if parameter.default is inspect.Parameter.empty
         and name not in normalized
-        and not (source_job and name in {"source_run_dir", "candidates_jsonl"})
-        and not (source_job and spec.workflow_id == "campaign.validation_sequence" and name == "initial_source")
+        and not (source_job and name in source_parameters)
     ]
     if spec.mode == "sequence_pipeline":
         missing.extend(name for name in ("backend", "source_run_dir", "candidates_jsonl", "design_kwargs") if name not in normalized and name not in missing)

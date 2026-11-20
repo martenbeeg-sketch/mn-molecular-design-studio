@@ -372,13 +372,10 @@ def test_pipeline_filter_accepts_same_common_field_for_different_tools():
 
 
 def test_every_design_tile_is_covered_by_shared_contract():
-    import ast
-    from pathlib import Path
     from mn_molecular_design_studio.output_vocabulary import GENERATOR_WORKFLOWS, vocabulary
-    tree = ast.parse((Path(__file__).parents[1] / "mn_molecular_design_studio/run_app.py").read_text())
-    tiles = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
-                 and any(isinstance(target, ast.Name) and target.id == "TOOL_CATALOG_WORKFLOW_IDS" for target in node.targets))
-    assert {workflow for workflow in tiles if workflow.startswith("design.")} == set(GENERATOR_WORKFLOWS)
+    from mn_molecular_design_studio.tool_catalog import TOOL_CATALOG_WORKFLOW_IDS
+
+    assert {workflow for workflow in TOOL_CATALOG_WORKFLOW_IDS if workflow.startswith("design.")} == set(GENERATOR_WORKFLOWS)
     assert set(vocabulary()["generator_workflows"]) == set(GENERATOR_WORKFLOWS)
 
 

@@ -207,7 +207,7 @@ def validate_component_chemistry(task, reference_root):
         row['heavy_atoms'] = expected
 
 
-def restore_prediction_ccd_names(path, task):
+def restore_prediction_ccd_names(path, task, *, evidence_dir=None):
     """Restore Boltz's generic LIG labels using verified CCD atom identities.
 
     Native outputs remain untouched. This restores serialization metadata; it
@@ -237,7 +237,8 @@ def restore_prediction_ccd_names(path, task):
         residue.name = row['ccd']
     if not restored:
         return path
-    destination = path.with_name(path.stem + '_identity' + path.suffix)
+    destination = (Path(evidence_dir) if evidence_dir is not None else path.parent) / (path.stem + '_identity' + path.suffix)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() == '.pdb':
         lines = []
         for line in path.read_text().splitlines(keepends=True):

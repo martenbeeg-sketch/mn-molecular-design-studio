@@ -214,6 +214,48 @@ def test_vina_batch_parameters_cannot_forge_trusted_lineage(queued_vina_batch, k
     assert not case["observations"]()
 
 
+@pytest.mark.parametrize("admit", [False, True])
+def test_vina_opt_in_admits_new_scored_ligand_and_pose(queued_vina_batch, monkeypatch, admit):
+    from mn_molecular_design_studio import ligand_compounds
+    from mn_molecular_design_studio.engine.workflow_engine.core import local_worker
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import ligand_tools
+
+    case = queued_vina_batch
+    body = case["body"]((admit,))
+    body["parameters"] = body["parameters"][0]
+    ligand_compounds.write_compound_set(
+        Path(body["parameters"]["compound_set_file"]), name="Unregistered ligands",
+        compounds=[{"compound_id":"propanol","smiles":"CCCO"},
+                   {"compound_id":"butanol","smiles":"CCCCO"},
+                   {"compound_id":"pentanol","smiles":"CCCCCO"}],
+        owner_id=case["actor"]["id"], project_id=case["project"], created_at="fixture",
+    )
+    fixture_docker = ligand_tools.run_docker_job
+
+    def docker(run, manifest, command, *, gpu_device):
+        result = fixture_docker(run, manifest, command, gpu_device=gpu_device)
+        path = Path(run) / "artifacts/docking_scores.csv"
+        path.write_text(path.read_text().replace("butanol\tcompleted", "butanol\tfailed"))
+        (Path(run) / "artifacts/poses/pentanol.pdbqt").unlink()
+        return result
+
+    monkeypatch.setattr(ligand_tools, "run_docker_job", docker)
+    response = case["data"]["client"].post("/api/v1/workflows", json=body)
+    assert response.status_code == 202, response.text
+    assert local_worker.run_worker_job(case["pending"][0]) == 0
+    observations = case["observations"]()
+    assert len(observations) == int(admit)
+    if admit:
+        context = json.loads(observations[0]["context"])
+        assert context["row"]["compound_id"] == "propanol"
+        assert context["calculation_recorded"] and context["representation_id"]
+        with case["database"].connection() as connection:
+            stored = connection.execute("SELECT path FROM molecule_structures WHERE id=?",
+                                        (context["representation_id"],)).fetchone()
+        assert Path(stored["path"]).read_bytes() == (
+            case["launches"][0] / "artifacts/poses/propanol.pdbqt").read_bytes()
+
+
 @pytest.fixture
 def api_data(tmp_path, monkeypatch):
     for name, value in {
@@ -948,6 +990,60 @@ def test_mcp_http_never_falls_back_to_admin_or_development_identity(api_data, mo
         assert client.post("/mcp", json={}, headers={"Authorization": "Bearer invalid"}).status_code == 401
         monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_AUTH_MODE", "development")
         assert client.post("/mcp", json={}, headers=headers(api_data, "student")).status_code == 401
+
+
+def test_tool_connection_map_through_rest_and_mcp(api_data):
+    from mcp import Client
+    from mn_molecular_design_studio.api_client import StudioClient
+    from mn_molecular_design_studio.mcp_server import create_server
+    from mn_molecular_design_studio.pipeline_graph import connection_compatibility
+
+    data = api_data
+    path = "/api/v1/workflows/connections"
+    client = data["client"]
+    assert client.get(path, headers={"Authorization": ""}).status_code == 401
+    assert client.get(path, params={"limit": 101}, headers=headers(data, "student")).status_code == 422
+
+    def get(**params):
+        response = client.get(path, params=params, headers=headers(data, "student"))
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    tiles = get(view="tiles", limit=100)
+    by_id = {tile["id"]: tile for tile in tiles["items"]}
+    assert set(by_id["optimized-image-boltz2"]["pipeline_operations"]) == {"boltz2"}
+    assert set(by_id["group-boltzgen_fold"]["pipeline_operations"]) == {"boltzgen_fold_batch", "prediction_boltzgen_fold"}
+    assert by_id["refolding.af2_initial_guess"]["modes"][0]["workflow"] == "refolding.af2_initial_guess_input"
+    assert by_id["studio.validation-acceptance"]["modes"][0]["workflow"] == "analysis.validation_acceptance"
+    assert get(view="tiles", offset=1, limit=1)["items"] == tiles["items"][1:2]
+
+    workflows = get(view="workflows", query="library.prepare")["items"]
+    assert {item["name"] for item in workflows[0]["parameters"] if item["required"]} >= {"source_files", "library_name"}
+    operation = get(view="operations", query="md_analysis")["items"][0]
+    assert operation["inputs"][0]["artifact_types"] == ["md_trajectory"]
+    edges = get(view="connections", operation="md_analysis", direction="incoming", artifact_type="md_trajectory")
+    assert edges["items"]
+    for edge in edges["items"]:
+        compatibility = connection_compatibility(edge["source"], edge["target"], source_handle=edge["output"], target_handle=edge["input"])
+        assert edge["target"] == "md_analysis" and compatibility["artifact_type"] == edge["artifact_type"]
+
+    studio = StudioClient("http://studio.test", token=data["student_token"], transport=httpx.ASGITransport(app=data["app"]))
+
+    async def check():
+        async with Client(create_server(studio)) as mcp:
+            tools = (await mcp.list_tools()).tools
+            assert "tool_connections" in {tool.name for tool in tools}
+            response = await mcp.call_tool("tool_connections", {"view": "handoffs", "query": "ligand.docking.vina"})
+            assert not response.is_error, response.content
+            handoffs = response.structured_content["items"]
+            assert {row["target"] for row in handoffs if row["source"] == "ligand.docking.vina"} == {
+                "analysis.plip", "analysis.pandamap", "analysis.posebusters",
+            }
+            assert any(row["source"] == "ligand.generation.lddm" and row["target"] == "ligand.docking.vina"
+                       for row in handoffs)
+            assert all(row["transfer"] == "source_job" for row in handoffs)
+
+    asyncio.run(check())
 
 
 def test_mcp_operates_projects_pipelines_datasets_and_saved_results(api_data):

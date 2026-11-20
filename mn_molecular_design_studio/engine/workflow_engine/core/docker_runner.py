@@ -21,6 +21,12 @@ def _docker_is_rootless() -> bool:
     return False
 
 
+def docker_host_user_args() -> list[str]:
+    if not hasattr(os, "getuid") or _docker_is_rootless():
+        return []
+    return ["--user", f"{os.getuid()}:{os.getgid()}"]
+
+
 def build_docker_command(
     manifest: dict,
     run_dir: Path,
@@ -35,9 +41,8 @@ def build_docker_command(
     command = ["docker", "run", "--rm"]
     if manifest.get("gpu"):
         command.extend(docker_gpu_args(gpu_device))
-    host_user = use_host_user and hasattr(os, "getuid") and not _docker_is_rootless()
-    if host_user:
-        command.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+    user_args = docker_host_user_args() if use_host_user else []
+    command.extend(user_args)
     if working_dir is not None:
         container_working_dir = str(working_dir).strip()
         if (not container_working_dir.startswith("/") or ":" in container_working_dir
@@ -58,7 +63,7 @@ def build_docker_command(
         mount = f"{source}:{destination}" + (":ro" if read_only else "")
         command.extend(["-v", mount])
     docker_environment = dict(environment or {})
-    if host_user:
+    if user_args:
         docker_environment.setdefault("HOME", "/tmp")
     for key, value in docker_environment.items():
         name = str(key)

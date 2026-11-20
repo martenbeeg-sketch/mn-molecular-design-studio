@@ -96,8 +96,12 @@ def resources():
 
 
 def requirements(payload, *, references=(), installed_images=None):
+    from mn_molecular_design_studio.cofolding_msa import colabfold_image, normalize_msa_source
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS
-    from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.detection import SURFACE_METHODS, SURFACE_REQUIRED_REFERENCES
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import (
+        ENGINE_PROFILES, allow_colabfold_msa, prediction_engine_options,
+    )
     from mn_molecular_design_studio.runtime import reference_root
     import yaml
     needed_images, needed_refs = set(), set(references)
@@ -117,15 +121,41 @@ def requirements(payload, *, references=(), installed_images=None):
         if workflow not in WORKFLOWS:
             raise ValueError(f"Unknown workflow: {workflow}")
         spec = WORKFLOWS[workflow]
-        manifest_path = Path(__file__).resolve().parents[1] / "engine/workflow_engine/manifests" / (spec.tool + ".yaml")
-        if manifest_path.exists():
-            manifest = yaml.safe_load(manifest_path.read_text())
-            if manifest.get("image"):
-                needed_images.add(manifest["image"])
-            cpu_only = cpu_only and not manifest.get("gpu", False)
+        manifest_tools = SURFACE_METHODS if workflow == "detection.surface_analysis" else (spec.tool,)
+        if workflow in {"design.boltzgen", "design.boltzgen_generator", "design.boltzgen_mimosa"}:
+            if str(p.get("mimosa_condition", "unconstrained")).strip().lower() == "unconstrained":
+                manifest_tools = ("boltzgen",)
+            else:
+                from mn_molecular_design_studio.engine.workflow_engine.workflows.design import MIMOSA_BOLTZGEN_IMAGE
+
+                manifest_tools = ()
+                needed_images.add(MIMOSA_BOLTZGEN_IMAGE)
+        if workflow.startswith("ligand.generation."):
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import generation_required_references
+
+            generator = workflow.removeprefix("ligand.generation.")
+            manifest_tools = (generator,)
+            needed_refs.update(generation_required_references(
+                generator, pharmacophore_conditioned=bool(p.get("pharmacophore_json")),
+            ))
+        for tool in manifest_tools:
+            manifest_path = Path(__file__).resolve().parents[1] / "engine/workflow_engine/manifests" / (tool + ".yaml")
+            if manifest_path.exists():
+                manifest = yaml.safe_load(manifest_path.read_text())
+                if manifest.get("image"):
+                    needed_images.add(manifest["image"])
+                cpu_only = cpu_only and not manifest.get("gpu", False)
+            needed_refs.update(SURFACE_REQUIRED_REFERENCES.get(tool, ()))
         if workflow == "refolding.optimized_prediction":
-            profile = ENGINE_PROFILES[p.get("engine", "boltz2")]
+            engine = p.get("engine", "boltz2")
+            profile = ENGINE_PROFILES[engine]
             needed_images.add(profile["image"])
+            options = prediction_engine_options(
+                engine, p.get("engine_options"), validation_sources=p.get("validation_sources"),
+                validation_mode=p.get("validation_mode"), target_use_msa=p.get("target_use_msa", True),
+            )
+            if profile.get("supports_msa") and options.get("use_msa", True) and allow_colabfold_msa(engine, options):
+                needed_images.add(colabfold_image())
             directories = {"boltz2": "boltz_models", "esmfold": "esm_models", "esmfold2": "biohub-esm", "esmfold2_fast": "biohub-esm",
                            "protenix_v2": "protenix", "protenix_v1": "protenix", "alphafold3": "alphafold3", "openfold3_jax": "openfold3",
                            "af3_torch": "mn-cofolding/af3_torch", "rf3_foundry": "foundry", "chai1": "chai1", "openfold3_ob0": "openfold3",
@@ -138,8 +168,41 @@ def requirements(payload, *, references=(), installed_images=None):
                 needed_refs.add("foundry/rf3_foundry_01_24_latest_remapped.ckpt")
             elif p.get("engine") == "openfold3_ob0":
                 needed_refs.add("openfold3/of3-ob-2025-06-30-174k.pt")
+            elif engine == "colabfold":
+                needed_refs.update(f"mn-cofolding/cache/params/params_model_{index}_multimer_v3.npz"
+                                   for index in range(1, 6))
             cpu_only = False
             minimum_gpus = max(minimum_gpus, int(profile.get("gpu_count", {}).get(p.get("optimization_mode", "off"), 1)))
+        elif workflow in {"refolding.af3_jax_cofolding", "refolding.esmfold2_cofolding"}:
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.af3_jax_cofolding import AF3_IMAGE
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.esmfold2_cofolding import ESMFOLD2_IMAGE
+
+            is_jax = workflow == "refolding.af3_jax_cofolding"
+            needed_images.add(AF3_IMAGE if is_jax else ESMFOLD2_IMAGE)
+            source = normalize_msa_source(p.get("msa_source", "reference_then_colabfold" if is_jax else "auto"))
+            if source == "reference_then_colabfold" or (source == "auto" and p.get("model_variant", "full") != "fast"):
+                needed_images.add(colabfold_image())
+            cpu_only = False
+        elif workflow in {"refolding.openfold3", "refolding.rf3", "refolding.protenix", "refolding.protenix_cli", "refolding.boltzgen_fold"}:
+            from mn_molecular_design_studio.engine.workflow_engine.workflows import refolding
+
+            image, model_references = {
+                "refolding.openfold3": (refolding.OPENFOLD3_IMAGE, (refolding.OPENFOLD3_REFERENCE,)),
+                "refolding.rf3": (refolding.RF3_IMAGE, (refolding.RF3_REFERENCE,)),
+                "refolding.protenix": (refolding.PROTENIX_IMAGE, (refolding.PROTENIX_REFERENCE_DIR.name,)),
+                "refolding.protenix_cli": (refolding.PROTENIX_CLI_IMAGE, (refolding.PROTENIX_CLI_REFERENCE_DIR.name,)),
+                "refolding.boltzgen_fold": (refolding.BOLTZGEN_IMAGE, (
+                    "boltzgen-cache/" + refolding.BOLTZGEN_FOLD_CHECKPOINT,
+                    "boltzgen-cache/" + refolding.BOLTZGEN_FOLD_MOLDIR,
+                )),
+            }[workflow]
+            needed_images.add(p.get("docker_image") or image)
+            if "checkpoint_path" not in p and "reference_dir" not in p:
+                needed_refs.update(model_references)
+            cpu_only = False
+        elif workflow in {"target.prepare", "target.crop"}:
+            if p.get("prepare_msa", True):
+                needed_images.add(colabfold_image())
         elif workflow == "design.peptide_trap":
             from mn_molecular_design_studio.peptide_trap_input import SCAFFOLDS
             prefix = "peptide-traps/sahtoe-10391229/"
@@ -148,13 +211,16 @@ def requirements(payload, *, references=(), installed_images=None):
         elif workflow == "design.kejia_idr":
             if p.get("template_library", "upload") != "upload":
                 needed_refs.add("kejia-idr/source/templates/" + p["template_library"])
-        elif workflow == "sequence.mpnn":
-            from mn_molecular_design_studio.mpnn_input import checkpoint
-            needed_images.add("mn-foundry:cu128" if p.get("backend") == "foundry" else "mn-ligandmpnn:latest")
-            if p.get("backend", "auto") == "auto":
+        elif workflow in {"sequence.mpnn", "sequence.abmpnn"}:
+            from mn_molecular_design_studio.mpnn_input import IMAGE, checkpoint
+
+            model = "ab_mpnn" if workflow == "sequence.abmpnn" else p.get("model_type", "protein_mpnn")
+            backend = p.get("backend", "auto")
+            needed_images.add("mn-foundry:cu128" if backend == "foundry" else IMAGE)
+            if backend == "auto" and model in {"protein_mpnn", "ligand_mpnn"} and not p.get("pack_side_chains"):
                 needed_images.add("mn-foundry:cu128")
             level = p.get("noise_level")
-            path = checkpoint(p.get("model_type", "protein_mpnn"), None if level in (None, "") else float(level))
+            path = checkpoint(model, None if level in (None, "") else float(level))
             needed_refs.add(path.relative_to(reference_root()).as_posix())
             cpu_only = False
         elif workflow.startswith("analysis."):
@@ -172,6 +238,13 @@ def requirements(payload, *, references=(), installed_images=None):
             from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import BINDCRAFT2_IMAGE
             needed_images.add(p.get("docker_image") or BINDCRAFT2_IMAGE)
             needed_refs.add("alphafold_models")
+            cpu_only = False
+        elif workflow == "design.esmfold2_binder":
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.esm_binder import DEFAULT_BINDER_MODEL, ESMFOLD2_BINDER_IMAGE
+
+            model_name = p.get("model_name", DEFAULT_BINDER_MODEL)
+            needed_images.add(ESMFOLD2_BINDER_IMAGE)
+            needed_refs.add(f"biohub-esm/binder-design/{model_name}")
             cpu_only = False
         elif workflow in {"sequence.esm_if1", "sequence.caliby", "sequence.boltzgen_inverse"}:
             from mn_molecular_design_studio.inverse_folding_input import ENGINES, weights
@@ -228,7 +301,9 @@ def requirements(payload, *, references=(), installed_images=None):
             if "complexa" in workflow:
                 from mn_molecular_design_studio.complexa_input import CHECKPOINTS
                 needed_refs.update("proteina-complexa/ckpts/" + name for name in CHECKPOINTS[p.get("task", "protein_binder")])
-            for name, directory in (("rfdiffusion", "rfdiffusion_models"), ("genie3", "genie3"), ("pxdesign", "pxdesign"), ("protpardelle", "protpardelle-1c"), ("complexa", "proteina-complexa"), ("boltzgen", "boltzgen-cache")):
+            if workflow == "design.rfdiffusion_classic":
+                needed_refs.add("rfdiffusion_models")
+            for name, directory in (("genie3", "genie3"), ("pxdesign", "pxdesign"), ("protpardelle", "protpardelle-1c"), ("complexa", "proteina-complexa"), ("boltzgen", "boltzgen-cache")):
                 if name in workflow:
                     needed_refs.add(directory)
     installed = installed_images if installed_images is not None else images()
@@ -280,7 +355,7 @@ def gpu_details():
         return {}
 
 
-def reference_fingerprints(probes, cache=None):
+def reference_fingerprints(probes, cache=None, *, cached_only=False):
     """Hash required files, reusing fingerprints while the local file is unchanged."""
     from mn_molecular_design_studio.cache_provenance import file_digest
     from mn_molecular_design_studio.runtime import reference_root
@@ -304,6 +379,8 @@ def reference_fingerprints(probes, cache=None):
         cached = cache.get(key) if cache is not None else None
         if cached and cached[0] == signature:
             digest = cached[1]
+        elif cached_only:
+            continue
         else:
             digest = file_digest(path)
             if cache is not None:

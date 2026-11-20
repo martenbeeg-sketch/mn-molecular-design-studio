@@ -41,6 +41,29 @@ def test_motif_order_survives_sorted_json_and_matches_atom_selections():
         ordered_motifs(roundtrip | {'motif_residue_order': ['B64', 'B64']})
 
 
+@pytest.mark.parametrize('returncode', [0, 1])
+def test_container_discards_the_runtime_models_link(monkeypatch, tmp_path, returncode):
+    from mn_molecular_design_studio import complexa_container
+
+    spec = tmp_path / 'spec.json'
+    spec.write_text(json.dumps({'environment': {}, 'generator_only': True}))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(complexa_container.os, 'chdir', lambda _path: None)
+    monkeypatch.setattr(complexa_container.sys, 'argv', ['run_complexa.py', str(spec)])
+    monkeypatch.setattr(complexa_container, 'configure_environment', lambda _data: None)
+    monkeypatch.setattr(complexa_container, 'prepare', lambda _data: tmp_path / 'config.yaml')
+    monkeypatch.setattr(complexa_container, 'export_generation_metadata', lambda *_args: None)
+    link = tmp_path / 'community_models'
+
+    def fake_run(*_args, **_kwargs):
+        assert link.is_symlink()
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.setattr(complexa_container.subprocess, 'run', fake_run)
+    assert complexa_container.main() == returncode
+    assert not link.is_symlink()
+
+
 def test_generator_schema_and_runner_do_not_mount_folding_dependencies(monkeypatch, tmp_path):
     refs = tmp_path / 'refs'
     for name in inputs.CHECKPOINTS['protein_binder']:

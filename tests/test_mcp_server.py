@@ -89,6 +89,10 @@ def test_results_read_tools_do_not_request_remote_inspection():
             for name, expected in [("job_results", "GET"), ("request_job_inspection", "POST")]:
                 result = await client.call_tool(name, {"reference": "cluster:fixture"})
                 assert result.structured_content["method"] == expected
+            result = await client.call_tool("job_results", {"reference": "ligand-docking/fixture"})
+            assert result.structured_content["path"] == "/api/v1/executions/local%3Aligand-docking%3Afixture/results"
+            result = await client.call_tool("result_presentation", {"reference": "ligand-docking/fixture"})
+            assert result.structured_content == {"method": "GET", "path": "/api/v1/jobs/local%3Aligand-docking%3Afixture/presentation"}
     asyncio.run(check())
 
 

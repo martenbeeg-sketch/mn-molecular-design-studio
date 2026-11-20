@@ -621,15 +621,15 @@ def render_results(run_id: str, run_dir: Path, candidates: list[dict], parameter
             "complex_refolding": "RF2 prediction",
         }.get(stage, stage or "Prediction")
         rows.append({
-            "Rank": rf2_rank.get(rank - 1, "—"),
+            "Rank": rf2_rank.get(rank - 1),
             "Design": candidate.get("candidate_id"),
             "Stage": stage_label,
             "Sequence": candidate.get("binder_sequence") or "—",
             "Chains": ",".join(candidate.get("binder_chains") or []),
-            "Length": candidate.get("binder_length") or "—",
-            "pLDDT": score.get("pred_lddt", "—"),
-            "Interaction PAE": score.get("interaction_pae", "—"),
-            "RF2 model": score.get("rf2_repeat", "—"),
+            "Length": candidate.get("binder_length") or None,
+            "pLDDT": score.get("pred_lddt"),
+            "Interaction PAE": score.get("interaction_pae"),
+            "RF2 model": score.get("rf2_repeat"),
         })
     frame = pd.DataFrame(rows)
     st.dataframe(frame, hide_index=True, use_container_width=True, height=min(410, 38 * (len(frame) + 1) + 3), column_config={"Sequence": st.column_config.TextColumn(width="large")})

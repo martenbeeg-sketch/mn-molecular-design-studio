@@ -197,6 +197,16 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
         item = {"id": identifier, "candidate_id": str(candidate.get("candidate_id") or identifier),
                 "sequence": candidate.get("binder_sequence") or "",
                 "binder_chains": candidate.get("binder_chains") or [], "target_chains": candidate.get("target_chains") or []}
+        protein_chains = raw.get("protein_chains")
+        if (profile["kind"] == "sequence" and not item["sequence"] and selected_structure is None
+                and len(item["binder_chains"]) == 1 and isinstance(protein_chains, list)):
+            chain_id = item["binder_chains"][0]
+            recorded_chains = [chain for chain in protein_chains if isinstance(chain, dict) and chain.get("id") == chain_id]
+            if len(recorded_chains) == 1 and isinstance(recorded_chains[0].get("sequence"), str):
+                item["sequence"] = recorded_chains[0]["sequence"]
+                candidate["raw_metadata"] = {**raw, "analysis_sequence_source": {
+                    "kind": "recorded_protein_chain", "chain_id": chain_id,
+                }}
         if candidate_ligand_selection is not None:
             item["ligand_selection"] = dict(candidate_ligand_selection)
         for key in ("complex_pdb", "binder_pdb", "target_pdb"):

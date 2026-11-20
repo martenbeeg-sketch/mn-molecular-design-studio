@@ -24,7 +24,6 @@ from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
     write_json,
 )
 from mn_molecular_design_studio.engine.workflow_engine.runtime import reference_root
-from mn_molecular_design_studio.engine.workflow_engine.workflows import target_msa as target_msa_workflow
 from mn_molecular_design_studio.engine.workflow_engine.workflows.esmfold2_runtime import stage_esmfold2_msa
 
 
@@ -418,7 +417,7 @@ def run_af3_jax_cofolding(
         "intellifold2", "opendde", "alphafold3",
     ] = "alphafold3",
     job_name: str = "af3-jax-cofold",
-    msa_source: Literal["single_sequence", "local_mmseqs_gpu", "reference_then_colabfold"] = "reference_then_colabfold",
+    msa_source: Literal["single_sequence", "reference_then_colabfold"] = "reference_then_colabfold",
     optimization_mode: Literal["off", "exact", "fast", "big"] = "off",
     seeds: list[int] | None = None,
     num_diffusion_samples: int = 5,
@@ -432,6 +431,7 @@ def run_af3_jax_cofolding(
     """Run an AF3-family model through MN Cofolding's shared JAX runner."""
     if model_name not in MODEL_PROFILES:
         raise ValueError(f"Unsupported MN Cofolding model: {model_name}.")
+    msa_source = cofolding_msa.normalize_msa_source(msa_source)
     model_profile = MODEL_PROFILES[model_name]
     from mn_molecular_design_studio.structure_templates import validate_uploads, stage_templates
     structure_templates = validate_uploads(structure_templates, supported=True)
@@ -496,8 +496,8 @@ def run_af3_jax_cofolding(
     try:
         if model_profile["terms"] and not accept_alphafold3_terms:
             raise ValueError("Review and accept AlphaFold3's published weight terms before using the official model.")
-        if msa_source not in {"single_sequence", "local_mmseqs_gpu", "reference_then_colabfold"}:
-            raise ValueError("Choose single-sequence input, local MMseqs GPU, or reference MSAs with ColabFold server fallback.")
+        if msa_source not in {"single_sequence", "reference_then_colabfold"}:
+            raise ValueError("Choose single-sequence input or reference MSAs with ColabFold server fallback.")
         if optimization_mode not in model_profile["modes"]:
             raise ValueError(
                 f"{model_profile['label']} supports these inference modes: {', '.join(model_profile['modes'])}."
@@ -533,21 +533,12 @@ def run_af3_jax_cofolding(
             )
             stdout.flush()
 
-        msa_gpu_device = gpu_ids[0]
         msa_source_by_chain: dict[str, str] = {}
         if msa_source != "single_sequence":
             msa_dir.mkdir(parents=True, exist_ok=True)
             for chain in proteins:
-                supplied = ''
-                if msa_source == "local_mmseqs_gpu" and cofolding_msa.find_reference(chain["sequence"]) is None:
-                    target_msa_workflow.ensure_boltz_msa_for_sequence(
-                        job.run_dir, chain["sequence"], f"af3_jax_chain_{chain['id']}",
-                        raw_subdir=f"{TOOL_NAME}/msa", gpu_device=msa_gpu_device,
-                        msa_source="alphafast_mmseqs_gpu")
-                    source_msa, _ = target_msa_workflow.boltz_msa_paths(chain["sequence"])
-                    supplied = source_msa.read_text()
                 staged_msa = cofolding_msa.prepare_chain(job.run_dir, chain["sequence"], chain["id"],
-                                                        depth=int(msa_max_depth), supplied=supplied, supplied_source="local_mmseqs_gpu")
+                                                        depth=int(msa_max_depth))
                 # Keep the established AF3 input mapping path, with the exact capped input.
                 destination = msa_dir / f"chain_{chain['id']}.a3m"
                 destination.write_text(staged_msa.read_text())

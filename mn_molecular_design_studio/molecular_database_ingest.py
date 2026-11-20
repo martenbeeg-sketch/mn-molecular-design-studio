@@ -1699,9 +1699,10 @@ def _best_docking_pose_indices(rows, pose_paths):
     """Choose one pose per compound, preferring explicit pose rank then score."""
     def number(value):
         try:
-            return float(value)
+            numeric = float(value)
         except (TypeError, ValueError):
             return None
+        return numeric if math.isfinite(numeric) else None
 
     def sort_key(index):
         row = rows[index]
@@ -1828,6 +1829,31 @@ def _run_input_compounds(run_dir):
     return []
 
 
+def _scored_docking_pose(row, pose, run_root):
+    if pose and _calculation_receipt(row)["calculation_recorded"]:
+        try:
+            if pose.resolve().is_relative_to(run_root) and pose.stat().st_size:
+                return pose
+        except OSError:
+            pass
+    return None
+
+
+def _scored_docking_compounds(run_dir):
+    table = run_dir / "artifacts/docking_scores.csv"
+    if not table.is_file():
+        return set()
+    text = table.read_text(errors="replace")
+    rows = csv.DictReader(io.StringIO(text), delimiter="\t" if "\t" in text.partition("\n")[0] else ",")
+    eligible = set()
+    run_root = run_dir.resolve()
+    for row in rows:
+        compound_id = str(row.get("compound_id") or "").strip()
+        if compound_id and _scored_docking_pose(row, _path(row.get("pose_path"), run_dir), run_root):
+            eligible.add(compound_id)
+    return eligible
+
+
 def _candidate_structure_signature(run_dir):
     """Track referenced structure files so late-written outputs are re-indexed."""
     manifest = Path(run_dir) / "artifacts" / "normalized_candidates" / "candidates.jsonl"
@@ -1872,7 +1898,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     run_dir = Path(run_dir)
     if not is_studio_job(run_dir):
         return 0
-    from mn_molecular_design_studio.collection_policy import automatic_collection_allowed
+    from mn_molecular_design_studio.collection_policy import DOCKING_ADMISSION_KEY, automatic_collection_allowed
     if not automatic_collection_allowed(run_dir):
         return 0
     if (run_dir / "artifacts/md/study.json").is_file():
@@ -2449,9 +2475,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                                     preferred_prediction_structure_ids, candidate_ids=prediction_candidate_ids)
     _prune_empty_evaluation_members(database, stale_evaluation_memberships)
 
-    # Screening inputs stay in Results. Docking rows may still attach to an
-    # already imported canonical compound, but never create one just because
-    # it appeared in a large campaign input set.
+    # Standalone docking can explicitly admit scored outputs with saved poses.
+    # Keep unmatched inputs from historical jobs and screening batches in Results.
+    admit_scored_docking = metadata.get(DOCKING_ADMISSION_KEY) is True and not is_legacy_aggregate
+    admit_compounds = _scored_docking_compounds(run_dir) if admit_scored_docking else set()
     compound_rows = {}
     for compound in (() if analysis_only else input_compounds):
         record = {"name": compound.get("compound_name") or compound["compound_id"],
@@ -2465,9 +2492,17 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             if remote_match:
                 destination = output_group("evaluation")
                 database.add_to_group(user, destination, [molecule_id])
-        if not matched:
-            if not remote_match:
+        if not matched and not remote_match:
+            if compound["compound_id"] not in admit_compounds:
                 continue
+            if ("mol-" + _canonical_fingerprint(record)[:32]) in removed_ids:
+                continue
+            destination = output_group("curated")
+            with database.connection() as connection:
+                molecule_id = database._put(connection, destination, record,
+                    source_key=f"{source_key}:docking-compound:{compound['compound_id']}",
+                    origin={**origin, "compound_id": compound["compound_id"], "collection_kind": "curated"},
+                    stamp=stamp)
         row_source_key = f"{source_key}:input-compound:{compound['compound_id']}"
         _put_source(database, destination, molecule_id, row_source_key,
                     {**origin, "compound_id": compound["compound_id"],
@@ -2553,7 +2588,11 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         reader = csv.DictReader(io.StringIO(text), delimiter="\t" if "\t" in text.partition("\n")[0] else ",")
         rows = list(reader)
         pose_paths = [_path(row.get("pose_path"), run_dir) for row in rows]
-        best_pose_indices = _best_docking_pose_indices(rows, pose_paths) if filename == "docking_scores.csv" else set()
+        eligible_paths = pose_paths
+        if filename == "docking_scores.csv" and admit_scored_docking:
+            run_root = run_dir.resolve()
+            eligible_paths = [_scored_docking_pose(row, pose, run_root) for row, pose in zip(rows, pose_paths)]
+        best_pose_indices = _best_docking_pose_indices(rows, eligible_paths) if filename == "docking_scores.csv" else set()
         if filename == "docking_scores.csv":
             has_docking_scores = True
         for index, row in enumerate(rows):

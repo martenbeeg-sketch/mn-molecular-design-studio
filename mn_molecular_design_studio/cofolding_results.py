@@ -48,6 +48,28 @@ def structure_for(run_dir: Path, candidate: dict) -> Path | None:
     return local_artifact(run_dir, candidate.get('complex_pdb') or raw.get('structure_file'))
 
 
+def viewer_structure(source: Path, scratch: Path) -> Path:
+    """Make a display-only copy when a predictor omits mmCIF occupancy."""
+    if source.suffix.lower() not in {'.cif', '.mmcif'}:
+        return source
+    import gemmi
+
+    document = gemmi.cif.read_file(str(source))
+    changed = False
+    for block in document:
+        atom_ids = block.find_loop('_atom_site.id')
+        if atom_ids and not block.find_loop('_atom_site.occupancy'):
+            atoms = block.get_mmcif_category('_atom_site.', raw=True)
+            atoms['occupancy'] = ['1.0'] * len(atom_ids)
+            block.set_mmcif_category('_atom_site.', atoms, raw=True)
+            changed = True
+    if not changed:
+        return source
+    destination = scratch / source.name
+    document.write_file(str(destination))
+    return destination
+
+
 def confidence_files(structure: Path) -> list[Path]:
     """Exact per-model sidecars for AF3, Boltz, EF2, Chai, Atlas, PX/DDE, RF3 and AF2."""
     stem = structure.stem

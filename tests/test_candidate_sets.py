@@ -39,7 +39,12 @@ def test_candidate_set_reads_complete_rfd4_native_filter_but_not_incomplete_deci
 
 @pytest.fixture
 def collection_harness(tmp_path, monkeypatch):
+    from importlib import import_module
     from mn_molecular_design_studio import workspace, cache_provenance, runtime
+    # Initialize API imports before mocking functions the API imports by name.
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", str(tmp_path / "studio"))
+    import_module("mn_molecular_design_studio.api")
     monkeypatch.setattr(workspace, "mark_studio_job", lambda *a, **k: None)
     monkeypatch.setattr(pg, "app_home", lambda: tmp_path / "home")
     monkeypatch.setattr(runtime, "runs_root", lambda: tmp_path / "children")

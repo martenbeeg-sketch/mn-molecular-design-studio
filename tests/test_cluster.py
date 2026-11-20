@@ -774,11 +774,17 @@ def test_reference_fingerprint_cache_skips_unchanged_weights_and_refreshes_chang
 
     monkeypatch.setattr(cache_provenance, "file_digest", counted_digest)
     cache = {}
+    assert capabilities.reference_fingerprints(["weights/model.pt"], cache, cached_only=True) == {}
+    assert digests == []
     first = capabilities.reference_fingerprints(["weights/model.pt"], cache)
     second = capabilities.reference_fingerprints(["weights/model.pt"], cache)
     assert first == second and len(digests) == 1
+    assert capabilities.reference_fingerprints(["weights/model.pt"], cache, cached_only=True) == first
+    assert len(digests) == 1
 
     weight.write_bytes(b"checkpoint-v2-with-new-size")
+    assert capabilities.reference_fingerprints(["weights/model.pt"], cache, cached_only=True) == {}
+    assert len(digests) == 1
     refreshed = capabilities.reference_fingerprints(["weights/model.pt"], cache)
     assert refreshed != first and len(digests) == 2
 
@@ -1005,24 +1011,35 @@ def test_input_staging_copies_only_inputs_and_keeps_runs_and_weights_in_place(cl
     (tmp_path / "pdb").mkdir()
     refs = tmp_path / "refs"; refs.mkdir(); weight = refs / "model.pt"; weight.write_bytes(b"weights")
     structure = tmp_path / "target.pdb"; structure.write_text("TARGET")
+    ligand = tmp_path / "ligand.sdf"; ligand.write_bytes(b"SDF")
+    pharmacophore = tmp_path / "pharmacophore.posp"; pharmacophore.write_bytes(b"PHARMACOPHORE")
+    motif = refs / "motif.cif"; motif.write_bytes(b"MOTIF")
     monkeypatch.setattr(runtime, "runs_root", lambda: run_root)
     monkeypatch.setattr(runtime, "reference_root", lambda: refs)
     from mn_molecular_design_studio.engine.workflow_engine.core import portable_paths
     monkeypatch.setattr(portable_paths, "runs_root", lambda: run_root)
     monkeypatch.setattr(portable_paths, "reference_root", lambda: refs)
-    prepared, digest, references = bundles.pack({"parameters": {"target_pdb": str(structure), "source_run_dir": str(run), "checkpoint_path": str(weight), "engine_options": {"output_format": "pdb"}}},
-                                               base_dir=tmp_path, node_id=nodes[0]["node_id"])
+    prepared, digest, references = bundles.pack({"parameters": {
+        "target_pdb": str(structure), "source_run_dir": str(run), "checkpoint_path": str(weight),
+        "ligand_sdf": str(ligand), "reference_ligand_sdf": str(ligand),
+        "pharmacophore_posp": str(pharmacophore), "mimosa_complex": str(motif),
+        "engine_options": {"output_format": "pdb"},
+    }}, base_dir=tmp_path, node_id=nodes[0]["node_id"])
     assert prepared["parameters"]["target_pdb"].startswith("cluster-input:///")
     assert prepared["parameters"]["source_run_dir"].startswith("cluster://")
     assert prepared["parameters"]["checkpoint_path"] == "reference:///model.pt"
     assert prepared["parameters"]["engine_options"]["output_format"] == "pdb"
     assert references == ["model.pt"]
     with zipfile.ZipFile(bundles.blob_path(digest)) as archive:
-        assert len(archive.namelist()) == 1
+        assert len(archive.namelist()) == 4
     destination = tmp_path / "staged"
     bundles.unpack(bundles.blob_path(digest), destination, expected_digest=digest)
     restored = bundles.restore(prepared, staging=destination, node_id=nodes[0]["node_id"])
     assert Path(restored["parameters"]["target_pdb"]).read_text() == "TARGET"
+    assert Path(restored["parameters"]["ligand_sdf"]).read_bytes() == b"SDF"
+    assert restored["parameters"]["reference_ligand_sdf"] == restored["parameters"]["ligand_sdf"]
+    assert Path(restored["parameters"]["pharmacophore_posp"]).read_bytes() == b"PHARMACOPHORE"
+    assert Path(restored["parameters"]["mimosa_complex"]).read_bytes() == b"MOTIF"
     assert restored["parameters"]["source_run_dir"] == str(run)
 
 

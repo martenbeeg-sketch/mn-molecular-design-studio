@@ -58,7 +58,10 @@ def test_analysis_tools_have_batch_api_schemas_and_pipeline_adapters(tool, tmp_p
 def test_collection_is_one_container_and_keeps_failed_rows(tmp_path, monkeypatch, design_source_factory):
     source, first = design_source_factory()
     candidate_path = source / "artifacts/normalized_candidates/candidates.jsonl"
-    candidate_path.write_text(json.dumps(first) + "\n" + json.dumps({**first, "candidate_id": "second"}) + "\n")
+    first = {**first, "binder_sequence": None, "binder_chains": [], "raw_metadata": {**first["raw_metadata"],
+        "protein_chains": [{"id": "A", "sequence": "MKKKK"}, {"id": "B", "sequence": "ACDEF"}]}}
+    second = {**first, "candidate_id": "second", "binder_sequence": "ACDX"}
+    candidate_path.write_text(json.dumps(first) + "\n" + json.dumps(second) + "\n")
     run = tmp_path / "analysis/job"
     run.mkdir(parents=True)
     monkeypatch.setattr(quality, "_analysis_job", lambda *a, **k: SimpleNamespace(run_dir=run))
@@ -76,12 +79,13 @@ def test_collection_is_one_container_and_keeps_failed_rows(tmp_path, monkeypatch
             {"id": "item_000001", "status": "failed", "metrics": {}, "error": "unknown residues"}]}))
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(quality.subprocess, "run", fake)
-    assert quality.run_sequence_qc(source, candidate_path) == run
+    assert quality.run_sequence_qc(source, candidate_path, binder_chains=["B"]) == run
     assert len(commands) == 1
     assert "--network" in commands[0]
     assert "sha256:test" in commands[0]  # Run the inspected immutable image, even if its tag moves.
     manifest = json.loads((run / "artifacts/analysis/batch_manifest.json").read_text())
     assert len(manifest["items"]) == 2
+    assert [item["sequence"] for item in manifest["items"]] == ["ACDEF", "ACDX"]
     assert manifest["settings"]["workers"] == 2
     summary = json.loads((run / "artifacts/analysis/qc_summary.json").read_text())
     assert summary["completed_count"] == summary["failed_count"] == 1

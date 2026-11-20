@@ -84,6 +84,38 @@ def test_legacy_reference_repository_is_reused_and_copied_to_canonical_cache(tmp
     assert cache_path(reference).read_text() == ALIGNMENT
 
 
+@pytest.mark.parametrize("saved_query", [SEQUENCE, "VVVVVVVVV"])
+def test_legacy_target_preparation_reuses_exact_cache_or_uses_the_colabfold_client(
+    tmp_path, reference, monkeypatch, saved_query,
+):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import target_msa
+
+    monkeypatch.setattr(target_msa, "reference_root", lambda: reference)
+    host, container = target_msa.boltz_msa_paths(SEQUENCE)
+    host.parent.mkdir(parents=True)
+    host.write_text(ALIGNMENT.replace(SEQUENCE, saved_query))
+    calls = []
+    monkeypatch.setattr(msa, "fetch_colabfold", lambda *args: calls.append(args) or ALIGNMENT)
+    run = tmp_path / "target-job"
+    assert target_msa.ensure_boltz_msa_for_sequence(run, SEQUENCE, "target_A") == container
+    assert host.read_text() == ALIGNMENT
+    assert len(calls) == int(saved_query != SEQUENCE)
+    manifest = json.loads((run / "artifacts/raw/cofolding_msa/manifest.json").read_text())
+    assert manifest["alignments"][0]["source"] == ("reference_cache" if saved_query == SEQUENCE else "colabfold_server")
+
+
+@pytest.mark.parametrize("workflow_id", ["refolding.af3_jax_cofolding", "refolding.esmfold2_cofolding"])
+def test_legacy_msa_request_values_resolve_to_colabfold_server(tmp_path, workflow_id):
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
+
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps({"schema_version": 1, "workflow": workflow_id, "parameters": {
+        "protein_sequences": SEQUENCE, "msa_source": "local_mmseqs_gpu",
+    }}))
+    validated = workflow_automation.validate_workflow_request(request)
+    assert validated["parameters"]["msa_source"] == "reference_then_colabfold"
+
+
 def native_args(engine):
     return dict(profile=workflow.ENGINE_PROFILES[engine], item_id='complex1', job_name='example',
                 proteins=[{'id': 'A', 'sequence': SEQUENCE}], dna=[], rna=[], ligand_ccd_codes=[], ligand_smiles=[],
@@ -201,14 +233,16 @@ def test_mol1_native_confidence_and_pae_are_preserved_as_measured(tmp_path):
         'token_pair_pae': [[0.1, 4.0], [6.0, 0.2]], 'token_asym_id': [0, 1],
     }))
     task = {'proteins': [{'id': 'A'}, {'id': 'B'}], 'molecule_chain_options': {}}
-    pae_path = workflow._mol1_pae_path(structure, task)
-    assert pae_path == tmp_path / 'complex_sample_0_pae.json'
+    evidence = tmp_path / 'derived_evidence'
+    pae_path = workflow._mol1_pae_path(structure, task, evidence)
+    assert pae_path == evidence / 'complex_sample_0_pae.json'
+    assert not structure.with_name('complex_sample_0_pae.json').exists()
     payload = json.loads(pae_path.read_text())
     assert payload['source'] == 'Mol-1 token_pair_pae'
     assert _pae_matrix_from_json(pae_path) == [[0.1, 4.0], [6.0, 0.2]]
     assert workflow._mean_plddt(structure) == pytest.approx(76.5)
     assert workflow._mean_plddt(structure, ['B']) == pytest.approx(72.0)
-    assert workflow._mol1_pae_path(structure, {'proteins': [{'id': 'B'}, {'id': 'A'}]}) is None
+    assert workflow._mol1_pae_path(structure, {'proteins': [{'id': 'B'}, {'id': 'A'}]}, evidence) is None
 
 
 def test_historical_single_sequence_job_explains_why_there_is_no_alignment(tmp_path):

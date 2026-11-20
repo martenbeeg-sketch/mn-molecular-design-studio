@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -94,6 +95,15 @@ def _terms_acceptance_path() -> Path:
     return _studio_home() / 'localfold_terms_acceptance.json'
 
 
+def _accepted_terms_users(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    users = payload.get('users') if isinstance(payload, dict) else None
+    return users if isinstance(users, dict) else {}
+
+
 def record_terms_acceptance(user_id: str, models, *, accepted_at: str | None = None) -> Path:
     """Persist explicit per-user acceptance for the exact reviewed term versions."""
     user_id = str(user_id or '').strip()
@@ -103,67 +113,70 @@ def record_terms_acceptance(user_id: str, models, *, accepted_at: str | None = N
     if not selected or set(selected) - set(TERMS_VERSIONS):
         raise ValueError('Choose AlphaFold 3 and/or HelixFold3 terms to record.')
     path = _terms_acceptance_path()
-    try:
-        payload = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-    users = payload.get('users')
-    users = users if isinstance(users, dict) else {}
-    user_record = users.get(user_id)
-    user_record = user_record if isinstance(user_record, dict) else {}
-    recorded_at = accepted_at or datetime.now(timezone.utc).isoformat(timespec='seconds')
-    for model in selected:
-        user_record[model] = {
-            'terms_version': copy.deepcopy(TERMS_VERSIONS[model]),
-            'accepted_at': recorded_at,
-            'assertion': 'User confirmed review and acceptance, and confirmed this use complies with the terms.',
-        }
-    users[user_id] = user_record
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(path.suffix + '.tmp')
-    temporary_path.write_text(json.dumps({'schema_version': 1, 'users': users}, indent=2), encoding='utf-8')
-    temporary_path.replace(path)
+    with path.with_suffix('.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        users = _accepted_terms_users(path)
+        user_record = users.get(user_id)
+        user_record = user_record if isinstance(user_record, dict) else {}
+        recorded_at = accepted_at or datetime.now(timezone.utc).isoformat(timespec='seconds')
+        for model in selected:
+            user_record[model] = {
+                'terms_version': copy.deepcopy(TERMS_VERSIONS[model]),
+                'accepted_at': recorded_at,
+                'assertion': 'User confirmed review and acceptance, and confirmed this use complies with the terms.',
+            }
+        users[user_id] = user_record
+        temporary_path = path.with_suffix(path.suffix + '.tmp')
+        temporary_path.write_text(json.dumps({'schema_version': 1, 'users': users}, indent=2), encoding='utf-8')
+        temporary_path.replace(path)
     return path
 
 
-def apply_user_terms_acceptance(request_payload: dict, *, user_id: str) -> dict:
-    """Apply a saved acknowledgment to LocalFold API requests and save new opt-ins."""
-    result = copy.deepcopy(request_payload)
-    if result.get('workflow') != 'refolding.optimized_prediction':
-        return result
-    parameters = result.get('parameters')
-    if not isinstance(parameters, dict) or parameters.get('engine') != 'localfold':
-        return result
-    options = parameters.get('engine_options')
-    if not isinstance(options, dict):
-        options = {}
-        parameters['engine_options'] = options
-    model = str(options.get('model') or 'alphafold3')
+def has_terms_acceptance(user_id: str, model: str) -> bool:
     if model not in TERMS_VERSIONS:
-        return result
-
-    path = _terms_acceptance_path()
-    try:
-        payload = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
-        payload = {}
-    users = payload.get('users') if isinstance(payload, dict) else {}
-    user_record = users.get(str(user_id or '')) if isinstance(users, dict) else None
+        return False
+    user_record = _accepted_terms_users(_terms_acceptance_path()).get(str(user_id or ''))
     saved = user_record.get(model) if isinstance(user_record, dict) else None
-    accepted = isinstance(saved, dict) and saved.get('terms_version') == TERMS_VERSIONS[model]
+    return isinstance(saved, dict) and saved.get('terms_version') == TERMS_VERSIONS[model]
 
-    if model == 'alphafold3':
-        if parameters.get('accept_alphafold3_terms') is True and not accepted:
+
+def _terms_settings(workflow: str, parameters: object) -> tuple[str, dict] | None:
+    if not isinstance(parameters, dict):
+        return None
+    if workflow == 'refolding.af3_jax_cofolding':
+        if parameters.get('model_name', 'alphafold3') == 'alphafold3':
+            return 'alphafold3', parameters
+    elif workflow == 'refolding.optimized_prediction' and parameters.get('engine') in ('alphafold3', 'localfold'):
+        options = parameters.get('engine_options')
+        options = options if isinstance(options, dict) else {}
+        model = str(options.get('model') or 'alphafold3')
+        if model == 'alphafold3':
+            return model, parameters
+        if model == 'helixfold3' and parameters['engine'] == 'localfold':
+            return model, options
+    return None
+
+
+def apply_user_terms_acceptance(request_payload: dict, *, user_id: str) -> dict:
+    """Apply the authenticated user's saved acknowledgment to an official model."""
+    result = copy.deepcopy(request_payload)
+    parameters = result.get('parameters')
+    items = parameters if isinstance(parameters, list) else [parameters]
+    settings_by_model = {}
+    for item in items:
+        terms = _terms_settings(result.get('workflow', ''), item)
+        if terms is not None:
+            model, settings = terms
+            settings_by_model.setdefault(model, []).append(settings)
+    for model, settings_items in settings_by_model.items():
+        flag = f'accept_{model}_terms'
+        if not has_terms_acceptance(user_id, model):
+            if not any(settings.get(flag) is True for settings in settings_items):
+                continue
             record_terms_acceptance(user_id, (model,))
-        elif accepted:
-            parameters['accept_alphafold3_terms'] = True
-    elif model == 'helixfold3':
-        if options.get('accept_helixfold3_terms') is True and not accepted:
-            record_terms_acceptance(user_id, (model,))
-        elif accepted:
-            options['accept_helixfold3_terms'] = True
+        for settings in settings_items:
+            settings[flag] = True
     return result
 # Keep the website's choices together and identify the JAX fork's additions.
 UI_MODEL_KEYS = tuple(dict.fromkeys(
@@ -296,7 +309,7 @@ SETTINGS = (
             tuple((key, model['label']) for key, model in MODELS.items())),
     dict(key='seed', label='Seed (0 for random)', default=0, min=0, max=2**31 - 1),
     _select('msa_mode', 'Alignment', 'automatic',
-            (('automatic', 'Automatic · reuse cache, then MMseqs2'), ('reference_only', 'Reference files only'),
+            (('automatic', 'Saved alignment, then ColabFold server'), ('reference_only', 'Reference files only'),
              ('single_sequence', 'Single sequence'))),
     dict(key='max_msa_seqs', label='Maximum MSA sequences', default=128, min=1, max=16384, step=1,
          help='Maximum MSA rows passed to the selected model. The model-specific default is selected with the model.'),

@@ -293,23 +293,31 @@ render_workflow_results_summary({str(run)!r})
 @pytest.mark.parametrize('mode', wm.MODES)
 def test_modes_through_normal_api_save_validate(pdl1_harness, monkeypatch, mode):
     from fastapi.testclient import TestClient
-    from mn_molecular_design_studio import api
+    from mn_molecular_design_studio import api, auth, workspace
     h = pdl1_harness
     graph = configured(h, mode, 2)
     monkeypatch.setenv('MDS_CLUSTER_HOME', str(h.tmp_path / 'cluster'))
+    admin = auth.create_initial_admin('pipeline-admin', 'Pipeline admin', 'test-admin-password')
+    operator = auth.create_user('pipeline-operator', 'Pipeline operator', 'test-operator-password', actor=admin)
+    owner = operator['id']
+    project_id = workspace.create_project('Pipeline modes', owner_id=owner)['id']
+    auth.grant_project_access(project_id, owner, actor=admin)
+    retained = Path(graph['nodes'][1]['data']['retained_run_dir']) / 'molecular_design_studio.json'
+    write_json(retained, {'project_id': project_id, 'studio_owner_id': owner})
     monkeypatch.setattr(api, '_request_payload_and_project', lambda payload, user: ({k:v for k,v in payload.items() if k != 'project_id'}, payload['project_id']))
     monkeypatch.setattr(api, '_validate_user_path_values', lambda *a, **k: None)
     monkeypatch.setattr(api, '_guard_source_job', lambda *a, **k: None)
     monkeypatch.setattr(api, '_resolve_api_job', lambda *a, **k: {'run_dir': graph['nodes'][1]['data']['retained_run_dir']})
-    api.app.dependency_overrides[api._current_user] = lambda: {'id': 'f'*32, 'role': 'user'}
+    api.app.dependency_overrides[api._current_user] = lambda: operator
     try:
         with TestClient(api.app) as client:
-            payload = dict(project_id='project', graph=graph, version=True)
+            payload = dict(project_id=project_id, graph=graph, version=True)
             saved = client.post('/api/v1/pipelines/save', json=payload)
             assert saved.status_code == 200, saved.text
-            loaded = client.get('/api/v1/pipelines', params={'project_id':'project'})
+            loaded = client.get('/api/v1/pipelines', params={'project_id':project_id})
+            assert loaded.status_code == 200, loaded.text
             assert loaded.json()[0]['graph']['workflow_mode'] == mode
-            response = client.post('/api/v1/pipelines/validate', json=dict(project_id='project', graph=graph))
+            response = client.post('/api/v1/pipelines/validate', json=dict(project_id=project_id, graph=graph))
             assert response.status_code == 200, response.text
             assert response.json()['valid'] is True
             catalog = client.get('/api/v1/pipelines/catalog').json()

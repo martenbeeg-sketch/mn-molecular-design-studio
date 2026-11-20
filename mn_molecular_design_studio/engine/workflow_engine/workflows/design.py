@@ -22,6 +22,7 @@ from mn_molecular_design_studio.engine.workflow_engine.core.candidates import (
     read_candidates,
     write_candidates,
 )
+from mn_molecular_design_studio.engine.workflow_engine.core.docker_runner import docker_host_user_args
 from mn_molecular_design_studio.engine.workflow_engine.core.gpu import docker_gpu_args, normalize_gpu_device
 from mn_molecular_design_studio.engine.workflow_engine.core.hotspot_metrics import (
     calculate_hotspot_metrics,
@@ -37,6 +38,7 @@ from mn_molecular_design_studio.engine.workflow_engine.core.structures import (
 )
 from mn_molecular_design_studio.engine.workflow_engine.runtime import reference_root
 from mn_molecular_design_studio.engine.workflow_engine.workflows.target_msa import (
+    boltz_msa_repository,
     ensure_boltz_msas_for_target as _shared_ensure_boltz_msas_for_target,
     ensure_pxdesign_msa_dirs_for_target,
 )
@@ -3457,7 +3459,7 @@ def run_rfdiffusion3_foundry(
         "-v",
         "/mnt/db/reference_files/foundry:/weights:ro",
         "-v",
-        "/mnt/db/reference_files/boltz_models/msa_repository:/msa_repository:ro",
+        f"{boltz_msa_repository()}:/msa_repository:ro",
         "-w",
         "/work",
         manifest["image"],
@@ -3555,7 +3557,7 @@ def run_rfdiffusion3_foundry(
                         "-v",
                         "/mnt/db/reference_files/foundry:/weights:ro",
                         "-v",
-                        "/mnt/db/reference_files/boltz_models/msa_repository:/msa_repository:ro",
+                        f"{boltz_msa_repository()}:/msa_repository:ro",
                         "-w",
                         "/work",
                         manifest["image"],
@@ -4180,16 +4182,21 @@ def run_boltzgen(
         + (mimosa_split_pipeline if mimosa_split_pipeline else f"{run_args}; ")
         + f"{output_check}"
     )
+    # Generation-only BoltzGen writes private archives in the run directory.
+    # Run as the worker so it can read them after rootful Docker exits.
+    user_args = docker_host_user_args() if not run_vanilla_pipeline else []
     command = [
         "docker",
         "run",
         "--rm",
         *docker_gpu_args(gpu_device),
+        *user_args,
+        *(["-e", "HOME=/work"] if user_args else []),
         "--shm-size=64G",
         "--entrypoint",
         "/bin/bash",
         "-v",
-        "/mnt/db/reference_files/boltzgen-cache:/cache",
+        f"{reference_root() / 'boltzgen-cache'}:/cache",
         "-v",
         f"{job.run_dir}:/work",
         "-w",
@@ -4394,7 +4401,7 @@ def run_genie3(
         "-v",
         f"{_BOLTZ_CACHE_DIR}:/cache",
         "-v",
-        f"{_BOLTZ_MSA_REPOSITORY_DIR}:/msa_repository:ro",
+        f"{boltz_msa_repository()}:/msa_repository:ro",
         "-e",
         "GENIE3_COLABFOLD_DATA_DIR=/alphafold_models",
         "-e",

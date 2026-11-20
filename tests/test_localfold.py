@@ -51,6 +51,44 @@ def test_official_weight_terms_are_conditional():
         prediction._prepare_prediction(engine='localfold', protein_sequences='ACDEFG', samples=1)
 
 
+def test_official_weight_acknowledgment_is_reused_across_prediction_tiles(tmp_path, monkeypatch):
+    monkeypatch.setattr(localfold, '_terms_acceptance_path', lambda: tmp_path / 'acceptance.json')
+    official = {'workflow': 'refolding.optimized_prediction', 'parameters': {'engine': 'alphafold3'}}
+    flag = 'accept_alphafold3_terms'
+    assert flag not in localfold.apply_user_terms_acceptance(official, user_id='instructor')['parameters']
+    localfold.apply_user_terms_acceptance(
+        {**official, 'parameters': {**official['parameters'], flag: True}}, user_id='instructor',
+    )
+    cofolding = {'workflow': 'refolding.af3_jax_cofolding', 'parameters': {'model_name': 'alphafold3'}}
+    local = {'workflow': 'refolding.optimized_prediction', 'parameters': {'engine': 'localfold'}}
+    for request in (official, cofolding, local):
+        assert localfold.apply_user_terms_acceptance(request, user_id='instructor')['parameters'][flag] is True
+        assert flag not in localfold.apply_user_terms_acceptance(request, user_id='student')['parameters']
+        assert flag not in request['parameters']
+    openfold = {**cofolding, 'parameters': {'model_name': 'openfold3'}}
+    assert localfold.apply_user_terms_acceptance(openfold, user_id='instructor') == openfold
+    batch = {**official, 'parameters': [
+        {'engine': 'alphafold3'},
+        {'engine': 'alphafold3', flag: True},
+        {'engine': 'alphafold3', 'engine_options': {'model': 'openfold3'}},
+    ]}
+    first, second, third = localfold.apply_user_terms_acceptance(batch, user_id='student')['parameters']
+    assert first[flag] is second[flag] is True
+    assert flag not in third
+
+    monkeypatch.setitem(localfold.TERMS_VERSIONS, 'alphafold3', {'label': 'Different terms'})
+    assert flag not in localfold.apply_user_terms_acceptance(official, user_id='instructor')['parameters']
+
+
+def test_editor_acknowledgment_only_removes_the_official_af3_prompt():
+    unacknowledged = cofolding_input._localfold_editor_profiles(False)
+    acknowledged = cofolding_input._localfold_editor_profiles(True)
+    assert 'accept_terms' in {field['key'] for field in unacknowledged['alphafold3']['prediction']['fields']}
+    assert 'accept_terms' not in {field['key'] for field in acknowledged['alphafold3']['prediction']['fields']}
+    assert unacknowledged['helixfold3'] == acknowledged['helixfold3']
+    assert unacknowledged['openfold3'] == acknowledged['openfold3']
+
+
 def test_omitted_sample_count_uses_model_default_for_af2():
     value = prediction._prepare_prediction(
         engine='localfold', protein_sequences='ACDEFG', seed=42,

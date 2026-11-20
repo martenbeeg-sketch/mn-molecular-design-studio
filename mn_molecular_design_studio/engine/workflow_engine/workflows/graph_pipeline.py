@@ -2161,14 +2161,16 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         from mn_molecular_design_studio.engine.workflow_engine.core.candidates import write_candidates
         candidates=[]
         surface_analyses=[]
-        seen_surface_runs=set()
+        md_analyses=[]
+        seen_analysis_runs=set()
         for node_id, output in outputs.items():
             analyses = [*(output.get("analysis_runs") or []), *([output["analysis_run"]] if output.get("analysis_run") else [])]
             for analysis in analyses:
                 identity = (str(analysis.get("task_group") or "detection"), str(analysis.get("run_id") or analysis.get("run_dir") or ""))
-                if identity not in seen_surface_runs:
-                    seen_surface_runs.add(identity)
-                    surface_analyses.append(analysis)
+                if identity not in seen_analysis_runs:
+                    seen_analysis_runs.add(identity)
+                    destination = md_analyses if analysis.get("kind") == "md_analysis" else surface_analyses
+                    destination.append(analysis)
             if nodes[node_id]["data"]["kind"] != "results":
                 continue
             ancestors = ancestors_of(node_id)
@@ -2228,9 +2230,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
             workflow_summary["shared_campaign"] = shared_summary
             state["shared_campaign"] = shared_summary
             persist()
-        finish_job(parent, success, {"outputs": {"workflow_summary": workflow_summary, "candidates": candidates, "surface_analyses": surface_analyses, "pipeline_nodes": node_states,
+        finish_job(parent, success, {"outputs": {"workflow_summary": workflow_summary, "candidates": candidates, "surface_analyses": surface_analyses, "md_analyses": md_analyses, "pipeline_nodes": node_states,
                     "comparison_status": comparison_status, "successful_result_nodes": successful_results,
-                    **({"shared_campaign": shared_summary} if shared_summary else {})}, "metrics": {"candidate_count": len(candidates), "surface_analysis_count": len(surface_analyses), "node_count": len(nodes), "cached_steps": sum(v.get("status")=="cached" for v in node_states.values()), "failed_steps": len(failures),
+                    **({"shared_campaign": shared_summary} if shared_summary else {})}, "metrics": {"candidate_count": len(candidates), "surface_analysis_count": len(surface_analyses), "md_analysis_count": len(md_analyses), "node_count": len(nodes), "cached_steps": sum(v.get("status")=="cached" for v in node_states.values()), "failed_steps": len(failures),
                     **({"shared_unique_accepted": shared_summary["unique_accepted"], "shared_accepted_target": shared_summary["accepted_target"]} if shared_summary and shared_summary.get('objective_type') == 'accepted' else {}),
                     **({"shared_generated_designs": shared_summary["generated_designs"], "shared_generated_target": shared_summary["generated_target"]} if shared_summary and shared_summary.get('objective_type') == 'generated' else {})}, "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl", "graph_snapshot": "graph_snapshot.json", "graph_execution": "graph_execution.json",
                     **({"shared_campaign_ledger": "artifacts/shared_campaign/ledger.json"} if shared_summary else {})}})

@@ -654,6 +654,7 @@ for _engine, _profile in _optimized_prediction.ENGINE_PROFILES.items():
         | ({'smiles'} if 'ligand_smiles' in _ligand_inputs else set())
     )
     NODE_CATALOG[_kind]['requires_target_structure'] = bool(_profile.get('requires_target_template'))
+    NODE_CATALOG[_kind]['engine_profile'] = _engine
     OPTIMIZED_PREDICTION_NODE_ENGINES[_kind] = _engine
 
 for _kind in ('rf3', 'boltz2', 'af3', 'af2', 'protenix'):
@@ -661,6 +662,7 @@ for _kind in ('rf3', 'boltz2', 'af3', 'af2', 'protenix'):
 NODE_CATALOG['esmfold']['replacement_group'] = 'monomer_prediction'
 for _kind, _engine in {'rf3': 'rf3_foundry', 'boltz2': 'boltz2', 'af3': 'alphafold3'}.items():
     _profile = _optimized_prediction.ENGINE_PROFILES[_engine]
+    NODE_CATALOG[_kind]['engine_profile'] = _engine
     NODE_CATALOG[_kind]['molecule_tasks'] = sorted(_prediction_task_support(_engine, _profile))
     _ligand_inputs = set(_profile.get('molecule_inputs', ()))
     NODE_CATALOG[_kind]['ligand_input_formats'] = sorted(
@@ -2576,6 +2578,10 @@ def capability_contract(kind: str, spec: dict | None = None) -> dict:
     }
 
 
+def matching_artifact_type(output: dict, input_port: dict) -> str | None:
+    return min(set(output["artifact_types"]) & set(input_port["artifact_types"]), default=None)
+
+
 def connection_compatibility(source_kind: str, target_kind: str, *, source_handle: str = "out", target_handle: str = "in") -> dict:
     """Explain compatibility using the ports exposed by registered contracts."""
     if source_kind not in NODE_CATALOG or target_kind not in NODE_CATALOG:
@@ -2586,11 +2592,11 @@ def connection_compatibility(source_kind: str, target_kind: str, *, source_handl
     input_port = next((item for item in target["inputs"] if item["id"] == target_handle), None)
     if output is None or input_port is None:
         return {"compatible": False, "reason": "The selected connection port is not declared by its operation."}
+    artifact_type = matching_artifact_type(output, input_port)
+    if artifact_type:
+        return {"compatible": True, "artifact_type": artifact_type, "reason": "Compatible scientific artifact types."}
     produced = output["artifact_types"]
     accepted = input_port["artifact_types"]
-    shared = sorted(set(produced) & set(accepted))
-    if shared:
-        return {"compatible": True, "artifact_type": shared[0], "reason": "Compatible scientific artifact types."}
     return {"compatible": False, "reason": (
         f"{source['operation']} outputs {', '.join(produced) or 'no artifacts'} on {output['label']}; "
         f"{target['operation']} accepts {', '.join(accepted) or 'no artifacts'} on {input_port['label']}."

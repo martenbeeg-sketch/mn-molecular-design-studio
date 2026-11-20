@@ -67,6 +67,41 @@ def test_study_scanner_maps_exact_legacy_paths_and_preserves_segment_lineage(tmp
     assert "Ligand A" in option["label"] and "pose-7" in option["label"]
 
 
+def test_native_engine_report_selects_only_its_production_trajectory_and_system_topology(tmp_path):
+    source = tmp_path / "openmm-run"
+    production = _write(source / "artifacts/md/production.dcd", b"production")
+    topology = _write(source / "artifacts/md/system.pdb", b"solvated system")
+    _write(source / "artifacts/md/nvt.dcd", b"equilibration")
+    _write(source / "artifacts/md/protein_only.pdb", b"different atom count")
+    report = source / "artifacts/md/result.json"
+    _write(report, {"success": True, "md_result": {"output_files": {
+        "production_trajectory": "/work/artifacts/md/production.dcd",
+        "system_pdb": "/work/artifacts/md/system.pdb",
+        "protein_prepared": "/work/artifacts/md/protein_only.pdb",
+    }}})
+    entries = md_analysis_ui._source_options_for_job({"run_dir": str(source)})
+    assert [entry["trajectory_path"] for entry in entries] == [production]
+    assert entries[0]["topology_paths"] == [topology]
+    assert entries[0]["source_result_path"] == "artifacts/md/result.json"
+    production.unlink()
+    assert md_analysis_ui._source_options_for_job({"run_dir": str(source)}) == []
+
+
+def test_gromacs_source_uses_bonded_system_topology_for_md_analysis(tmp_path):
+    source = tmp_path / "gromacs-run"
+    production = _write(source / "artifacts/md/production_whole.xtc", b"trajectory")
+    _write(source / "artifacts/md/production.pdb", b"coordinates without ligand bonds")
+    amber = _write(source / "artifacts/md/preparation/complex.prmtop", b"bonded solvated topology")
+    _write(source / "artifacts/md/result.json", {"engine": "GROMACS", "success": True,
+        "output_files": {"production_trajectory": "/work/artifacts/md/production_whole.xtc",
+                         "production_pdb": "/work/artifacts/md/production.pdb"},
+        "preparation": {"output_files": {"amber_complex_prmtop": "/work/artifacts/md/preparation/complex.prmtop"}},
+    })
+    options = md_analysis_ui._source_options_for_job({"run_dir": str(source)})
+    assert [option["trajectory_path"] for option in options] == [production]
+    assert options[0]["topology_paths"] == [amber]
+
+
 def test_unrecorded_duration_stays_unknown_instead_of_using_target_duration():
     segment = md_analysis_ui._segment_record(
         "run-2", {"target_duration_ns": 100.0, "previous_duration_ns": 1.0}, {}

@@ -22,7 +22,6 @@ from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
     write_json,
 )
 from mn_molecular_design_studio.engine.workflow_engine.runtime import reference_root
-from mn_molecular_design_studio.engine.workflow_engine.workflows import target_msa as target_msa_workflow
 from mn_molecular_design_studio.engine.workflow_engine.workflows.esmfold2_runtime import stage_esmfold2_msa
 
 
@@ -275,7 +274,7 @@ def run_esmfold2_cofolding(
     protein_sequences: str,
     job_name: str = "esmfold2-cofold",
     model_variant: Literal["full", "fast"] = "full",
-    msa_source: Literal["auto", "reference_then_colabfold", "single_sequence", "local_mmseqs_gpu", "boltz_msa_server"] = "auto",
+    msa_source: Literal["auto", "reference_then_colabfold", "single_sequence"] = "auto",
     optimization_mode: Literal["off", "exact", "fast", "big"] = "off",
     seeds: list[int] | None = None,
     num_diffusion_samples: int = 5,
@@ -285,6 +284,7 @@ def run_esmfold2_cofolding(
     gpu_device: str = "0",
 ) -> Path:
     """Run the optimized Biohub ESMFold2 image on one multichain sequence input."""
+    msa_source = cofolding_msa.normalize_msa_source(msa_source)
     if msa_source == "auto":
         msa_source = "single_sequence" if model_variant == "fast" else "reference_then_colabfold"
     requested_seeds = [int(seed) for seed in (seeds or [0])]
@@ -331,8 +331,8 @@ def run_esmfold2_cofolding(
     try:
         if model_variant not in {"full", "fast"}:
             raise ValueError("Choose the ESMFold2 Full or ESMFold2 Fast model.")
-        if msa_source not in {"reference_then_colabfold", "single_sequence", "local_mmseqs_gpu", "boltz_msa_server"}:
-            raise ValueError("Choose single-sequence input, local MMseqs GPU, or the Boltz MSA server.")
+        if msa_source not in {"reference_then_colabfold", "single_sequence"}:
+            raise ValueError("Choose single-sequence input or reference MSAs with ColabFold server fallback.")
         if model_variant == "fast" and msa_source != "single_sequence":
             raise ValueError("ESMFold2 Fast is sequence-only and cannot use an MSA source.")
         if optimization_mode not in {"off", "exact", "fast", "big"}:
@@ -365,15 +365,8 @@ def run_esmfold2_cofolding(
         if msa_source != "single_sequence":
             msa_dir.mkdir(parents=True, exist_ok=True)
             for chain in chains:
-                supplied = ''
-                if msa_source == "local_mmseqs_gpu" and cofolding_msa.find_reference(chain["sequence"]) is None:
-                    target_msa_workflow.ensure_boltz_msa_for_sequence(
-                        job.run_dir, chain["sequence"], f"esmfold2_chain_{chain['id']}",
-                        raw_subdir=f"{TOOL_NAME}/msa", gpu_device=gpu_ids[0], msa_source="alphafast_mmseqs_gpu")
-                    source_msa, _ = target_msa_workflow.boltz_msa_paths(chain["sequence"])
-                    supplied = source_msa.read_text()
                 staged = cofolding_msa.prepare_chain(job.run_dir, chain["sequence"], chain["id"],
-                                                     depth=int(msa_max_depth), supplied=supplied, supplied_source="local_mmseqs_gpu")
+                                                     depth=int(msa_max_depth))
                 destination = msa_dir / f"chain_{chain['id']}.a3m"
                 destination.write_text(staged.read_text())
                 chain["msa"] = destination.relative_to(input_dir).as_posix()

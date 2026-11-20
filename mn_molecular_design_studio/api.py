@@ -7,7 +7,7 @@ import os
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, Callable, Literal
 
 from mn_molecular_design_studio.workspace import ensure_studio_workspace, mark_studio_job, validate_project_id
 
@@ -301,8 +301,8 @@ def _validate_user_path_values(value: Any, user: dict[str, Any], request_dir: Pa
         or raw.startswith(".")
         or "/" in raw
         or "\\" in raw
-        or Path(raw).suffix.casefold() in {".a3m", ".cif", ".csv", ".fa", ".fasta", ".json", ".jsonl", ".mmcif", ".msa", ".pdb", ".tsv", ".yaml", ".yml", ".zip"}
-        or key.casefold().endswith(("_path", "_file", "_dir", "_directory", "_root", "_folder", "_pdb", "_cif", "_mmcif", "_fasta", "_fa", "_json", "_jsonl", "_csv", "_tsv", "_yaml", "_yml", "_a3m", "_msa", "_weights", "_repository", "_table"))
+        or Path(raw).suffix.casefold() in {".a3m", ".cif", ".csv", ".fa", ".fasta", ".json", ".jsonl", ".mmcif", ".msa", ".pdb", ".posp", ".sdf", ".tsv", ".yaml", ".yml", ".zip"}
+        or key.casefold().endswith(("_path", "_file", "_dir", "_directory", "_root", "_folder", "_pdb", "_cif", "_mmcif", "_fasta", "_fa", "_json", "_jsonl", "_csv", "_tsv", "_yaml", "_yml", "_a3m", "_msa", "_posp", "_sdf", "_weights", "_repository", "_table"))
     )
     if not path_like:
         return
@@ -670,6 +670,24 @@ def update_password(
 @app.get("/api/v1/workflows")
 def get_workflows(category: str | None = None, user: dict[str, Any] = Depends(_current_user)) -> list[dict[str, Any]]:
     return _call(workflow_catalog, category=category)
+
+
+@app.get("/api/v1/workflows/connections")
+def get_tool_connections(
+    view: Literal["tiles", "workflows", "operations", "connections", "handoffs"] = "tiles",
+    query: str = "",
+    operation: str = "",
+    direction: Literal["both", "incoming", "outgoing"] = "both",
+    artifact_type: str = "",
+    offset: int = Query(0, ge=0),
+    limit: int = Query(25, ge=1, le=100),
+    user: dict[str, Any] = Depends(_current_user),
+) -> dict[str, Any]:
+    """Browse tool modes, workflow inputs, canvas ports and artifact handoffs."""
+    from mn_molecular_design_studio.tool_connections import connection_catalog
+
+    return connection_catalog(view=view, query=query, operation=operation, direction=direction,
+                              artifact_type=artifact_type, offset=offset, limit=limit)
 
 
 @app.get("/api/v1/workflows/{workflow_id}/schema")

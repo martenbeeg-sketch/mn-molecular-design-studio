@@ -208,6 +208,9 @@ def test_standalone_fingerprint_worker_uses_local_scheduler_without_enrollment(t
 
 def test_tile_queues_studio_workflow(library, tmp_path):
     from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import workflow_schema
+
+    assert "output_directory" in workflow_schema("library.prepare")["parameters_json_schema"]["required"]
     source = library[1]["sources"][0]["path"]
     app = AppTest.from_string('''
 import streamlit as st

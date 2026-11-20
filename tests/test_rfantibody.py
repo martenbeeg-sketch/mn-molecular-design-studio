@@ -185,6 +185,7 @@ def test_rfantibody_results_end_with_score_interpretation(monkeypatch, tmp_path)
 
 
 def test_rfantibody_mimosa_results_separate_stages_and_default_to_best_rf2(monkeypatch, tmp_path):
+    import pandas as pd
     from mn_molecular_design_studio import rfantibody_ui
 
     structure = tmp_path / "complex.pdb"
@@ -207,7 +208,8 @@ def test_rfantibody_mimosa_results_separate_stages_and_default_to_best_rf2(monke
     table = at.dataframe[0].value
     assert table.loc[0, "Stage"] == "Generated backbone"
     assert table.loc[1, "Stage"] == "RF2 prediction"
-    assert table.loc[0, "Rank"] == "—"
+    assert pd.isna(table.loc[0, "Rank"])
+    assert table.loc[2, "Rank"] == 1
     assert table.loc[0, "Sequence"] == "—"
 
 

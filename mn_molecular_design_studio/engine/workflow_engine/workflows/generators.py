@@ -156,7 +156,9 @@ def _rfdiffusion(run, target):
         f'inference.write_trajectory={str(p["save_trajectory"]).lower()}',f'inference.deterministic={str(p["deterministic"]).lower()}']
     if target:overrides.append('inference.input_pdb='+_container_path(path,target))
     if p['hotspots']:overrides.append('ppi.hotspot_res=['+p['hotspots']+']')
-    if task!='fold':overrides.append('contigmap.contigs=['+p['contig']+']')
+    if task != 'fold':
+        # Hydra otherwise parses a single fixed length as an integer.
+        overrides.append('contigmap.contigs=' + json.dumps([p['contig']]))
     if task=='partial':
         overrides.append(f'diffuser.partial_T={p["partial_steps"]}')
         if p['fixed_sequence_positions']:overrides.append('contigmap.provide_seq=['+p['fixed_sequence_positions']+']')
@@ -295,6 +297,10 @@ def normalize_outputs(run, target):
             binders,targets,chain_inference=design._infer_generated_chain_roles(target,structure,p['target_chains'])
         else:
             targets=[];binders=design._chain_ids_from_structure(structure);chain_inference='generated_chains'
+        binder_length = p['binder_length']
+        if engine == 'rfdiffusion':
+            residue_count = sum(label[0] in binders for label in _residues(structure))
+            binder_length = str(residue_count) if residue_count else None
         try:motif_metadata=_fixed_residues(engine,structure,p)
         except (ValueError,KeyError,IndexError,OSError) as exc:
             motif_metadata={'fixed_motif_required':True,'fixed_residues':[],'motif_mapping_verified':False,
@@ -306,7 +312,7 @@ def normalize_outputs(run, target):
         rows.append({'candidate_id':engine+f'_generated_{index:05d}','source_tool':inputs.TOOLS[engine],
             'stage':'generation.backbone','target_pdb':str(target.relative_to(path)) if targets and target else None,
             'complex_pdb':str(structure.relative_to(path)),'binder_chains':binders,'target_chains':targets,'binder_sequence':None,
-            'binder_length':p['binder_length'],'contig':p.get('contig') or p.get('motif_contig'),
+            'binder_length':binder_length,'contig':p.get('contig') or p.get('motif_contig'),
             'hotspots':p['hotspots'].split(',') if p['hotspots'] else [],
             'metrics':{'result_kind':'generated','pass_filters':None},'raw_metadata':raw})
     return write_candidates(path,inputs.TOOLS[engine],rows)

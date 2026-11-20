@@ -81,6 +81,28 @@ def test_rf_seed_and_provide_sequence_are_reproducible(tmp_path):
     assert all(v in steps[-1]['command'] for v in overrides)
 
 
+def test_rfdiffusion_passes_a_fixed_length_as_a_string_contig(tmp_path):
+    example = {'id': 'fixed-length', 'parameters': inputs.default_parameters('rfdiffusion', 'custom') | {'contig': '40'}}
+    run, target = build_run(tmp_path, 'rfdiffusion', example)
+
+    steps = generators._rfdiffusion(run, target)
+
+    assert 'contigmap.contigs=["40"]' in steps[-1]['command']
+
+
+def test_rfdiffusion_records_the_sampled_structure_length(tmp_path):
+    parameters = inputs.default_parameters('rfdiffusion', 'custom') | {'contig': '40-50'}
+    run, target = build_run(tmp_path, 'rfdiffusion', {'id': 'sampled-length', 'parameters': parameters})
+    structure = run['raw'] / 'output/design_0.pdb'
+    structure.parent.mkdir()
+    structure.write_bytes((inputs.ASSETS / '1CRN.pdb').read_bytes())
+
+    candidate, = generators.normalize_outputs(run, target)
+
+    assert candidate['contig'] == '40-50'
+    assert candidate['binder_length'] == '46'
+
+
 def test_native_multichain_without_fixed_target_is_supported(tmp_path):
     example={'id':'unconditioned','parameters':inputs.default_parameters('protpardelle','multichain')|{
         'motif_contig':'50;/;60','chain_lengths':'50;60','model_name':'cc95'}}

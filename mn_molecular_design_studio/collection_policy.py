@@ -17,8 +17,10 @@ import inspect
 
 _MODES = {"automatic": 0, "manual": 1, "none": 2}
 _CURRENT = ContextVar("studio_database_collection_policy", default=None)
+_DOCKING_OPT_IN = ContextVar("studio_docking_import_choice", default=None)
 POLICY_KEY = "database_collection_policy"
 PARENT_KEY = "database_collection_parent"
+DOCKING_ADMISSION_KEY = "admit_scored_docking_outputs"
 
 
 def controlled_import(function):
@@ -36,8 +38,12 @@ def controlled_import(function):
         enabled = signature.bind_partial(*args, **kwargs).arguments.get("import_to_database", default)
         if type(enabled) is not bool:
             raise ValueError("Import into Database must be true or false.")
-        with collection_scope("automatic" if enabled else "manual"):
-            return function(*args, **kwargs)
+        token = _DOCKING_OPT_IN.set(enabled)
+        try:
+            with collection_scope("automatic" if enabled else "manual"):
+                return function(*args, **kwargs)
+        finally:
+            _DOCKING_OPT_IN.reset(token)
     return wrapped
 
 
@@ -95,6 +101,12 @@ def tag_created_metadata(metadata):
         mode = validate_policy(metadata.get(POLICY_KEY, default_policy_for_job(metadata)))
     existing = validate_policy(metadata.get(POLICY_KEY, mode))
     metadata[POLICY_KEY] = max((mode, existing), key=_MODES.__getitem__)
+    import_choice = _DOCKING_OPT_IN.get()
+    if import_choice is not None and metadata.get("job_type") == "ligand_docking":
+        if import_choice and metadata[POLICY_KEY] == "automatic":
+            metadata[DOCKING_ADMISSION_KEY] = True
+        else:
+            metadata.pop(DOCKING_ADMISSION_KEY, None)
 
 
 def _object(path):

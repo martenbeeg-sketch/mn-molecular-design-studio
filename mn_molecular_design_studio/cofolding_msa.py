@@ -13,6 +13,16 @@ from pathlib import Path
 from .engine.workflow_engine.runtime import reference_root
 
 
+def colabfold_image() -> str:
+    return os.getenv('MN_COFOLDING_COLABFOLD_MSA_IMAGE', 'mn-colabfold-opt:1.6.1-jax0.5.3-cu124')
+
+
+def normalize_msa_source(source: str) -> str:
+    if source in ('local_mmseqs_gpu', 'boltz_msa_server'):
+        return 'reference_then_colabfold'
+    return source
+
+
 def records(text: str) -> list[tuple[str, str]]:
     result = []
     header, sequence = '', []
@@ -123,7 +133,7 @@ def fetch_colabfold(run_dir: Path, sequence: str, chain_id: str) -> str:
     query = root / 'query.fasta'
     query.write_text(f'>chain_{chain_id}\n{sequence}\n')
     docker = os.getenv('MN_MOLECULAR_DESIGN_STUDIO_DOCKER', os.getenv('MN_COFOLDING_DOCKER', 'docker'))
-    image = os.getenv('MN_COFOLDING_COLABFOLD_MSA_IMAGE', 'mn-colabfold-opt:1.6.1-jax0.5.3-cu124')
+    image = colabfold_image()
     command = [docker, 'run', '--rm', '--mount', f'type=bind,src={run_dir.resolve()},dst=/work',
                '-w', '/work', image, 'colabfold_batch',
                f'/work/{query.relative_to(run_dir).as_posix()}', f'/work/{output.relative_to(run_dir).as_posix()}',
@@ -148,10 +158,10 @@ def fetch_colabfold(run_dir: Path, sequence: str, chain_id: str) -> str:
 
 
 def prepare_chain(run_dir: Path, sequence: str, chain_id: str, *, item_id: str = '',
-                  depth: int = 1024, supplied: str = '', supplied_source: str = 'custom', allow_server: bool = True,
+                  depth: int | None = 1024, supplied: str = '', supplied_source: str = 'custom', allow_server: bool = True,
                   reference: Path | None = None, staged_name: str | None = None) -> Path:
     """Resolve/cache a full alignment, then stage the exact capped input in the job."""
-    if depth < 1:
+    if depth is not None and depth < 1:
         raise ValueError('MSA depth must be positive.')
     root = reference or Path(reference_root())
     digest = hashlib.sha256(sequence.encode()).hexdigest()

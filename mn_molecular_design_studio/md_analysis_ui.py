@@ -317,7 +317,13 @@ def _study_source_options(source_root: Path, job: dict[str, Any]) -> list[dict[s
 
 
 def _native_source_options(source_root: Path, job: dict[str, Any]) -> list[dict[str, Any]]:
-    result = _read_json(source_root / "result.json")
+    engine_result_path = "artifacts/md/result.json"
+    has_engine_result = (source_root / engine_result_path).exists()
+    result_path = engine_result_path if has_engine_result else "result.json"
+    report = _safe_run_file(source_root, result_path)
+    result = _read_json(report) if report else {}
+    if has_engine_result and result.get("success") is not True:
+        return []
     metadata = _read_json(source_root / "metadata.json")
     md_result = result.get("md_result") if isinstance(result.get("md_result"), dict) else {}
     production_stats = ((md_result.get("equilibration_stats") or {}).get("production")
@@ -332,10 +338,26 @@ def _native_source_options(source_root: Path, job: dict[str, Any]) -> list[dict[
         "trajectory_appended": production_stats.get("trajectory_appended"),
     }
     segment_id = production["run_id"]
+    if has_engine_result:
+        outputs = _result_outputs(result)
+        exact_keys = ("production_trajectory", "production_pdb", "production_topology", "production_gro", "system_pdb")
+        artifacts = {"output_files": {key: outputs[key] for key in exact_keys if key in outputs}}
+        if str(result.get("engine") or "").casefold() == "gromacs":
+            preparation = result.get("preparation") or {}
+            amber = (preparation.get("output_files") or {}).get("amber_complex_prmtop")
+            if amber:
+                # GROMACS exports the solvated system in this atom order. Its PDB
+                # lacks ligand bonds required for MDTraj's periodic imaging.
+                artifacts = {"output_files": {"production_trajectory": outputs.get("production_trajectory"),
+                                              "production_topology": amber}}
+    else:
+        artifacts = result
     trajectories, topologies = _artifact_choices(
-        source_root, result=result, segment_run_id=segment_id,
-        legacy_run_ids=set(), native=True,
+        source_root, result=artifacts, segment_run_id=segment_id,
+        legacy_run_ids=set(), native=not has_engine_result,
     )
+    if has_engine_result and not topologies:
+        return []
     segment = _segment_record(segment_id, production, result)
     if not segment.get("segment_duration_ns") and not segment.get("target_duration_ns"):
         segment["duration_status"] = "unknown"
@@ -354,7 +376,7 @@ def _native_source_options(source_root: Path, job: dict[str, Any]) -> list[dict[
             "segment": segment,
             "trajectory_path": trajectory,
             "topology_paths": topologies,
-            "source_result_path": "result.json",
+            "source_result_path": result_path,
             "lineage_known": False,
         })
     return output
@@ -382,6 +404,7 @@ def _cached_source_option_rows(
     source_root_text: str,
     manifest_signature: tuple[int, int] | None,
     result_signature: tuple[int, int] | None,
+    engine_result_signature: tuple[int, int] | None,
     metadata_signature: tuple[int, int] | None,
     campaign_name: str,
     tool: str,
@@ -413,9 +436,10 @@ def _cached_source_options_for_job(job: dict[str, Any]) -> list[dict[str, Any]]:
 
     study_path = source_root / "artifacts" / "md" / "study.json"
     result_path = source_root / "result.json"
+    engine_result_path = source_root / "artifacts" / "md" / "result.json"
     metadata_path = source_root / "metadata.json"
     records = _cached_source_option_rows(
-        str(source_root), signature(study_path), signature(result_path), signature(metadata_path),
+        str(source_root), signature(study_path), signature(result_path), signature(engine_result_path), signature(metadata_path),
         str(job.get("campaign_name") or ""), str(job.get("tool") or ""),
     )
     output = []

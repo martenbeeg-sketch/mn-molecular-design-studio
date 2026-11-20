@@ -6,7 +6,7 @@ No Streamlit, database or workflow execution modules are imported here.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
@@ -64,6 +64,14 @@ def create_server(client=None):
     def segment(value):
         return quote(str(value), safe="")
 
+    def job_segment(reference):
+        # ASGI decodes path escapes before matching the job route.
+        if ":" not in reference and reference.count("/") == 1:
+            group, run_id = reference.split("/")
+            if group and run_id:
+                reference = f"local:{group}:{run_id}"
+        return segment(reference)
+
     @server.tool(annotations=read)
     async def studio_identity(ctx: Context) -> dict[str, Any]:
         """Identify the authenticated Studio account and accessible projects."""
@@ -93,6 +101,16 @@ def create_server(client=None):
     async def workflow_setup(workflow_id: str, ctx: Context) -> dict[str, Any]:
         """Get form fields, pipeline node definitions and available preparation helpers/examples for any workflow."""
         return await call(ctx, "GET", f"/api/v1/workflows/{segment(workflow_id)}/setup")
+
+    @server.tool(annotations=read)
+    async def tool_connections(ctx: Context, view: Literal["tiles", "workflows", "operations", "connections", "handoffs"] = "tiles",
+                               query: str = "", operation: str = "", direction: Literal["both", "incoming", "outgoing"] = "both",
+                               artifact_type: str = "", offset: int = 0, limit: int = 25) -> dict[str, Any]:
+        """Search tiles and workflows. Switch to connections and pass a canvas operation ID to find its upstream or downstream ports. Use handoffs for saved jobs and manifests."""
+        return await call(ctx, "GET", "/api/v1/workflows/connections", query={
+            "view": view, "query": query, "operation": operation, "direction": direction,
+            "artifact_type": artifact_type, "offset": offset, "limit": limit,
+        })
 
     @server.tool(annotations=read)
     async def workflow_templates(workflow_id: str, ctx: Context, library: str = "", offset: int = 0, limit: int = 100) -> dict[str, Any]:
@@ -160,27 +178,27 @@ def create_server(client=None):
     @server.tool(annotations=read)
     async def get_job(reference: str, ctx: Context) -> dict[str, Any]:
         """Inspect a job; use cluster:<job-id> for a distributed job, otherwise its local run ID."""
-        return await call(ctx, "GET", "/api/v1/executions/" + segment(reference))
+        return await call(ctx, "GET", "/api/v1/executions/" + job_segment(reference))
 
     @server.tool(annotations=read)
     async def job_results(reference: str, ctx: Context) -> dict[str, Any]:
         """Read local results or a cached remote inspection. Use request_job_inspection to load remote data."""
-        return await call(ctx, "GET", "/api/v1/executions/" + segment(reference) + "/results")
+        return await call(ctx, "GET", "/api/v1/executions/" + job_segment(reference) + "/results")
 
     @server.tool(annotations=write)
     async def request_job_inspection(reference: str, ctx: Context) -> dict[str, Any]:
         """Start an inspection of remote saved job results and return a command ID to poll."""
-        return await call(ctx, "POST", "/api/v1/executions/" + segment(reference) + "/results")
+        return await call(ctx, "POST", "/api/v1/executions/" + job_segment(reference) + "/results")
 
     @server.tool(annotations=read)
     async def job_actions(reference: str, ctx: Context) -> dict[str, Any]:
         """Discover available job actions and their parameter schemas, including restricted compatibility retry."""
-        return await call(ctx, "GET", "/api/v1/executions/" + segment(reference) + "/actions")
+        return await call(ctx, "GET", "/api/v1/executions/" + job_segment(reference) + "/actions")
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     async def control_job(reference: str, action: str, ctx: Context, parameters: dict | None = None) -> dict[str, Any]:
         """Perform an action discovered through job_actions under the current user's job permissions."""
-        return await call(ctx, "POST", "/api/v1/executions/" + segment(reference) + "/actions",
+        return await call(ctx, "POST", "/api/v1/executions/" + job_segment(reference) + "/actions",
                           body={"action": action, "parameters": parameters or {}})
 
     @server.tool(annotations=read)
@@ -191,7 +209,7 @@ def create_server(client=None):
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True))
     async def cancel_job(reference: str, ctx: Context) -> dict[str, Any]:
         """Cancel an accessible active job; cluster IDs use the cluster: prefix."""
-        return await call(ctx, "POST", "/api/v1/executions/" + segment(reference) + "/actions", body={"action": "cancel"})
+        return await call(ctx, "POST", "/api/v1/executions/" + job_segment(reference) + "/actions", body={"action": "cancel"})
 
     @server.tool(annotations=read)
     async def list_libraries(ctx: Context, project_id: str | None = None) -> dict[str, Any]:
@@ -265,12 +283,12 @@ def create_server(client=None):
     @server.tool(annotations=read)
     async def candidate_viewer(reference: str, candidate_id: str, ctx: Context) -> dict[str, Any]:
         """Get an authorized complex structure URL and binder/target chains for a local job candidate."""
-        return await call(ctx, "GET", f"/api/v1/jobs/{segment(reference)}/candidates/{segment(candidate_id)}/viewer")
+        return await call(ctx, "GET", f"/api/v1/jobs/{job_segment(reference)}/candidates/{segment(candidate_id)}/viewer")
 
     @server.tool(annotations=read)
     async def result_presentation(reference: str, ctx: Context, offset: int = 0, limit: int = 100) -> dict[str, Any]:
         """Page through local result candidates and discover metric fields for plots or reports."""
-        return await call(ctx, "GET", f"/api/v1/jobs/{segment(reference)}/presentation", query={"offset": offset, "limit": limit})
+        return await call(ctx, "GET", f"/api/v1/jobs/{job_segment(reference)}/presentation", query={"offset": offset, "limit": limit})
 
     @server.tool(annotations=write)
     async def save_visualization(request: dict, ctx: Context) -> dict[str, Any]:
@@ -281,7 +299,7 @@ def create_server(client=None):
     async def export_result_report(reference: str, ctx: Context, format: str = "HTML", metric: str = "mean_score",
                                     top_counts: list[int] | None = None, limit: int = 1000) -> dict[str, Any]:
         """Export convergence curves (top 100/1,000/10,000 together) or candidate metrics as HTML, SVG or CSV."""
-        return await call(ctx, "POST", f"/api/v1/jobs/{segment(reference)}/reports", body={"format": format,
+        return await call(ctx, "POST", f"/api/v1/jobs/{job_segment(reference)}/reports", body={"format": format,
                           "metric": metric, "top_counts": top_counts or [100, 1000, 10000], "limit": limit})
 
     @server.tool(annotations=read)

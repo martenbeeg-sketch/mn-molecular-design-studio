@@ -9,12 +9,13 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import yaml
 
 from mn_molecular_design_studio.engine.workflow_engine.core.gpu import docker_gpu_args, normalize_gpu_device
+from mn_molecular_design_studio.engine.workflow_engine.core.docker_runner import docker_host_user_args
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import (
     STAGE_COMPLEX_REFOLDING,
     STAGE_GENERATION_BACKBONE_SEQUENCE,
@@ -39,7 +40,9 @@ BOLTZ_MODELS_DIR = Path("/mnt/db/reference_files/boltz_models")
 ALPHAFOLD_MODELS_DIR = Path("/mnt/db/reference_files/alphafold_models")
 AF2_BINDER_EVAL = Path(__file__).resolve().parents[1] / "tools" / "af2_initial_guess_binder_eval.py"
 RF3_IMAGE = "mn-foundry:cu128"
-RF3_CHECKPOINT = Path("/mnt/db/reference_files/foundry/rf3_foundry_01_24_latest_remapped.ckpt")
+RF3_MIN_RECYCLES = 2
+RF3_REFERENCE = "foundry/rf3_foundry_01_24_latest_remapped.ckpt"
+RF3_CHECKPOINT = Path("/mnt/db/reference_files") / RF3_REFERENCE
 PROTENIX_IMAGE = "mn-pxdesign:cu128"
 PROTENIX_REFERENCE_DIR = Path("/mnt/db/reference_files/pxdesign")
 PROTENIX_CLI_IMAGE = "mn-protenix:cu128"
@@ -48,8 +51,11 @@ PROTENIX_V1_MODEL = "protenix_base_default_v1.0.0"
 PROTENIX_V1_20250630_MODEL = "protenix_base_20250630_v1.0.0"
 PROTENIX_V2_MODEL = "protenix-v2"
 BOLTZGEN_IMAGE = "mn-boltzgen-opt:a07fea1-cu130-batch3"
+BOLTZGEN_FOLD_CHECKPOINT = "models--boltzgen--boltzgen-1/snapshots/c1be29e1f82ffcc72264f64b993c43fb4e0d17f0/boltz2_conf_final.ckpt"
+BOLTZGEN_FOLD_MOLDIR = "datasets--boltzgen--inference-data/snapshots/c3d36fd276e9caf098c75d4113c6d5eb320b1a4c/mols.zip"
 OPENFOLD3_IMAGE = "mn-openfold3:cu13"
-OPENFOLD3_CHECKPOINT = Path("/mnt/db/reference_files/openfold3/of3-p2-155k.pt")
+OPENFOLD3_REFERENCE = "openfold3/of3-p2-155k.pt"
+OPENFOLD3_CHECKPOINT = Path("/mnt/db/reference_files") / OPENFOLD3_REFERENCE
 OPENFOLD3_REFERENCE_MSA_PREFILL = Path("/mnt/db/reference_files/de_novo_binder_scoring_overath_2025/target_msa_prefill")
 SYNTHETIC_TEMPLATE_RELEASE_DATE = "1970-01-01"
 OPENFOLD3_RUNNER_YAML_TEMPLATE = """model_update:
@@ -4832,7 +4838,7 @@ def run_af2_initial_guess_complex_refolding(
 
 
 def run_af2_initial_guess_from_inputs(
-    input_mode: str = "target_template",
+    input_mode: Literal["target_template", "separate_templates", "complex_template"] = "target_template",
     job_name: str = "alphafold2-initial-guess",
     target_pdb: Path | None = None,
     target_chains: list[str] | None = None,
@@ -5575,6 +5581,8 @@ def run_openfold3_complex_refolding(
     docker_image: str = OPENFOLD3_IMAGE,
 ) -> Path:
     source_run_dir = Path(source_run_dir)
+    if checkpoint_path == OPENFOLD3_CHECKPOINT:
+        checkpoint_path = reference_root() / OPENFOLD3_REFERENCE
     allowed = {STAGE_MONOMER_REFOLDING} if require_monomer_success else {
         STAGE_MONOMER_REFOLDING,
         STAGE_SEQUENCE_DESIGN,
@@ -5712,7 +5720,11 @@ def run_rf3_complex_refolding(
     internal_parent_run_dir: Path | None = None,
     gpu_device: object = "0",
 ) -> Path:
+    if n_recycles < RF3_MIN_RECYCLES:
+        raise ValueError(f"RosettaFold3 candidate refolding requires at least {RF3_MIN_RECYCLES} recycles.")
     source_run_dir = Path(source_run_dir)
+    if checkpoint_path == RF3_CHECKPOINT:
+        checkpoint_path = reference_root() / RF3_REFERENCE
     allowed = {STAGE_MONOMER_REFOLDING} if require_monomer_success else {
         STAGE_MONOMER_REFOLDING,
         STAGE_SEQUENCE_DESIGN,
@@ -5838,6 +5850,7 @@ def run_protenix_complex_refolding(
     gpu_device: object = "0",
 ) -> Path:
     source_run_dir = Path(source_run_dir)
+    reference_dir = reference_root() / PROTENIX_REFERENCE_DIR.name
     allowed = {STAGE_MONOMER_REFOLDING} if require_monomer_success else {
         STAGE_MONOMER_REFOLDING,
         STAGE_SEQUENCE_DESIGN,
@@ -5852,7 +5865,7 @@ def run_protenix_complex_refolding(
         {"source_run_dir": str(source_run_dir), "candidates_jsonl": str(candidates_jsonl)},
         {
             "image": PROTENIX_IMAGE,
-            "reference_dir": str(PROTENIX_REFERENCE_DIR),
+            "reference_dir": str(reference_dir),
             "use_msa": use_msa,
             "benchmark_run_csv": str(benchmark_run_csv) if benchmark_run_csv else None,
             "cycle": cycle,
@@ -5953,9 +5966,9 @@ def run_protenix_complex_refolding(
                         "-v",
                         f"{job.run_dir}:/work",
                         "-v",
-                        f"{PROTENIX_REFERENCE_DIR}:/ref/pxdesign:ro",
+                        f"{reference_dir}:/ref/pxdesign:ro",
                         "-v",
-                        f"{PROTENIX_REFERENCE_DIR / 'release_data'}:/opt/conda/lib/python3.11/site-packages/release_data:ro",
+                        f"{reference_dir / 'release_data'}:/opt/conda/lib/python3.11/site-packages/release_data:ro",
                         "-e",
                         "PROTENIX_DATA_ROOT_DIR=/ref/pxdesign/release_data/ccd_cache",
                         "-e",
@@ -6015,6 +6028,8 @@ def run_protenix_cli_complex_refolding(
     """
     source_run_dir = Path(source_run_dir)
     reference_dir = Path(reference_dir)
+    if reference_dir == PROTENIX_CLI_REFERENCE_DIR:
+        reference_dir = reference_root() / PROTENIX_CLI_REFERENCE_DIR.name
     allowed = {STAGE_MONOMER_REFOLDING} if require_monomer_success else {
         STAGE_MONOMER_REFOLDING,
         STAGE_SEQUENCE_DESIGN,
@@ -6333,14 +6348,20 @@ def run_boltzgen_fold_complex_refolding(
     output_root = raw_root / "output"
     output_root.mkdir(parents=True, exist_ok=True)
     boltzgen_config_path = BOLTZGEN_BENCHMARK_PAE_CONFIG
+    cache_dir = reference_root() / "boltzgen-cache"
+    container_user = docker_host_user_args()
     command = [
         "docker",
         "run",
         "--rm",
         *docker_gpu_args(gpu_device),
+        *container_user,
+        *(("--env", "HOME=/tmp", "--env", "LOGNAME=studio-worker") if container_user else ()),
         "--shm-size=32G",
         "-v",
         f"{job.run_dir}:/work",
+        "--mount",
+        f"type=bind,src={cache_dir},dst=/cache,readonly",
         "-w",
         "/work",
         "--entrypoint",
@@ -6352,9 +6373,9 @@ def run_boltzgen_fold_complex_refolding(
         "data.cfg.suffix=.pdb",
         "data.cfg.target_id_regex=^(.+)$",
         "data.cfg.num_workers=1",
-        "data.cfg.moldir=/cache/datasets--boltzgen--inference-data/snapshots/c3d36fd276e9caf098c75d4113c6d5eb320b1a4c/mols.zip",
+        f"data.cfg.moldir=/cache/{BOLTZGEN_FOLD_MOLDIR}",
         "output=/work/artifacts/raw/boltzgen_fold/output",
-        "checkpoint=/cache/models--boltzgen--boltzgen-1/snapshots/c1be29e1f82ffcc72264f64b993c43fb4e0d17f0/boltz2_conf_final.ckpt",
+        f"checkpoint=/cache/{BOLTZGEN_FOLD_CHECKPOINT}",
         f"recycling_steps={int(recycling_steps)}",
         f"sampling_steps={int(sampling_steps)}",
         f"diffusion_samples={int(diffusion_samples)}",

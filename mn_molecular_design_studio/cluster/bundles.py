@@ -93,7 +93,10 @@ def pack(payload, *, base_dir, node_id, authorize_path=lambda p: None, preserve_
             return value
         path = path.resolve()
         authorize_path(path)
-        staged_reference_input = path.is_file() and path.suffix.lower() in {".a3m", ".pdb", ".cif", ".mmcif", ".fasta", ".fa"} and any(part in key.casefold() for part in ("msa", "template", "target", "structure"))
+        staged_reference_input = (
+            path.is_file() and path.suffix.lower() in {".a3m", ".pdb", ".cif", ".mmcif", ".fasta", ".fa"}
+            and (key.casefold() == "mimosa_complex" or any(part in key.casefold() for part in ("msa", "template", "target", "structure")))
+        )
         if path.is_relative_to(references) and not staged_reference_input:
             relative = path.relative_to(references).as_posix()
             required_references.add(relative)

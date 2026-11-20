@@ -31,6 +31,18 @@ def test_invalid_requests_fail_before_running(tmp_path,changes):
         inputs.prepare_request({'task':'unconditional',**changes},run_dir=tmp_path)
 
 
+def test_prediction_step_bounds_are_checked_before_workflow_submission(tmp_path):
+    request = tmp_path / 'request.json'
+    payload = {'schema_version': 1, 'workflow': 'refolding.rfd4_proteina',
+               'parameters': {'protein_sequences': 'NLYIQWLKDGGPSSGRPPPS', 'num_designs': 1, 'nsteps': 20}}
+    request.write_text(json.dumps(payload))
+    with pytest.raises(automation.AutomationError, match='nsteps must be an integer between 60 and 120'):
+        automation.validate_workflow_request(request)
+    payload['parameters']['nsteps'] = 60
+    request.write_text(json.dumps(payload))
+    assert automation.validate_workflow_request(request)['valid']
+
+
 def test_sequence_carrier_and_folding_registration(tmp_path):
     from mn_molecular_design_studio.design_validation import read_structure,protein_chains,sequence
     path=workflow.sequence_structure('>a\nACDEFGHIK\n>b\nLMNPQRSTV\n',tmp_path/'sequence.cif')

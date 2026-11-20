@@ -1172,8 +1172,11 @@ def test_additional_generation_tiles_are_registered(engine, required_parameters)
     assert required_parameters <= {field["name"] for field in schema["parameters"]}
 
 
-@pytest.mark.parametrize("engine", ["omtra", "flowr_root", "conditar", "paopt", "drugrpg", "pfm", "pocketflow", "pgmg"])
+@pytest.mark.parametrize("engine", ["omtra", "omtra_pocket", "flowr_root", "conditar", "paopt", "drugrpg", "pfm", "pocketflow", "pgmg"])
 def test_additional_generation_tiles_emit_database_ready_compound_sets(engine, tmp_path, monkeypatch):
+    omtra_pocket = engine == "omtra_pocket"
+    if omtra_pocket:
+        engine = "omtra"
     target = tmp_path / "target.pdb"
     target.write_text("ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00 20.00           C\nEND\n")
     pocket = tmp_path / "pocket.pdb"
@@ -1185,7 +1188,7 @@ def test_additional_generation_tiles_emit_database_ready_compound_sets(engine, t
     pharmit = tmp_path / "pharmit.json"
     pharmit.write_text(json.dumps({"points": [{"name": "Aromatic", "x": 0.0, "y": 1.0, "z": 2.0, "radius": 1.0}]}))
     reference_root = tmp_path / "references"
-    for relative in ligand_tools._GENERATOR_CONFIGS[engine]["references"]:
+    for relative in ligand_tools.generation_required_references(engine, pharmacophore_conditioned=engine == "omtra" and not omtra_pocket):
         path = reference_root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("test")
@@ -1208,7 +1211,8 @@ def test_additional_generation_tiles_emit_database_ready_compound_sets(engine, t
         return SimpleNamespace(returncode=0, stdout="generated", stderr="")
 
     monkeypatch.setattr(ligand_tools.subprocess, "run", fake_docker)
-    inputs = {"omtra": {"pharmacophore_json": pharmit}, "flowr_root": {"pocket_pdb": pocket, "reference_ligand_sdf": reference_ligand},
+    inputs = {"omtra": {"reference_ligand_sdf": reference_ligand} if omtra_pocket else {"pharmacophore_json": pharmit},
+              "flowr_root": {"pocket_pdb": pocket, "reference_ligand_sdf": reference_ligand},
               "conditar": {"pocket_pdb": pocket}, "paopt": {"pocket_pdb": pocket, "reference_ligand_sdf": reference_ligand, "engine_settings": {"optimize_properties": ["HIA"]}},
               "drugrpg": {"pocket_pdb": pocket}, "pfm": {"pocket_pdb": pocket},
               "pocketflow": {"pocket_pdb": pocket}, "pgmg": {"pharmacophore_posp": pharmacophore}}[engine]
@@ -1222,7 +1226,9 @@ def test_additional_generation_tiles_emit_database_ready_compound_sets(engine, t
     assert captured["kwargs"]["check"] is False
     assert f"mn-{engine}:test" in command
     if engine == "omtra":
-        assert "--pharmacophore" in command
+        assert ("--pharmacophore" in command) is not omtra_pocket
+        expected_checkpoint = "protcond.ckpt" if omtra_pocket else "checkpoint.ckpt"
+        assert command[command.index("--checkpoint") + 1] == f"/references/generation/omtra/{expected_checkpoint}"
     assert contract["workflow"] == f"ligand.generation.{engine}"
     assert contract["compound_count"] == 1
     assert generated["compounds"][0]["smiles"] == "C[C@H](O)C"
@@ -1379,7 +1385,7 @@ def test_autodock_gpu_tile_stages_ad4_grid_workflow_and_typed_pose_outputs(tmp_p
     monkeypatch.setattr(ligand_tools, "run_docker_job", fake_docker)
     run_dir = ligand_tools.run_ligand_autodock_gpu(
         target, compound_set, center_x=-1.0, center_y=2.0, center_z=3.0,
-        nrun=12, gpu_device="1", compound_limit=1,
+        nrun=12, gpu_device="1", compound_limit=1, job_name="Named AutoDock run",
     )
 
     contract = json.loads((run_dir / "artifact_contract.json").read_text())
@@ -1388,6 +1394,7 @@ def test_autodock_gpu_tile_stages_ad4_grid_workflow_and_typed_pose_outputs(tmp_p
     result = jobs.read_json(run_dir / "result.json")
     assert captured["manifest"]["tool"] == "autodock_gpu"
     assert captured["gpu_device"] == "1"
+    assert jobs.read_json(run_dir / "metadata.json")["campaign_name"] == "Named AutoDock run"
     assert captured["args"] == ["python", "/work/artifacts/input/autodock_gpu_runner.py"]
     assert config["center"] == [-1.0, 2.0, 3.0]
     assert "autogrid4" in runner and "--ffile" in runner and "--gbest" in runner
@@ -1398,7 +1405,8 @@ def test_autodock_gpu_tile_stages_ad4_grid_workflow_and_typed_pose_outputs(tmp_p
     assert result["metrics"]["primary_ranking_direction"] == "lower"
 
 
-def test_autodock_gpu_container_runner_builds_maps_and_parses_ad4_energy(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("energies", "best"), [(('-8.20', '-7.10'), -8.2), (('+5.74', '+49.71'), 5.74)])
+def test_autodock_gpu_container_runner_builds_maps_and_parses_ad4_energy(tmp_path, monkeypatch, energies, best):
     input_root = tmp_path / "artifacts" / "input"
     input_root.mkdir(parents=True)
     (input_root / "autodock_gpu_config.json").write_text(json.dumps({
@@ -1424,8 +1432,7 @@ def test_autodock_gpu_container_runner_builds_maps_and_parses_ad4_energy(tmp_pat
             Path(command[command.index("-o") + 1]).write_text("ligand PDBQT")
         elif command[0] == "adgpu":
             (cwd / "adgpu_ethanol.dlg").write_text(
-                "DOCKED: USER Estimated Free Energy of Binding = -8.20 kcal/mol\n"
-                "DOCKED: USER Estimated Free Energy of Binding = -7.10 kcal/mol\n"
+                "".join(f"DOCKED: USER Estimated Free Energy of Binding = {energy} kcal/mol\n" for energy in energies)
             )
             (cwd / "adgpu_ethanol_best.pdbqt").write_text("best pose")
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1438,7 +1445,7 @@ def test_autodock_gpu_container_runner_builds_maps_and_parses_ad4_energy(tmp_pat
     score_rows = list(__import__("csv").DictReader((tmp_path / "artifacts" / "docking_scores.csv").open()))
     assert result["success"] is True
     assert score_rows[0]["status"] == "completed"
-    assert float(score_rows[0]["best_score_kcal_mol"]) == pytest.approx(-8.2)
+    assert float(score_rows[0]["best_score_kcal_mol"]) == pytest.approx(best)
     assert (tmp_path / score_rows[0]["pose_path"]).read_text() == "best pose"
     scrub_command = next(command for command in commands if command[0] == "scrub.py")
     assert scrub_command[scrub_command.index("--ph") + 1] == "7.40"
@@ -1504,6 +1511,7 @@ def test_openmm_md_tile_uses_studio_bundled_runtime_and_records_trajectory(tmp_p
         trajectory.write_text("trajectory")
         (md_root / "result.json").write_text(json.dumps({
             "success": True,
+            "ligand_pdb": "HETATM    1  C1  LIG A 501       4.000   5.000   6.000  1.00 20.00           C\n" * 37 + "END\n",
             "md_result": {"status": "success", "output_files": {"production_trajectory": "/work/artifacts/md/production.dcd"}},
         }))
         return 0
@@ -1708,3 +1716,32 @@ def test_nesso_api_validation_checks_compound_set_and_records_affinity_only(tmp_
     assert validated["valid"] is True
     assert validated["workflow"] == "ligand.affinity.nesso"
     assert validated["parameters"]["compound_set_file"] == str(compound_set.resolve())
+
+
+def test_docking_resolves_the_generated_compound_set_from_a_completed_job(tmp_path, monkeypatch):
+    generator = tmp_path / "ligand-generation" / "saved-run"
+    artifact = generator / "artifacts" / "generated_compound_set.json"
+    ligand_compounds.write_compound_set(artifact, name="Generated set",
+        compounds=[{"compound_id": "candidate-1", "smiles": "CCO"}], owner_id="owner",
+        project_id="project", created_at="now")
+    report = generator / "result.json"
+    report.write_text(json.dumps({"success": True, "outputs": {
+        "generated_compound_set": "artifacts/generated_compound_set.json",
+    }}))
+    monkeypatch.setattr(workflow_automation, "resolve_job", lambda *_args, **_kwargs: {
+        "run_dir": str(generator), "status": "completed",
+    })
+    target = tmp_path / "target.pdb"
+    target.write_text("ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00 20.00           C\nEND\n")
+    request = tmp_path / "request.json"
+    payload = {"schema_version": 1, "workflow": "ligand.docking.vina", "source_job": "ligand-generation/saved-run",
+               "parameters": {"target_pdb": str(target), "center_x": 1.0, "center_y": 2.0, "center_z": 3.0}}
+    request.write_text(json.dumps(payload))
+
+    validated = workflow_automation.validate_workflow_request(request)
+    assert validated["parameters"]["compound_set_file"] == str(artifact)
+    assert "source_job" in workflow_automation.workflow_schema(payload["workflow"])["request_fields"]
+
+    artifact.unlink()
+    with pytest.raises(workflow_automation.AutomationError, match="no longer available"):
+        workflow_automation.validate_workflow_request(request)

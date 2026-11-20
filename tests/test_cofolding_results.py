@@ -9,6 +9,32 @@ from mn_molecular_design_studio.cofolding_input import prediction_settings_for
 from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES, _confidence_sidecar
 
 
+def test_prediction_viewer_loads_coordinates_without_native_occupancy(tmp_path):
+    import gemmi
+
+    structure = gemmi.read_pdb_string(
+        "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00 82.00           C\nEND\n"
+    )
+    document = structure.make_mmcif_document()
+    block = document.sole_block()
+    atoms = block.get_mmcif_category('_atom_site.', raw=True)
+    atoms.pop('occupancy')
+    block.set_mmcif_category('_atom_site.', atoms, raw=True)
+    source = tmp_path / 'native.cif'
+    document.write_file(str(source))
+    original = source.read_bytes()
+    assert not len(gemmi.read_structure(str(source)))
+    scratch = tmp_path / 'preview'
+    scratch.mkdir()
+
+    preview = results.viewer_structure(source, scratch)
+    atom = gemmi.read_structure(str(preview))[0][0][0][0]
+    assert (atom.pos.x, atom.pos.y, atom.pos.z) == (1.0, 2.0, 3.0)
+    assert atom.b_iso == 82.0
+    assert source.read_bytes() == original
+    assert results.viewer_structure(preview, scratch) == preview
+
+
 @pytest.mark.parametrize('engine,structure_name,data_name,summary_name,plddt_key,pae_key', [
     ('af3_torch', 'job_seed-1_sample-0_model.cif', 'job_seed-1_sample-0_confidences.json', 'job_seed-1_sample-0_summary_confidences.json', 'atom_plddts', 'pae'),
     ('openfold3_ob0', 'job_seed_1_sample_0_model.cif', 'job_seed_1_sample_0_confidences.json', 'job_seed_1_sample_0_confidences_aggregated.json', 'plddt', 'pae'),

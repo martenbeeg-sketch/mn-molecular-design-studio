@@ -978,7 +978,7 @@ def path_is_within_accessible_job(
     with _connection() as connection:
         rows = connection.execute(
             "SELECT s.path AS storage_path, j.run_relative_path FROM jobs j "
-            "JOIN storage_roots s ON s.id=j.storage_root_id WHERE " + " ".join(clauses),
+            "JOIN storage_roots s ON s.id=j.storage_root_id WHERE " + " AND ".join(clauses),
             params,
         ).fetchall()
     for row in rows:

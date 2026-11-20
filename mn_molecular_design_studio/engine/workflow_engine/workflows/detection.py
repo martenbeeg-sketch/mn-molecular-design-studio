@@ -15,11 +15,24 @@ from mn_molecular_design_studio.engine.workflow_engine.core.jobs import JobPaths
 from mn_molecular_design_studio.engine.workflow_engine.core.manifests import load_manifest
 from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import apply_docker_cpu_limits_to_steps
 from mn_molecular_design_studio.engine.workflow_engine.core.structures import STANDARD_PROTEIN_RESIDUES, filter_pdb_text, pdb_summary, residue_inventory, sanitize_pdb_for_surface_tools
-from mn_molecular_design_studio.engine.workflow_engine.runtime import PROJECT_DIR, app_home
+from mn_molecular_design_studio.engine.workflow_engine.runtime import PROJECT_DIR, app_home, reference_root
 
 
 DETECTION_GROUP = "detection"
 HOTSPOT_GROUP = "hotspot-detection"
+SURFACE_METHODS = ("pesto", "scannet", "surf2spot", "masif_seed")
+PESTO_CHECKPOINT = Path("pesto/i_v4_1/model_ckpt.pt")
+SURF2SPOT_DOMAIN_MODELS = Path("surf2spot/chainsaw/saved_models")
+SURF2SPOT_EMBEDDINGS = Path("surf2spot/model_emb/prot_t5_xl_half_uniref50-enc")
+SURFACE_REQUIRED_REFERENCES = {
+    "pesto": (PESTO_CHECKPOINT.as_posix(),),
+    "surf2spot": (
+        *((SURF2SPOT_DOMAIN_MODELS / "model_v3" / name).as_posix()
+          for name in ("config.json", "feature_config.json", "weights.pt")),
+        *((SURF2SPOT_EMBEDDINGS / name).as_posix()
+          for name in ("config.json", "pytorch_model.bin", "spiece.model", "tokenizer_config.json", "special_tokens_map.json")),
+    ),
+}
 KNOWN_BENCHMARK_ROOT = Path("/mnt/db/reference_files/de_novo_binder_scoring_overath_2025")
 KNOWN_BENCHMARK_CSV = KNOWN_BENCHMARK_ROOT / "final_dataset.csv"
 KNOWN_BENCHMARK_PDB_DIR = KNOWN_BENCHMARK_ROOT / "input_pdbs"
@@ -575,7 +588,7 @@ def run_pesto(
                 "-v",
                 f"{job.run_dir}:/work",
                 "-v",
-                "/mnt/db/reference_files/pesto:/models:ro",
+                f"{reference_root() / PESTO_CHECKPOINT.parents[1]}:/models:ro",
                 manifest["image"],
             ]
             + [
@@ -588,7 +601,7 @@ def run_pesto(
                 "--device",
                 "cuda",
                 "--checkpoint",
-                "/models/i_v4_1/model_ckpt.pt",
+                f"/models/{PESTO_CHECKPOINT.relative_to(PESTO_CHECKPOINT.parents[1]).as_posix()}",
             ],
         }
     ]
@@ -648,8 +661,8 @@ def run_surf2spot(target_pdb: Path, gpu_device: object = "0", existing_job: JobP
     artifact_path(job.run_dir, "surf2spot", "source", "target.pdb").write_text(sanitized_text)
     input_pdb.write_text(_surf2spot_numbered_input(sanitized_text))
     base = ["docker", "run", "--rm", *docker_gpu_args(normalized_gpu), "-v", f"{job.run_dir}/artifacts/surf2spot:/work"]
-    chain_ref = "/mnt/db/reference_files/surf2spot/chainsaw/saved_models"
-    emb_ref = "/mnt/db/reference_files/surf2spot/model_emb/prot_t5_xl_half_uniref50-enc"
+    chain_ref = reference_root() / SURF2SPOT_DOMAIN_MODELS
+    emb_ref = reference_root() / SURF2SPOT_EMBEDDINGS
     common_mounts = ["-v", f"{chain_ref}:/opt/Surf2Spot/Surf2Spot/data/chainsaw/saved_models:ro"]
     emb_mount = ["-v", f"{emb_ref}:/opt/Surf2Spot/Surf2Spot/data/model_emb/prot_t5_xl_half_uniref50-enc:ro"]
     image = manifest["image"]

@@ -53,9 +53,13 @@ def _submitted_execution_context(run_dir: Path) -> tuple[str, dict[str, str]]:
             or argv[1:3] != ["-m", "mn_molecular_design_studio.engine.workflow_engine.core.local_worker"]):
         return sys.executable, {}
     executable = str(argv[0])
+    environment = command.get("environment") or {}
+    if executable == "python" and environment == {}:
+        # Direct jobs historically record a descriptive command. The worker
+        # owns the environment and should use its own interpreter for it.
+        return sys.executable, {}
     if not Path(executable).is_absolute() or not Path(executable).is_file():
         raise ValueError("The submitting Studio Python executable is unavailable.")
-    environment = command.get("environment") or {}
     if not isinstance(environment, dict):
         raise ValueError("Invalid submitting workspace environment.")
     return executable, {key: value for key, value in environment.items()

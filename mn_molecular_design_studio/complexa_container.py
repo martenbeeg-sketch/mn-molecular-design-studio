@@ -111,28 +111,35 @@ def main():
     spec=json.loads(Path(sys.argv[1]).read_text())
     os.chdir('/work/artifacts/raw/proteina_complexa')
     configure_environment(spec['environment'])
-    community=Path('community_models')
-    if not community.exists():community.symlink_to('/workspace/protein-foundation-models/community_models',target_is_directory=True)
-    config=prepare(spec)
-    if '--check-features' in sys.argv:
-        from hydra.utils import instantiate
-        from omegaconf import OmegaConf
-        cfg=OmegaConf.load(config)
-        for feature in instantiate(cfg.generation.dataloader.dataset.conditional_features):
-            feature.setup([spec['length_range'][0]])
-        print('Validated conditional input features:',spec['pipeline_task'])
-        return 0
-    if '--validate-only' in sys.argv:
-        mode='generate' if spec.get('generator_only') else 'design'
-        return subprocess.run(['/workspace/.venv/bin/complexa','validate',mode,str(config)],check=False).returncode
-    if '--prepare-only' in sys.argv:
-        print('Prepared configuration:',config)
-        return 0
-    mode='generate' if spec.get('generator_only') else 'design'
-    result=subprocess.run(['/workspace/.venv/bin/complexa',mode,str(config)],check=False).returncode
-    if result==0 and spec.get('generator_only'):
-        export_generation_metadata(spec,config)
-    return result
+    community = Path('community_models')
+    image_models = Path('/workspace/protein-foundation-models/community_models')
+    if not community.exists() and not community.is_symlink():
+        community.symlink_to(image_models, target_is_directory=True)
+    try:
+        config = prepare(spec)
+        if '--check-features' in sys.argv:
+            from hydra.utils import instantiate
+            from omegaconf import OmegaConf
+            cfg = OmegaConf.load(config)
+            for feature in instantiate(cfg.generation.dataloader.dataset.conditional_features):
+                feature.setup([spec['length_range'][0]])
+            print('Validated conditional input features:', spec['pipeline_task'])
+            return 0
+        mode = 'generate' if spec.get('generator_only') else 'design'
+        if '--validate-only' in sys.argv:
+            return subprocess.run(['/workspace/.venv/bin/complexa', 'validate', mode, str(config)], check=False).returncode
+        if '--prepare-only' in sys.argv:
+            print('Prepared configuration:', config)
+            return 0
+        result = subprocess.run(['/workspace/.venv/bin/complexa', mode, str(config)], check=False).returncode
+        if result == 0 and spec.get('generator_only'):
+            export_generation_metadata(spec, config)
+        return result
+    finally:
+        # The image path is only available inside Docker. Leaving this link in
+        # Results makes the host's scientific artifact checks fail.
+        if community.is_symlink() and community.readlink() == image_models:
+            community.unlink()
 
 
 if __name__=='__main__':

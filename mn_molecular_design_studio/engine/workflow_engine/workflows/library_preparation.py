@@ -94,7 +94,7 @@ def validate_library_request(parameters, *, require_files=True):
                 raise ValueError(f"Mapped fields are missing in {path.name}; available: {columns}.")
 
 
-def run_library_preparation(source_files: list[Path], library_name: str, output_directory: str = "",
+def run_library_preparation(source_files: list[Path], library_name: str, output_directory: str,
                             id_column: str = "id", smiles_column: str = "smiles", name_column: str = "",
                             create_centroids: bool = False, cpu_cores: int = 1,
                             worker_nodes: list[dict] | None = None, max_records: int = 0,

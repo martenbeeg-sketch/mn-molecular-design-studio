@@ -121,6 +121,33 @@ def test_mpnn_api_and_worker_reuse_one_named_run(api_queue, monkeypatch):
     assert list(api_queue.root.glob("*/*/metadata.json")) == [run / "metadata.json"]
 
 
+def test_surf2spot_api_worker_uses_registered_hotspot_group(api_queue, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import detection
+
+    target = api_queue.root.parent / "target.pdb"
+    target.write_text(PREDICTION_PDB)
+
+    def native(run_dir, steps, *, append):
+        predict = run_dir / "artifacts/surf2spot/predict"
+        predict.mkdir(parents=True)
+        (predict / "target_A.csv").write_text("aa_id,score\n1,0.8\n")
+        (predict / "target_A_pred.ply").write_text("ply\n")
+        return 0
+
+    monkeypatch.setattr(detection, "_run_shell_steps", native)
+    response = api_queue.client.post("/api/v1/workflows", json={
+        "schema_version": 1, "workflow": "detection.surf2spot", "project_id": "test-project",
+        "parameters": {"target_pdb": str(target)},
+    })
+    assert response.status_code == 202, response.text
+    run = Path(response.json()["job"]["run_dir"])
+    assert run.parent.name == detection.HOTSPOT_GROUP
+    assert local_worker.run_worker_job(run) == 0
+    result = jobs.read_json(run / "result.json")
+    assert result["success"]
+    assert {item["type"] for item in result["outputs"]["artifacts"]} == {"hotspot_table", "surface_mesh"}
+
+
 @pytest.mark.parametrize("engine", prediction.ENGINE_PROFILES)
 def test_api_creates_one_engine_specific_named_job_before_dispatch(api_queue, engine):
     response = api_queue.client.post("/api/v1/workflows", json=request_for(engine))
@@ -185,6 +212,7 @@ def test_selected_inputs_reach_container_as_one_native_batch(api_queue, monkeypa
     metadata = jobs.read_json(run / "metadata.json")
     jobs.write_json(run / "metadata.json", {**metadata, "scheduler_backend": central_scheduler.BACKEND})
     invocations = []
+    monkeypatch.setattr(prediction, "docker_host_user_args", lambda: ["--user", "1200:1200"])
     def stage(run_dir, **kwargs):
         path = run_dir / "artifacts" / (kwargs["item_id"] + ".json")
         path.write_text("{}")
@@ -205,6 +233,9 @@ def test_selected_inputs_reach_container_as_one_native_batch(api_queue, monkeypa
     monkeypatch.setattr(prediction.subprocess, "run", predict)
     workflow_queue.run_workflow_call(run, jobs.read_json(run / "worker_request.json"))
     assert len(invocations) == 1
+    if engine == "boltz2":
+        assert invocations[0][invocations[0].index("--user") + 1] == "1200:1200"
+        assert "LOGNAME=studio-worker" in invocations[0]
     assert jobs.read_json(run / "metadata.json")["status"] == "completed"
     from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
     assert len(read_candidates(run)) == 2

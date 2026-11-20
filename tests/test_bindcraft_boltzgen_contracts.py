@@ -285,6 +285,27 @@ def test_boltzgen_nanobody_stages_optional_target_hotspots_as_binding_guidance(m
     assert target_file["binding_types"] == [{"chain": {"id": "X", "binding": 2}}]
 
 
+def test_boltzgen_generator_mounts_the_worker_cache_and_uses_worker_identity(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(jobs, "runs_root", lambda: tmp_path / "runs")
+    monkeypatch.setattr(design, "reference_root", lambda: tmp_path / "worker-models")
+    monkeypatch.setattr(design, "docker_host_user_args", lambda: ["--user", "1234:1234"])
+    commands = []
+
+    def capture(_run_dir, steps):
+        commands.extend(step["command"] for step in steps)
+        return 1
+
+    monkeypatch.setattr(design, "_run_shell_steps", capture)
+    design.run_boltzgen(
+        task="small_molecule", ligand_type="smiles", ligand_value="NCC(=O)O",
+        binder_length="40", num_designs=1, budget=1, run_vanilla_pipeline=False,
+    )
+
+    command, = commands
+    assert f"{tmp_path / 'worker-models' / 'boltzgen-cache'}:/cache" in command
+    assert command[command.index("--user") + 1] == "1234:1234"
+
+
 def test_boltzgen_requires_hotspots_when_site_adherence_filter_is_enabled():
     with pytest.raises(ValueError, match="Select at least one binding-site residue"):
         design.run_boltzgen(

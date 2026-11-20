@@ -18,7 +18,7 @@ _PATH_KEY_PARTS: Final = (
 )
 _PATH_KEY_SUFFIXES: Final = (
     "_a3m", "_cif", "_csv", "_dir", "_fasta", "_fa", "_file", "_folder", "_json", "_jsonl",
-    "_mmcif", "_msa", "_pdb", "_path", "_root", "_structure", "_table", "_tsv", "_weights", "_yaml", "_yml",
+    "_mmcif", "_msa", "_pdb", "_path", "_posp", "_root", "_sdf", "_structure", "_table", "_tsv", "_weights", "_yaml", "_yml",
     "_pae", "_pae_matrix", "_trajectory", "_trajectories", "_trajectory_set", "_traj",
 )
 _PROVENANCE_KEY_PARTS: Final = ("command", "argv", "executable", "queued_command")
@@ -28,12 +28,12 @@ _INLINE_CONTENT_KEYS: Final = frozenset({
 _INLINE_CONTENT_SUFFIXES: Final = ("_text", "_sequence", "_sequences", "_smiles")
 _PATH_VALUE_EXTENSIONS: Final = frozenset({
     ".a3m", ".cif", ".csv", ".fa", ".fasta", ".json", ".jsonl", ".mmcif",
-    ".msa", ".pdb", ".tsv", ".yaml", ".yml", ".dcd", ".h5", ".hdf5",
+    ".msa", ".pdb", ".posp", ".sdf", ".tsv", ".yaml", ".yml", ".dcd", ".h5", ".hdf5",
     ".nc", ".netcdf", ".npy", ".npz", ".trr", ".xtc",
 })
 _RELATIVE_PATH_KEY_SUFFIXES: Final = (
     "_a3m", "_cif", "_csv", "_dir", "_directory", "_fa", "_fasta", "_file", "_folder",
-    "_json", "_jsonl", "_mmcif", "_msa", "_pdb", "_path", "_repository", "_root",
+    "_json", "_jsonl", "_mmcif", "_msa", "_pdb", "_path", "_posp", "_repository", "_root", "_sdf",
     "_structure", "_table", "_tsv", "_weights", "_yaml", "_yml", "_pae", "_pae_matrix",
     "_trajectory", "_trajectories", "_trajectory_set", "_traj",
 )
@@ -82,7 +82,7 @@ def is_operational_path_key(key: str) -> bool:
     # These names are common in scientific schemas as direct artifact fields
     # (rather than ``*_file``/``*_path``). Treat them as paths so managed
     # PAE matrices and MD trajectories retain their owning-workstation affinity.
-    if lowered in {"pae", "pae_matrix", "trajectory", "trajectories", "trajectory_set", "traj"}:
+    if lowered in {"pae", "pae_matrix", "trajectory", "trajectories", "trajectory_set", "traj", "mimosa_complex"}:
         return True
     # Format names such as "pdb" and "mmcif" are values, even when the key
     # contains "input" or "output"; they must not be resolved as filesystem paths.
@@ -99,7 +99,7 @@ def _is_inline_content_key(key: str) -> bool:
 
 def is_provenance_key(key: str) -> bool:
     lowered = key.lower()
-    return any(part in lowered for part in _PROVENANCE_KEY_PARTS)
+    return lowered == "sha256" or lowered.endswith("_sha256") or any(part in lowered for part in _PROVENANCE_KEY_PARTS)
 
 
 def _relative_path_key(key: str) -> bool:
@@ -151,7 +151,7 @@ def resolve_managed_paths(value: object, *, run_dir: Path | None = None, key: st
         }
     if isinstance(value, list):
         return [resolve_managed_paths(child, run_dir=run_dir, key=key, provenance=provenance) for child in value]
-    if not isinstance(value, str) or provenance or _is_inline_content_key(key):
+    if not isinstance(value, str) or provenance or _is_inline_content_key(key) or "\n" in value or "\r" in value:
         return value
     if is_portable_path(value):
         resolved = resolve_stored_path(value, run_dir=run_dir)

@@ -141,7 +141,7 @@ def run_tile(root: Path = Path("/work")) -> dict:
             score_values = [
                 float(value)
                 for value in re.findall(
-                    r"Estimated Free Energy of Binding\s*=\s*(-?\d+(?:\.\d+)?)\s*kcal/mol",
+                    r"Estimated Free Energy of Binding\s*=\s*([+-]?\d+(?:\.\d+)?)\s*kcal/mol",
                     dlg_files[0].read_text(errors="replace"),
                 )
             ]

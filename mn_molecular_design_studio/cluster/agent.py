@@ -242,7 +242,7 @@ class Agent:
         self._library_transfer_threads = {}
         self._library_transfer_lock = threading.Lock()
 
-    def snapshot(self):
+    def snapshot(self, *, cached_reference_hashes_only=False):
         if time.monotonic() - self._inventory_time > 120 or not self._inventory:
             self._inventory = {"code_revision": capabilities.code_revision(), "images": capabilities.images()}
             self._inventory_time = time.monotonic()
@@ -252,6 +252,7 @@ class Agent:
                                   "references": capabilities.reference_inventory(self._reference_probes),
                                   "reference_hashes": capabilities.reference_fingerprints(
                                       self._reference_probes, self._reference_hash_cache,
+                                      cached_only=cached_reference_hashes_only,
                                   ),
                                   "accept_jobs": config.load()["accept_jobs"] and storage_online,
                                   "storage_available": storage_online}
@@ -476,7 +477,9 @@ class Agent:
                 (node.get("snapshot", {}) for node in store.nodes() if node["id"] == self.node_id),
                 {},
             )
-        snapshot = self.snapshot()
+        # Multi-gigabyte checkpoints are fingerprinted by the catalog heartbeat.
+        # Until then, an unverified checkpoint makes only its dependent jobs ineligible.
+        snapshot = self.snapshot(cached_reference_hashes_only=True)
         if settings["mode"] == "peer":
             changed = any(
                 previous_local.get(key) != snapshot.get(key)

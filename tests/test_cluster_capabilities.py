@@ -111,6 +111,101 @@ def test_rfantibody_full_pipeline_retains_required_sequence_and_refold_weights()
     }.issubset(needs["references"])
 
 
+def test_surface_bundle_placement_requires_each_native_tool_and_external_model():
+    from mn_molecular_design_studio.engine.workflow_engine.core.manifests import load_manifest
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.detection import SURFACE_METHODS, SURFACE_REQUIRED_REFERENCES
+
+    needs = capabilities.requirements({"workflow": "detection.surface_analysis", "parameters": {}}, installed_images={})
+    assert set(needs["images"]) == {load_manifest(tool)["image"] for tool in SURFACE_METHODS}
+    assert set(needs["references"]) == {path for paths in SURFACE_REQUIRED_REFERENCES.values() for path in paths}
+
+
+def test_abmpnn_placement_requires_ligandmpnn_runtime_and_antibody_checkpoint():
+    from mn_molecular_design_studio.mpnn_input import IMAGE
+
+    for workflow, parameters in (("sequence.abmpnn", {}), ("sequence.mpnn", {"model_type": "ab_mpnn"})):
+        needs = capabilities.requirements(
+            {"workflow": workflow, "parameters": parameters}, installed_images={IMAGE: "ligandmpnn-hash"},
+        )
+
+        assert needs["images"] == {IMAGE: "ligandmpnn-hash"}
+        assert "mpnn/abmpnn.pt" in needs["references"]
+
+
+def test_boltzgen_generator_placement_uses_the_selected_runtime():
+    from mn_molecular_design_studio.engine.workflow_engine.core.manifests import load_manifest
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.design import MIMOSA_BOLTZGEN_IMAGE
+
+    standard_image = load_manifest("boltzgen")["image"]
+    installed = {standard_image: "standard-hash", MIMOSA_BOLTZGEN_IMAGE: "mimosa-hash"}
+    for workflow, parameters, image in (
+        ("design.boltzgen_generator", {}, standard_image),
+        ("design.boltzgen", {}, standard_image),
+        ("design.boltzgen_mimosa", {"mimosa_condition": "sequence_fixed"}, MIMOSA_BOLTZGEN_IMAGE),
+    ):
+        needs = capabilities.requirements({"workflow": workflow, "parameters": parameters}, installed_images=installed)
+
+        assert needs["images"] == {image: installed[image]}
+        assert "boltzgen-cache" in needs["references"]
+
+
+def test_rfdiffusion3_placement_does_not_require_classic_model_directory():
+    needs = capabilities.requirements({"workflow": "design.rfdiffusion3", "parameters": {}}, installed_images={})
+
+    assert "foundry/rfd3_latest.ckpt" in needs["references"]
+    assert "rfdiffusion_models" not in needs["references"]
+    assert needs["gpu_count"] == 1
+
+
+def test_ligand_generator_placement_includes_its_native_image_and_checkpoints():
+    for engine, image, paths in (
+        ("pocketflow", "mn-pocketflow:cu128-a31a5a0", {"generation/pocketflow/ZINC-pretrained-255000.pt"}),
+        ("pgmg", "mn-pgmg:cu128-85fb712", {"generation/pgmg/model.pth", "generation/pgmg/tokenizer.pkl"}),
+    ):
+        needs = capabilities.requirements({"workflow": f"ligand.generation.{engine}", "parameters": {}},
+                                          installed_images={})
+        assert set(needs["images"]) == {image}
+        assert set(needs["references"]) == paths
+        assert needs["gpu_count"] == 1
+
+
+def test_msa_enabled_prediction_placement_includes_its_colabfold_image():
+    from mn_molecular_design_studio.cofolding_msa import colabfold_image
+
+    for engine, options, validation, needs_colabfold in (
+        ("esmfold2", {}, {}, True),
+        ("openfold3_jax", {}, {}, True),
+        ("openfold3_jax", {"use_msa": False}, {}, False),
+        ("boltz2", {}, {}, True),
+        ("esmfold2", {"use_msa": False}, {}, False),
+        ("boltz2", {"use_msa_server": False}, {}, False),
+        ("localfold", {"msa_mode": "mmseqs2_server"}, {}, True),
+        ("localfold", {"msa_mode": "reference_only"}, {}, False),
+        ("boltz2", {}, {"validation_sources": [{}], "validation_mode": "binder"}, False),
+        ("boltz2", {"use_msa": False}, {"validation_sources": [{}], "target_use_msa": True}, True),
+    ):
+        needs = capabilities.requirements({"workflow": "refolding.optimized_prediction", "parameters": {
+            "engine": engine, "engine_options": options, **validation,
+        }}, installed_images={})
+        assert (colabfold_image() in needs["images"]) == needs_colabfold
+
+
+def test_native_candidate_refolding_placement_requires_its_image_and_model_files():
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import refolding
+
+    for workflow, image, path in (
+        ("refolding.openfold3", refolding.OPENFOLD3_IMAGE, refolding.OPENFOLD3_REFERENCE),
+        ("refolding.rf3", refolding.RF3_IMAGE, refolding.RF3_REFERENCE),
+        ("refolding.protenix", refolding.PROTENIX_IMAGE, "pxdesign"),
+        ("refolding.protenix_cli", refolding.PROTENIX_CLI_IMAGE, "protenix"),
+        ("refolding.boltzgen_fold", refolding.BOLTZGEN_IMAGE, "boltzgen-cache/" + refolding.BOLTZGEN_FOLD_CHECKPOINT),
+    ):
+        needs = capabilities.requirements({"workflow": workflow, "parameters": {}}, installed_images={})
+        assert set(needs["images"]) == {image}
+        assert path in needs["references"]
+        assert needs["gpu_count"] == 1
+
+
 def test_reference_fingerprints_detect_changed_model_contents(tmp_path, monkeypatch):
     monkeypatch.setenv('MN_MOLECULAR_DESIGN_STUDIO_REFERENCE_DIR', str(tmp_path))
     path = tmp_path / 'model.ckpt'; path.write_bytes(b'weights-v1')

@@ -49,7 +49,8 @@ _POCKETXMOL_CONFIG = "generation/pocketxmol/data/trained_models/pxm_use/train_co
 _GENERATOR_CONFIGS: dict[str, dict[str, Any]] = {
     "omtra": {
         "name": "OMTRA", "tool": "omtra_generation", "image": "mn-omtra:cu128-745127d",
-        "references": ("generation/omtra/checkpoint.ckpt",),
+        "references": ("generation/omtra/protcond.ckpt",),
+        "pharmacophore_reference": "generation/omtra/checkpoint.ckpt",
         "conditions": ("target_pdb",),
     },
     "flowr_root": {
@@ -91,6 +92,18 @@ _GENERATOR_CONFIGS: dict[str, dict[str, Any]] = {
         "conditions": ("target_pdb", "pharmacophore_posp"),
     },
 }
+
+
+def generation_required_references(engine: str, *, pharmacophore_conditioned: bool = False) -> tuple[str, ...]:
+    if engine == "lddm":
+        return (_LDDM_CHECKPOINT,)
+    if engine == "pocketxmol":
+        return (_POCKETXMOL_CHECKPOINT, _POCKETXMOL_CONFIG)
+    if engine == "omtra" and pharmacophore_conditioned:
+        return (_GENERATOR_CONFIGS[engine]["pharmacophore_reference"],)
+    return _GENERATOR_CONFIGS[engine]["references"]
+
+
 _ROSETTALIGAND_IMAGE = "mn-openvs:local"
 _GROMACS_MD_IMAGE = "mn-gromacs:2026.3-cu128"
 _OPENMM_MD_IMAGE = "mn-md:cu128"
@@ -572,7 +585,7 @@ def _validate_generation_request(workflow_id: str, parameters: dict[str, Any], *
         if require_files:
             validate_target_pdb(Path(parameters["target_pdb"]))
             validate_ligand_sdf(Path(parameters["reference_ligand_sdf"]))
-            if not (reference_root() / _LDDM_CHECKPOINT).is_file():
+            if not (reference_root() / generation_required_references("lddm")[0]).is_file():
                 raise ValueError("The LDDM CD+BB checkpoint is missing from the configured reference directory.")
     elif workflow_id == "ligand.generation.pocketxmol":
         steps = parameters.get("diffusion_steps", 100)
@@ -587,7 +600,7 @@ def _validate_generation_request(workflow_id: str, parameters: dict[str, Any], *
         if require_files:
             validate_target_pdb(Path(parameters["target_pdb"]))
             validate_target_pdb(Path(parameters["pocket_pdb"]))
-            for reference in (_POCKETXMOL_CHECKPOINT, _POCKETXMOL_CONFIG):
+            for reference in generation_required_references("pocketxmol"):
                 if not (reference_root() / reference).is_file():
                     raise ValueError(f"PocketXMol reference file is missing: {reference}")
     else:
@@ -635,7 +648,8 @@ def _validate_generator_tile_request(workflow_id: str, parameters: dict[str, Any
             validate_target_pdb(Path(parameters["pocket_pdb"]))
         if parameters.get("reference_ligand_sdf"):
             validate_ligand_sdf(Path(parameters["reference_ligand_sdf"]))
-        missing = [relative for relative in config["references"] if not (reference_root() / relative).is_file()]
+        references = generation_required_references(engine, pharmacophore_conditioned=bool(parameters.get("pharmacophore_json")))
+        missing = [relative for relative in references if not (reference_root() / relative).is_file()]
         if missing:
             raise ValueError(f"{config['name']} reference files are missing: " + ", ".join(missing))
 
@@ -762,6 +776,12 @@ def validate_ligand_tool_request(workflow_id: str, parameters: dict[str, Any], *
         return
     if workflow_id == "ligand.md.openmm":
         _validate_gromacs_md_request(parameters, require_files=require_files, engine="openmm")
+        return
+    if workflow_id == "ligand.md.analysis":
+        if require_files:
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.md_analysis import _resolve_source_paths
+
+            _resolve_source_paths(parameters["source_run_dir"], parameters["topology_path"], parameters["trajectory_path"])
         return
     if workflow_id in {"ligand.generation.lddm", "ligand.generation.pocketxmol"}:
         _validate_generation_request(workflow_id, parameters, require_files=require_files)
@@ -1607,6 +1627,7 @@ def run_ligand_autodock_gpu(
     scrub_skip_tautomer: bool = True,
     scrub_protocol: str = DEFAULT_SCRUB_PROTOCOL,
     import_to_database: bool = False,
+    job_name: str = "",
 ) -> Path:
     """Dock a Database compound set with AutoDock-GPU and AutoGrid maps."""
     validate_target_pdb(target_pdb)
@@ -1644,6 +1665,7 @@ def run_ligand_autodock_gpu(
     payload, compounds = _validated_compound_set(compound_set_file, compound_limit)
     params = {
         "engine": "AutoDock-GPU",
+        "job_name": job_name,
         "center": center,
         "box_size": box_size,
         "original_center": original_center,
@@ -2688,7 +2710,7 @@ def _run_ligand_generator(
         parameters["pharmacophore_json"] = pharmacophore_json
     _validate_generator_tile_request(workflow, parameters, require_files=True)
     config = _GENERATOR_CONFIGS[engine]
-    checkpoint = config["references"][0]
+    checkpoint = generation_required_references(engine, pharmacophore_conditioned=pharmacophore_json is not None)[0]
     reference = reference_root().expanduser().resolve()
     manifest = load_manifest(engine)
     params = {

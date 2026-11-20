@@ -25,6 +25,7 @@ from mn_molecular_design_studio.engine.workflow_engine.core.candidates import (
     read_candidates,
     write_candidates,
 )
+from mn_molecular_design_studio.engine.workflow_engine.core.docker_runner import docker_host_user_args
 from mn_molecular_design_studio.engine.workflow_engine.core.gpu import (
     docker_gpu_args,
     gpu_queue_resource,
@@ -1983,7 +1984,7 @@ def _confidence_sidecar(path: Path) -> dict[str, Any]:
     return scores
 
 
-def _mol1_pae_path(structure_path: Path, task: dict[str, Any]) -> Path | None:
+def _mol1_pae_path(structure_path: Path, task: dict[str, Any], evidence_dir: Path) -> Path | None:
     """Return Mol-1's native token PAE when its axes match this protein complex."""
     if task.get("dna") or task.get("rna") or task.get("ligand_ccd_codes") or task.get("ligand_smiles"):
         return None
@@ -2025,7 +2026,7 @@ def _mol1_pae_path(structure_path: Path, task: dict[str, Any]) -> Path | None:
             return None
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         return None
-    path = structure_path.with_name(f"{structure_path.stem}_pae.json")
+    path = evidence_dir / f"{structure_path.stem}_pae.json"
     write_json(path, {"predicted_aligned_error": numeric, "source": "Mol-1 token_pair_pae",
                       "token_pair_axis": "Mol-1 token order; protein chain order verified against the output structure"})
     return path
@@ -2104,6 +2105,14 @@ def _profile_gpu_count(profile: dict[str, Any], mode: str) -> int:
     return int(profile.get("gpu_count", {}).get(mode, 1))
 
 
+def allow_colabfold_msa(engine: str, options: dict[str, Any]) -> bool:
+    if engine == "localfold":
+        return options.get("msa_mode") == "automatic"
+    if engine == "boltz2":
+        return bool(options.get("use_msa_server", True))
+    return True
+
+
 def _validate_engine_options(profile: dict[str, Any], values: dict[str, Any] | None) -> dict[str, Any]:
     supplied = values or {}
     if not isinstance(supplied, dict):
@@ -2165,6 +2174,20 @@ def _validate_engine_options(profile: dict[str, Any], values: dict[str, Any] | N
         )
     elif "msa_mode" in supplied:
         normalized["use_msa"] = supplied["msa_mode"] != "single_sequence"
+    return normalized
+
+
+def prediction_engine_options(engine: str, options: dict[str, Any] | None, *,
+                              validation_sources: list[dict] | None = None,
+                              validation_mode: str | None = None,
+                              target_use_msa: bool = True) -> dict[str, Any]:
+    profile = ENGINE_PROFILES[engine]
+    if engine == "localfold":
+        model = options.get("model", "alphafold3") if isinstance(options, dict) else "alphafold3"
+        profile = localfold.profile_for(profile, str(model))
+    normalized = _validate_engine_options(profile, options)
+    if validation_sources is not None and profile.get("supports_msa"):
+        normalized["use_msa"] = bool(target_use_msa and validation_mode != "binder")
     return normalized
 
 
@@ -2252,7 +2275,10 @@ def _prepare_prediction(
     supports_boltz_features = str(engine) == "boltz2"
     clean_name = re.sub(r"[^A-Za-z0-9_-]+", "_", str(job_name or "optimized-prediction")).strip("_")[:80]
     clean_name = clean_name or "optimized_prediction"
-    selected_options = _validate_engine_options(profile, engine_options)
+    selected_options = prediction_engine_options(
+        engine, engine_options, validation_sources=validation_sources,
+        validation_mode=validation_mode, target_use_msa=target_use_msa,
+    )
     if str(engine) == "boltz2":
         if selected_options.get("write_full_pae", True) is not True:
             raise ValueError("Full PAE is always emitted by the installed Boltz-2 engine and retained for ipSAE; write_full_pae=False is unsupported.")
@@ -2274,8 +2300,6 @@ def _prepare_prediction(
             target_type=validation_target_type, binder_format=validation_binder_format,
             require_passing=validation_require_passing,
         )
-        if profile.get("supports_msa"):
-            selected_options["use_msa"] = bool(target_use_msa and validation_mode != "binder")
     elif validation_mode is not None:
         raise ValueError("Select design runs before choosing a validation mode.")
     if supports_boltz_features and int(seed) + int(selected_options.get("seed_count", 1)) - 1 > 2**31 - 1:
@@ -2837,11 +2861,7 @@ def run_optimized_prediction(
                         if engine == "localfold" and selected_options["model"].startswith("af2_")
                         else int(selected_options.get("max_msa_seqs", selected_options.get("external_msa_max_seqs", 1024)))
                     ),
-                    allow_msa_server=(
-                        selected_options.get("msa_mode") == "automatic"
-                        if engine == "localfold" else
-                        bool(selected_options.get("use_msa_server", True)) if engine == "boltz2" else True
-                    ),
+                    allow_msa_server=allow_colabfold_msa(engine, selected_options),
                     structure_uploads=task["structure_templates"], binder_use_msa=task["binder_use_msa"],
                 )
             manifest_items.append({
@@ -2965,6 +2985,11 @@ def run_optimized_prediction(
                     "--env", "MODEL_OPT_JIT_ROOT=/cache/af3_torch/jit",
                     "--env", f"OMP_NUM_THREADS={int(cpu_cores)}",
                 ))
+            if profile["api_engine"] in {"boltz2", "boltzgen_fold_opt_msa"}:
+                user_args = docker_host_user_args()
+                if user_args:
+                    # Studio needs to read native confidence archives and update input aliases.
+                    command.extend((*user_args, "--env", "HOME=/tmp", "--env", "LOGNAME=studio-worker"))
             if profile["api_engine"] == "boltz2":
                 command.extend(("--mount", f"type=bind,src={boltz_cache},dst=/models"))
             options = _batch_options(
@@ -3123,8 +3148,9 @@ def run_optimized_prediction(
                 from mn_molecular_design_studio.scientific_contracts import verify_prediction_structure, restore_prediction_ccd_names
                 native_structure_path = structure_path
                 confidence = _confidence_sidecar(native_structure_path)
-                mol1_pae_path = _mol1_pae_path(native_structure_path, task) if profile["api_engine"] == "mol1" else None
-                structure_path = restore_prediction_ccd_names(native_structure_path, task)
+                evidence_dir = job.run_dir / "artifacts" / "prediction_evidence" / task["id"] / str(sample_index)
+                mol1_pae_path = _mol1_pae_path(native_structure_path, task, evidence_dir) if profile["api_engine"] == "mol1" else None
+                structure_path = restore_prediction_ccd_names(native_structure_path, task, evidence_dir=evidence_dir)
                 identity_check = verify_prediction_structure(structure_path, task)
                 structures.append(structure_path)
                 pae_candidates = (

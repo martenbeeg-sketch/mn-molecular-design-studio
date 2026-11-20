@@ -588,6 +588,16 @@ def _map_structure_parameters(p,target):
     return p
 
 
+def validate_run_counts(parameters: dict[str, Any]) -> None:
+    for key, default, low, high in (
+        ('num_designs', 8, 1, 500000), ('batch_size', 1, 1, 16),
+        ('nsteps', 60, 60, 120), ('cpu_cores', 8, 1, 256),
+    ):
+        value = parameters.get(key, default)
+        if type(value) is not int or not low <= value <= high:
+            raise ValueError(f'{key} must be an integer between {low} and {high}.')
+
+
 def prepare_request(parameters: dict[str, Any], *, run_dir: Path) -> dict[str, Any]:
     """Validate/stage inputs; native chemistry and condition validation runs in the image."""
     import copy
@@ -598,9 +608,7 @@ def prepare_request(parameters: dict[str, Any], *, run_dir: Path) -> dict[str, A
     if task not in TASKS: raise ValueError('Select a supported RFD4 task.')
     if mode not in {'guided','guided_binder','annotated_cif','condition_spec','unconditional'}:
         raise ValueError('Select a supported RFD4 input method.')
-    for key,default,low,high in [('num_designs',8,1,500000),('batch_size',1,1,16),('nsteps',60,60,120),('cpu_cores',8,1,256)]:
-        if type(p.get(key,default)) is not int or not low<=p.get(key,default)<=high:
-            raise ValueError(f'{key} must be an integer between {low} and {high}.')
+    validate_run_counts(p)
     seed=p.get('seed')
     if seed is not None and (type(seed) is not int or not 0<=seed<=4294967295):
         raise ValueError('Random seed must be blank or an integer from 0 to 4294967295.')
