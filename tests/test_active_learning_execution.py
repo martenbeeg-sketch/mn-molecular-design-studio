@@ -51,6 +51,7 @@ def test_retained_winners_survive_worker_cleanup_and_are_pruned_when_overtaken(t
     two['best_score'] = -10
     updated = controller._collect_best_poses(campaign, [two, one], 1, ssh_user='compute')
     assert (campaign / updated[0]).read_text() == 'POSE TWO'
+    controller._prune_superseded_poses(campaign / "artifacts/active_learning", updated)
     assert not (campaign / kept[0]).exists()
 
 
@@ -128,3 +129,72 @@ def test_docking_round_runs_both_local_gpu_workers_and_steals_pending_batches(tm
     assert len({row['compound_key'] for row in scored}) == 16
     assert maximum[0] == 2
     assert calls.count('1') == 7 and calls.count('0') == 1
+
+
+def test_missing_winner_does_not_change_previously_published_pose(tmp_path):
+    run = tmp_path / "worker"
+    poses = run / "artifacts/poses"
+    poses.mkdir(parents=True)
+    original = {"library_id": "lib", "compound_key": 1, "compound_id": "one", "best_score": -8.,
+                "pose_path": "artifacts/poses/first.pdbqt", "worker_run_dir": str(run)}
+    (poses / "first.pdbqt").write_text("FIRST")
+    campaign = tmp_path / "campaign"
+    data_root = campaign / "artifacts/active_learning"
+    keep = controller._collect_best_poses(campaign, [original], 2, ssh_user="compute", require_complete=True)
+    manifest = data_root / "retained_poses.json"
+    published = manifest.read_bytes()
+    improved = {**original, "best_score": -9., "pose_path": "artifacts/poses/better.pdbqt"}
+    (poses / "better.pdbqt").write_text("BETTER")
+    missing = {**original, "compound_key": 2, "pose_path": "artifacts/poses/missing.pdbqt"}
+    with pytest.raises(RuntimeError, match="selected best pose is missing"):
+        controller._collect_best_poses(campaign, [improved, missing], 2, ssh_user="compute", require_complete=True)
+    assert manifest.read_bytes() == published
+    assert (campaign / keep[0]).read_text() == "FIRST"
+
+    (poses / "missing.pdbqt").write_text("MISSING")
+    updated = controller._collect_best_poses(campaign, [improved, missing], 2, ssh_user="compute", require_complete=True)
+    controller._publish_ranked_scores(data_root, [improved, missing], "vina_score", "kcal/mol")
+    controller._prune_superseded_poses(data_root, updated)
+    assert (campaign / updated[0]).read_text() == "BETTER"
+    assert not (campaign / keep[0]).exists()
+
+
+def test_remote_pose_transfer_and_pruning_check_child_identity(tmp_path, monkeypatch):
+    run = tmp_path / "ligand-docking" / "child"
+    source = run / "artifacts/poses"
+    source.mkdir(parents=True)
+    (source / "one.pdbqt").write_text("POSE ONE")
+    scores = run / "artifacts/docking_scores.csv"
+    scores.write_text("score evidence")
+    metadata = run / "metadata.json"
+    metadata.write_text(json.dumps({"status": "completed", "tool": "unidock_pro", "run_id": run.name,
+                                    "campaign_id": "campaign", "pipeline_parent_node_id": "organizer",
+                                    "active_learning_round": 3}))
+    local_run = subprocess.run
+
+    def via_ssh(command, **kwargs):
+        assert command[-2] == "compute@worker"
+        return local_run(["bash", "-c", command[-1]], **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", via_ssh)
+    campaign = tmp_path / "campaign"
+    rows = [{"library_id": "lib", "compound_key": 1, "compound_id": "one", "best_score": -8.,
+             "pose_path": "artifacts/poses/one.pdbqt", "worker_run_dir": str(run), "worker_host": "worker"}]
+    retained = controller._collect_best_poses(campaign, rows, 1, ssh_user="compute", require_complete=True)
+    assert (campaign / retained[0]).read_text() == "POSE ONE"
+    workers = [{"host": "worker", "run_dirs": [str(run)]}]
+    cleanup = {"ssh_user": "compute", "campaign_id": "campaign", "parent_node": "organizer", "round_number": 3}
+    with pytest.raises(RuntimeError, match="identity does not match"):
+        controller._cleanup_docking_artifacts(workers, **{**cleanup, "campaign_id": "another-campaign"})
+    elsewhere = tmp_path / "untouchable"
+    elsewhere.mkdir()
+    (run / "artifacts/prepared").symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(RuntimeError, match="ordinary docking output directories"):
+        controller._cleanup_docking_artifacts(workers, **cleanup)
+    assert elsewhere.is_dir() and source.is_dir()
+    (run / "artifacts/prepared").unlink()
+    controller._cleanup_docking_artifacts(workers, **cleanup)
+    controller._cleanup_docking_artifacts(workers, **cleanup)
+    assert not source.exists()
+    assert scores.read_text() == "score evidence"
+    assert (campaign / retained[0]).read_text() == "POSE ONE"

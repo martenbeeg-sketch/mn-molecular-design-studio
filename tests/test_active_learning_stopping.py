@@ -7,7 +7,6 @@ launching UniDock, GPUs, or remote workers.
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,7 +56,9 @@ def test_top_n_stability_uses_ranked_identity_and_configured_score_tolerance():
     assert maximum_change == pytest.approx(0.04)
 
 
-@pytest.mark.parametrize("saved_import_limit", [0, 1000])
+@pytest.mark.parametrize(("saved_import_limit", "retained_limit", "resume_failure"), [
+    (0, 2, None), (1000, 2, "transfer"), (0, 0, "cleanup"),
+])
 @pytest.mark.parametrize(
     ("scenario", "expected_stop", "expected_docking_rounds", "expected_model_steps"),
     [
@@ -66,7 +67,8 @@ def test_top_n_stability_uses_ranked_identity_and_configured_score_tolerance():
     ],
 )
 def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
-    monkeypatch, tmp_path, saved_import_limit, scenario, expected_stop, expected_docking_rounds, expected_model_steps,
+    monkeypatch, tmp_path, saved_import_limit, retained_limit, resume_failure,
+    scenario, expected_stop, expected_docking_rounds, expected_model_steps,
 ):
     campaign = tmp_path / "campaign"
     campaign.mkdir()
@@ -95,6 +97,10 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
         score_tolerance=0.05, max_iterations=0 if scenario == "stable" else 2,
     )
     nodes["active_results"]["data"]["params"]["final_database_import_limit"] = saved_import_limit
+    nodes["active_accumulate"]["data"]["params"]["retained_pose_count"] = retained_limit
+    from mn_molecular_design_studio.cluster import config
+    monkeypatch.setattr(config, "identity", lambda: "organizer")
+    data_root = campaign / "artifacts" / "active_learning"
 
     docking_rounds = []
     model_steps = []
@@ -104,12 +110,21 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
 
     def fake_dock_round(*, campaign, round_number, rows, **kwargs):
         docking_rounds.append(round_number)
-        assert kwargs["docking"]["batch_retained_pose_count"] == 0
-        worker_run = campaign / f"worker-{round_number}"
+        assert kwargs["docking"]["batch_retained_pose_count"] == retained_limit
+        if round_number > 1:
+            previous = campaign / "ligand-docking" / f"worker-{round_number - 1}"
+            assert not (previous / "artifacts" / "poses").exists()
+        worker_run = campaign / "ligand-docking" / f"worker-{round_number}"
         for artifact in ("poses", "ligands", "prepared"):
             artifact_dir = worker_run / "artifacts" / artifact
             artifact_dir.mkdir(parents=True, exist_ok=True)
             (artifact_dir / "fixture.dat").write_text(f"round-{round_number}")
+        (worker_run / "metadata.json").write_text(json.dumps({
+            "status": "completed", "tool": "unidock_pro", "run_id": worker_run.name,
+            "campaign_id": campaign.name, "pipeline_parent_node_id": "organizer",
+            "active_learning_round": round_number,
+        }))
+        (worker_run / "artifacts" / "docking_scores.csv").write_text("preserved score evidence")
         staging = kwargs["work_directory"] / "worker-00" / "batch-0001"
         staging.mkdir(parents=True, exist_ok=True)
         (staging / "staged-input.json").write_text(f"round-{round_number}")
@@ -127,10 +142,12 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
             }[round_number]
         scored = []
         for row, score in zip(rows, round_scores, strict=True):
+            pose_path = f"artifacts/poses/{row['compound_key']}.pdbqt"
+            (worker_run / pose_path).write_text(f"{row['compound_id']} {score}")
             scored.append({
                 **row,
                 "score": score,
-                "pose_path": "",
+                "pose_path": pose_path,
                 "worker_node_id": "local-worker",
                 "worker_node_name": "Local fixture worker",
                 "worker_host": "",
@@ -170,12 +187,6 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(json.dumps(rows, default=json_default))
 
-    def collect_poses(campaign, _scores, _count, **_kwargs):
-        manifest = campaign / "artifacts" / "active_learning" / "retained_poses.json"
-        manifest.parent.mkdir(parents=True, exist_ok=True)
-        manifest.write_text(json.dumps({"retained_count": 0, "poses": []}))
-        return []
-
     monkeypatch.setattr(controller, "validate_graph", lambda graph, **_kwargs: {"graph": graph})
     monkeypatch.setattr(controller, "create_job", lambda *_args, **_kwargs: SimpleNamespace(run_dir=campaign))
     monkeypatch.setattr(controller, "update_status", lambda *_args, **_kwargs: None)
@@ -194,19 +205,29 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     monkeypatch.setattr(controller, "_queue_model_step", fake_model_step)
     monkeypatch.setattr(controller, "_read_selection_table", read_selection)
     monkeypatch.setattr(controller, "_write_selection_table", write_selection)
-    monkeypatch.setattr(controller, "_collect_best_poses", collect_poses)
+    collect_poses = controller._collect_best_poses
+    cleanup_worker_runs = controller._cleanup_docking_artifacts
+    interrupted = False
 
-    def cleanup_worker_runs(worker_runs, **_kwargs):
-        for item in worker_runs:
-            for run_dir in item.get("run_dirs") or [item.get("run_dir")]:
-                if not run_dir:
-                    continue
-                run_path = Path(run_dir)
-                cleaned_worker_runs.append(run_path.name)
-                for artifact in ("poses", "ligands", "prepared"):
-                    shutil.rmtree(run_path / "artifacts" / artifact, ignore_errors=True)
+    def maybe_interrupt_transfer(*args, **kwargs):
+        nonlocal interrupted
+        if resume_failure == "transfer" and not interrupted:
+            interrupted = True
+            raise RuntimeError("interrupted after scores")
+        return collect_poses(*args, **kwargs)
 
-    monkeypatch.setattr(controller, "_cleanup_docking_artifacts", cleanup_worker_runs)
+    def maybe_interrupt_cleanup(worker_runs, **kwargs):
+        nonlocal interrupted
+        if resume_failure == "cleanup" and not interrupted:
+            interrupted = True
+            raise RuntimeError("interrupted before cleanup")
+        assert (data_root / "docking_scores.parquet").is_file()
+        assert (data_root / "retained_poses.json").is_file()
+        cleanup_worker_runs(worker_runs, **kwargs)
+        cleaned_worker_runs.extend(Path(path).name for item in worker_runs for path in item["run_dirs"])
+
+    monkeypatch.setattr(controller, "_collect_best_poses", maybe_interrupt_transfer)
+    monkeypatch.setattr(controller, "_cleanup_docking_artifacts", maybe_interrupt_cleanup)
     def write_scores(path, rows):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pylist([
@@ -233,6 +254,11 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     monkeypatch.setattr(workspace, "mark_studio_job", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(ligand_tools, "validate_target_pdb", lambda _path: None)
 
+    if resume_failure:
+        with pytest.raises(RuntimeError, match="interrupted"):
+            controller.run_active_learning_pipeline(study, "Stop smoke", "test-owner", "test-project")
+        assert docking_rounds == [1]
+        assert (campaign / "ligand-docking/worker-1/artifacts/poses/fixture.dat").is_file()
     result = controller.run_active_learning_pipeline(
         study, "Stop smoke", "test-owner", "test-project",
     )
@@ -240,24 +266,31 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     assert result == campaign
     assert docking_rounds == list(range(1, expected_docking_rounds + 1))
     assert model_steps == list(range(1, expected_model_steps + 1))
-    assert cleaned_worker_runs == [f"worker-{round_number}" for round_number in range(1, expected_docking_rounds)]
-    final_worker = campaign / f"worker-{expected_docking_rounds}" / "artifacts"
-    assert (final_worker / "poses" / "fixture.dat").is_file()
-    assert (final_worker / "ligands" / "fixture.dat").is_file()
-    assert (final_worker / "prepared" / "fixture.dat").is_file()
-    rounds_dir = campaign / "artifacts" / "active_learning" / "rounds"
-    final_round = rounds_dir / f"round-{expected_docking_rounds:04d}"
-    assert (final_round / "worker-00" / "batch-0001" / "staged-input.json").is_file()
-    assert (rounds_dir / f"round-{expected_docking_rounds:04d}-selection.parquet").is_file()
-    for round_number in range(1, expected_docking_rounds):
-        assert not (rounds_dir / f"round-{round_number:04d}" / "worker-00").exists()
-        assert not (rounds_dir / f"round-{round_number:04d}-selection.parquet").exists()
+    assert cleaned_worker_runs == [f"worker-{n}" for n in range(1, expected_docking_rounds + 1)]
+    for number in range(1, expected_docking_rounds + 1):
+        worker = campaign / "ligand-docking" / f"worker-{number}" / "artifacts"
+        for artifact in ("poses", "ligands", "prepared"):
+            assert not (worker / artifact).exists()
+        assert (worker / "docking_scores.csv").is_file()
+        rounds_dir = data_root / "rounds"
+        assert not (rounds_dir / f"round-{number:04d}" / "worker-00").exists()
+        assert (rounds_dir / f"round-{number:04d}-selection.parquet").is_file()
+    rows = pq.read_table(data_root / "docking_scores.parquet").to_pylist()
+    assert len(rows) == 4 + (expected_docking_rounds - 1) * 2
+    for index, row in enumerate(rows):
+        if index < retained_limit:
+            assert (campaign / row["pose_path"]).read_text() == f"{row['compound_id']} {row['score']}"
+        else:
+            assert row["pose_path"] == ""
     state = json.loads((campaign / "artifacts/active_learning/state.json").read_text())
     history = json.loads((campaign / "artifacts/active_learning/round_history.json").read_text())
     graph_state = json.loads((campaign / "graph_execution.json").read_text())
     decision_id = nodes["active_decision"]["id"]
     assert state["stop_reason"] == history["stop_reason"] == expected_stop
     assert history["rounds"][-1]["stop_reason"] == expected_stop
+    assert all(row["worker_cleanup_completed"] for row in history["rounds"])
+    assert all(row["retained_pose_count"] == retained_limit for row in history["rounds"])
+    assert history["retained_pose_limit"] == retained_limit
     for row in history["rounds"]:
         summaries = {group["top_n"]: group for group in row["score_summaries"]}
         assert {100, 1000, 10000}.issubset(summaries)

@@ -13,6 +13,37 @@ import time
 from pathlib import Path
 
 
+def prune_completed_docking_run(path: str, campaign_id: str, parent_node: str, round_number: int) -> None:
+    """Remove only bulky artifacts from a completed child of this campaign."""
+    import json
+    import shutil
+    from pathlib import Path
+
+    run_dir = Path(path)
+    if (not run_dir.is_absolute() or run_dir.parent.name != "ligand-docking"
+            or run_dir.is_symlink() or run_dir.parent.is_symlink()):
+        raise ValueError("Expected the workdir of a managed docking child.")
+    metadata_path = run_dir / "metadata.json"
+    if metadata_path.is_symlink():
+        raise ValueError("Expected metadata from the docking child's own workdir.")
+    metadata = json.loads(metadata_path.read_text())
+    if (metadata.get("status") != "completed" or metadata.get("tool") != "unidock_pro"
+            or metadata.get("run_id") != run_dir.name or metadata.get("campaign_id") != campaign_id
+            or metadata.get("pipeline_parent_node_id") != parent_node
+            or metadata.get("active_learning_round") != round_number):
+        raise ValueError("Docking child identity does not match the completed round.")
+    artifacts = run_dir / "artifacts"
+    if artifacts.is_symlink():
+        raise ValueError("Docking artifacts must be inside their own workdir.")
+    directories = [artifacts / name for name in ("poses", "ligands", "prepared")]
+    if any(directory.is_symlink() or (directory.exists() and not directory.is_dir())
+           for directory in directories):
+        raise ValueError("Expected ordinary docking output directories in the child workdir.")
+    for directory in directories:
+        if directory.is_dir():
+            shutil.rmtree(directory)
+
+
 def run(request_path: Path) -> dict:
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
     from mn_molecular_design_studio.engine.workflow_engine.core.workflow_queue import enqueue_workflow_call

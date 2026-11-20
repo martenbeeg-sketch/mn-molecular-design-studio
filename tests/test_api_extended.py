@@ -1500,3 +1500,87 @@ def test_ipsae_analysis_api_emits_directional_contact_pae_and_bc2_definition_ipd
     assert output_candidate["raw_metadata"]["measurement_provenance"]["ipsae_structure_analysis"]["design_reference_found"] is True
     assert output_candidate["raw_metadata"]["measurement_provenance"]["ipsae_structure_analysis"]["design_complex_found"] is True
     assert output_candidate["raw_metadata"]["measurement_provenance"]["ipsae_structure_analysis"]["interaction_preservation"].startswith("sequence-mapped")
+
+
+def test_screen_retention_settings_and_round_results_through_mcp(api_data, monkeypatch):
+    pytest.importorskip("mcp")
+    from mcp import Client
+    from mn_molecular_design_studio.api_client import StudioClient
+    from mn_molecular_design_studio.engine.workflow_engine.core import workflow_queue
+    from mn_molecular_design_studio.external_libraries import CENTROID_SCHEMA, FEATURE_SCHEMA
+    from mn_molecular_design_studio.mcp_server import create_server
+    from mn_molecular_design_studio.runtime import reference_root
+
+    data = api_data
+    project = data["project"]["id"]
+    references = Path(reference_root())
+    spec = {"algorithm": "morgan", "bits": 1024, "radius": 2,
+            "use_chirality": False, "use_features": False}
+    feature, centroid = references / "screen-features.json", references / "screen-centroids.json"
+    for path, schema, library in ((feature, FEATURE_SCHEMA, "screen"), (centroid, CENTROID_SCHEMA, "seed")):
+        path.write_text(json.dumps({"schema_version": schema, "status": "completed",
+                                    "library_id": library, "fingerprint_spec": spec}))
+    receptor = write_structure(data["root"] / "mcp-target.pdb")
+    studio = StudioClient("http://studio.test", token=data["student_token"],
+                          transport=httpx.ASGITransport(app=data["app"]))
+    queued = []
+    monkeypatch.setattr(workflow_queue, "spawn_worker_for_run", queued.append)
+    saved = screening_run(data)
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    pose = saved / "artifacts/active_learning/retained_poses/winner.pdbqt"
+    pose.parent.mkdir()
+    pose.write_text("REMARK winning pose fixture\n")
+    score_file = saved / "artifacts/active_learning/docking_scores.parquet"
+    saved_scores = pq.read_table(score_file).to_pylist()
+    saved_scores[0]["pose_path"] = pose.relative_to(saved).as_posix()
+    pq.write_table(pa.Table.from_pylist(saved_scores), score_file)
+    (saved / "artifacts/active_learning/round_history.json").write_text(json.dumps({
+        "retained_pose_limit": 200_000, "prune_completed_rounds": True,
+        "rounds": [{"round": 1, "retained_pose_count": 11, "retained_cutoff_score": -19.9,
+                    "worker_cleanup_completed": True}],
+    }))
+
+    async def journey():
+        async with Client(create_server(studio)) as client:
+            staged = await client.call_tool("stage_text_input", {"filename": receptor.name, "text": receptor.read_text()})
+            assert not staged.is_error, staged.content
+            draft = await client.call_tool("create_pipeline_draft", {
+                "template": "small_molecule_hit_prioritization", "project_id": project,
+                "configuration": {
+                    "inputs": {"target_pdb": staged.structured_content["reference"]},
+                    "method_settings": {"unidock_active_learning": {
+                        "active_library": {"library_id": "screen", "feature_manifest": str(feature)},
+                        "active_seed": {"library_id": "seed", "centroid_manifest": str(centroid)},
+                        "active_accumulate": {"retained_pose_count": 200_000},
+                        "active_docking": {"cleanup_after_round": True},
+                    }},
+                },
+            })
+            assert not draft.is_error, draft.content
+            graph = draft.structured_content["graph"]
+            by_kind = {node["data"]["kind"]: node["data"]["params"] for node in graph["nodes"]}
+            assert by_kind["active_accumulate"]["retained_pose_count"] == 200_000
+            assert by_kind["active_docking"]["cleanup_after_round"] is True
+            request = {"project_id": project, "graph": graph}
+            validated = await client.call_tool("validate_pipeline", {"request": request})
+            assert not validated.is_error, validated.content
+            submitted = await client.call_tool("run_pipeline", {"request": request, "idempotency_key": "retain-screen"})
+            assert not submitted.is_error, submitted.content
+            retried = await client.call_tool("run_pipeline", {"request": request, "idempotency_key": "retain-screen"})
+            assert not retried.is_error, retried.content
+            assert retried.structured_content["job"] == submitted.structured_content["job"]
+            assert len(queued) == 1
+            rounds = await client.call_tool("screening_convergence", {"task_group": "campaign", "run_id": saved.name})
+            assert not rounds.is_error, rounds.content
+            assert rounds.structured_content["retained_pose_limit"] == 200_000
+            assert rounds.structured_content["rounds"][0]["retained_pose_count"] == 11
+            page = await client.call_tool("screening_results", {"task_group": "campaign", "run_id": saved.name, "limit": 3})
+            assert not page.is_error, page.content
+            items = page.structured_content["items"]
+            assert len(items) == 3
+            assert "pose_uri" not in items[1]
+            pose_content = await client.read_resource(items[0]["pose_uri"])
+            assert pose_content.contents[0].text == pose.read_text()
+
+    asyncio.run(journey())

@@ -6,6 +6,7 @@ No Streamlit, database or workflow execution modules are imported here.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -226,13 +227,19 @@ def create_server(client=None):
                                 limit: int = 100, query: str = "", score_min: float | None = None,
                                 score_max: float | None = None) -> dict[str, Any]:
         """Query a bounded page of external scores, retaining original cumulative docking rank."""
-        return await call(ctx, "POST", f"/api/v1/screening/{segment(task_group)}/{segment(run_id)}/search",
-                          body={"offset": offset, "limit": limit, "query": query,
-                                "score_min": score_min, "score_max": score_max})
+        result = await call(ctx, "POST", f"/api/v1/screening/{segment(task_group)}/{segment(run_id)}/search",
+                            body={"offset": offset, "limit": limit, "query": query,
+                                  "score_min": score_min, "score_max": score_max})
+        for row in result["items"]:
+            match = re.fullmatch(r"artifacts/active_learning/retained_poses/([A-Za-z0-9_.-]+[.]pdbqt)",
+                                 str(row.get("pose_path") or ""))
+            if match:
+                row["pose_uri"] = f"studio://screening/{segment(task_group)}/{segment(run_id)}/poses/{segment(match[1])}"
+        return result
 
     @server.tool(annotations=read)
     async def screening_convergence(task_group: str, run_id: str, ctx: Context) -> dict[str, Any]:
-        """Get round history, convergence summaries and the configured stopping criteria."""
+        """Get completed rounds, pose retention counts and cutoffs, and convergence criteria."""
         return await call(ctx, "GET", f"/api/v1/screening/{segment(task_group)}/{segment(run_id)}")
 
     @server.tool(annotations=write)
@@ -269,7 +276,7 @@ def create_server(client=None):
     async def create_pipeline_draft(template: str, project_id: str, ctx: Context, parameters: dict | None = None,
                                     source_job: str | None = None, selected_candidate_ids: list[str] | None = None,
                                     configuration: dict | None = None) -> dict[str, Any]:
-        """Create a task graph with optional configuration (methods, inputs, stages), a legacy recipe, or a Kejia/Peptide Trap continuation; does not save or run it."""
+        """Create an unsaved graph. For small_molecule_hit_prioritization, set the Top N pose limit in configuration.method_settings.unidock_active_learning.active_accumulate.retained_pose_count."""
         return await call(ctx, "POST", "/api/v1/pipelines/drafts", body={"template": template, "project_id": project_id,
                           "parameters": parameters or {}, "source_job": source_job,
                           "selected_candidate_ids": selected_candidate_ids or [], "configuration": configuration or {}})
@@ -412,6 +419,16 @@ def create_server(client=None):
     async def structure_resource(structure_id: str, ctx: Context) -> str:
         """Read an accessible molecular structure for visualization or inspection."""
         content = await call(ctx, "GET", f"/api/v1/molecules/structures/{segment(structure_id)}/file", content=True)
+        return content.decode("utf-8")
+
+    @server.resource("studio://screening/{task_group}/{run_id}/poses/{filename}")
+    async def screening_pose_resource(task_group: str, run_id: str, filename: str, ctx: Context) -> str:
+        """Read a retained docking pose from an accessible campaign."""
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+[.]pdbqt", filename):
+            raise ResourceError("Choose a retained PDBQT pose from screening results.")
+        reference = job_segment(f"{task_group}/{run_id}")
+        content = await call(ctx, "GET", f"/api/v1/jobs/{reference}/artifact", content=True,
+                             query={"path": f"artifacts/active_learning/retained_poses/{filename}"})
         return content.decode("utf-8")
 
     return server

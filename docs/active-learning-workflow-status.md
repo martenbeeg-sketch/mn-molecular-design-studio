@@ -9,10 +9,10 @@ original library references and output locations remain in Studio's catalog.
 
 The full ranking stays in `artifacts/active_learning/docking_scores.parquet`
 (original ID, name, SMILES, score, rank, rounds and worker provenance). Failures,
-round history, models and retained poses also stay external. The Final results
-node independently sets a Database shortlist of 0–1,000 final compounds; 0
-disables import. Physical pose retention is a separate setting. Results pages
-preview external data without importing it and offer bounded final promotion.
+round history, models and retained poses also stay external. Finishing a screen
+publishes the Results view. An explicit selection in Results can promote up to
+1,000 compounds to the molecular Database. The campaign's physical pose limit
+is independent of this selection.
 
 Retained docking poses now link the compound to a separate protein record and
 one portable receptor snapshot in the actual docking coordinate frame (including
@@ -37,6 +37,79 @@ portable poses first; this adapter never deletes files. Curated selections and
 unrelated job relations survive. Publish replica tombstones before resuming sync.
 
 ## Current implementation
+
+### Cumulative pose retention
+
+Set **Keep poses for the best unique compounds** in **Accumulate docking results**
+before launch. Set it to 200,000 for a campaign whose best 200,000 poses will be
+used downstream. The canvas default is 1,000. Each campaign uses the pair
+`(library_id, compound_key)` as its compound identity, retaining the best recorded
+score and accompanying pose per identity. The identity is stable across rounds
+and workstations. Distinct registered identities can share a chemical structure.
+At a score tie, the library and compound keys give a reproducible rank order.
+
+With **Prune worker files after each round** enabled, the organizer copies and
+verifies cumulative winners, publishes the ranked table and then removes bulky
+worker poses and preparation directories from that completed round. The same
+rule applies to the terminal round. A limit of zero gives a scores-only campaign
+after cleanup. Keep worker files for debugging by clearing the cleanup setting.
+Existing checkpoints retain their historical files and policy.
+
+The full score history remains available for evaluation and model training.
+Worker score tables and logs, the compact round selections, the convergence
+history, and the winning structures are retained. A failed pose transfer or
+cleanup stops the controller before it dispatches more work. After a round's
+score checkpoint is saved, a retry can continue without repeating its docking.
+A failure before that checkpoint can still require a repeat of the round.
+During docking, each workstation needs space for its active batches and for
+candidate poses until the round's cumulative cutoff is known. This is a
+post-round retention limit. A three-workstation smoke test using synthetic files
+confirmed that the coordinator selected both remote winners, checked their
+digests, pruned local and remote worker files, and could still reuse the poses
+after cleanup.
+
+#### Read-only audit of the SpiroSpace campaigns
+
+| Campaign | Rounds | Unique scored compounds | Failed attempts | Original archived poses |
+| --- | ---: | ---: | ---: | ---: |
+| Hybrid (`20261025-220608-e91da528`) | 8 | 1,590,790 | 9,210 | 1,000 |
+| Classic (`20261026-170220-29a4a53e`) | 10 | 1,987,755 | 12,245 | 1,000 |
+
+Each November 20 redock (`20261120-010933-21e95836` hybrid,
+`20261120-010936-06cca2a9` classic) recorded 199,997 new scores with poses from
+200,000 requested compounds, with three failures. Their organizer-side active
+learning folders used 909 MiB and 923 MiB at inspection. They used new docking
+seeds and carry independent scores. A future campaign can reuse its retained
+poses directly and avoid a final redock for pose recovery. A new scoring protocol
+or replicate can still produce a separate scientific result when required.
+
+#### MCP
+
+Call `create_pipeline_draft` with `template="small_molecule_hit_prioritization"`
+and the project ID. Configure the receptor under `configuration.inputs` and
+the registered fingerprint and centroid manifests under the corresponding
+`active_library` and `active_seed` method settings. The retention part of
+`configuration` is shown below.
+
+```json
+{
+  "method_settings": {
+    "unidock_active_learning": {
+      "active_accumulate": {"retained_pose_count": 200000},
+      "active_docking": {"cleanup_after_round": true}
+    }
+  }
+}
+```
+
+Use `validate_pipeline` and then `run_pipeline` with the draft graph, project
+ID, and an idempotency key. Use `get_job` for progress, `screening_convergence`
+for counts and cutoffs after each completed round, and `screening_results` to
+page through the full cumulative ranking. Rows with available poses expose
+a `pose_uri` MCP resource for the saved PDBQT file. The older SpiroSpace drafts
+reference receptor and alignment files in an external workdir. For a new
+submission from a paired session, use an authorized shared reference or stage
+copies with `stage_text_input`.
 
 ### Campaign results update — 2026-10-26
 
@@ -73,7 +146,7 @@ The active-learning canvas now submits a scheduled campaign job through Studio's
 - The initial docking adapter is UniDock Pro in its normal `balance` mode. A round is shuffled and split evenly across selected, online Studio computers; every shard is queued through that computer's scheduler. Remote docking uses the Studio Conda environment and SSH user configured on the docking node. Score tables return to the organizer after each shard so cumulative ranking and model training can continue.
 - Completed scores are accumulated by `(library_id, compound_key)`, retaining the best score for each compound. After each round, the cumulative list is sorted and its top-N compound identities and scores are compared with the previous round. A comparison is stable only when the same compounds remain in the same order and every rank's score change is within the configured tolerance. Consecutive stable rounds, screening-library exhaustion, or the optional iteration limit can stop the loop; `max_iterations=0` means no limit.
 - Binder labels are recalculated from all accumulated docking scores before each training run using the configured percentage schedule. The controller streams fingerprints from the external screening dataset for prediction and selects the best predicted compounds plus random exploration compounds, excluding compounds already docked from that screening library.
-- The final organizer-side output is a compressed Parquet score table, round history, model checkpoint and up to the configured number of best poses. Large working databases, full-library predictions and unselected poses are not retained. Per-ligand preparation files are pruned after the selected poses have been copied.
+- The final organizer-side output is a compressed Parquet score table, round history, model checkpoint and the configured number of available top-ranked poses. The controller removes its temporary training database after publishing the final outputs.
 - The docking computer selector now defaults each selected machine to its available scheduler CPU slots, reserving one organizer slot for the campaign coordinator. Run details show the computers, CPU/GPU allocation and scheduler job link for docking and model steps.
 - Other docking engines are not connected to this controller yet; the current active-learning graph only offers UniDock Pro so an unsupported choice cannot be submitted accidentally.
 

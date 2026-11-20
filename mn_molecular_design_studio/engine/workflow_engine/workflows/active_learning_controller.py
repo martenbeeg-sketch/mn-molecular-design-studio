@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import heapq
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -23,7 +24,7 @@ from mn_molecular_design_studio.active_learning_settings import ActiveLearningSe
 from mn_molecular_design_studio.collection_policy import collection_scope, set_run_policy
 from mn_molecular_design_studio.pipeline_jobs import link_pipeline_child
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
-    create_job, finish_job, read_json, update_status, utc_now, write_json,
+    create_job, finish_job, read_json, read_json_raw, update_status, utc_now, write_json,
 )
 from mn_molecular_design_studio.pipeline_graph import validate_active_library_sources, validate_graph
 
@@ -400,6 +401,8 @@ def _read_worker_scores(result: dict, rows_by_engine_id: dict) -> tuple[list[dic
             source = rows_by_engine_id.get(engine_id)
             if source is None:
                 continue
+            if engine_id in seen:
+                raise ValueError("A docking child returned more than one score row for a compound.")
             seen.add(engine_id)
             value = raw.get("best_score_kcal_mol") or raw.get("vina_score") or raw.get("score")
             try:
@@ -551,100 +554,145 @@ def _save_failed_compound_table(path: Path, failures: list[dict]) -> None:
     pq.write_table(pa.Table.from_pylist(failures, schema=schema), path, compression="zstd")
 
 
-def _collect_best_poses(campaign: Path, scores: list[dict], count: int, *, ssh_user: str) -> list[str]:
-    """Retain cumulative winners before deleting worker files, reusing earlier winners.
-
-    Remote poses are streamed in one tar transfer per worker run and checked
-    against source SHA256 values. A manifest is published only after all copies
-    succeed. Previous retained files survive a failed transfer.
-    """
-    selected = [row for row in scores[:count] if row.get("pose_path") and row.get("worker_run_dir")]
+def _collect_best_poses(campaign: Path, scores: list[dict], count: int, *, ssh_user: str,
+                        require_complete: bool = False) -> list[str]:
+    """Publish cumulative winners before touching the last published poses."""
+    winners = scores[:count]
+    selected = [row for row in winners if row.get("pose_path") and row.get("worker_run_dir")]
+    if require_complete and len(selected) != len(winners):
+        raise ValueError("A top-ranked compound has no recorded pose. Worker outputs were preserved.")
     destination = campaign / "artifacts" / "active_learning" / "retained_poses"
     destination.mkdir(parents=True, exist_ok=True)
     manifest_path = destination.parent / "retained_poses.json"
     previous = {(item["library_id"], int(item["compound_key"])): item
-                for item in read_json(manifest_path).get("poses", [])}
+                for item in read_json_raw(manifest_path).get("poses", [])}
     manifest, groups = [], {}
     for row in selected:
         key = (row["library_id"], int(row["compound_key"]))
-        identity = hashlib.sha256(f"{key[0]}:{key[1]}".encode()).hexdigest()[:24]
-        local_path = destination / f"{identity}.pdbqt"
-        old = previous.get(key)
-        reusable = old and old.get("worker_job_code") == row.get("worker_job_code") and local_path.is_file()
-        if not reusable:
-            host = str(row.get("worker_host") or "")
-            source = Path(row["worker_run_dir"]) / str(row["pose_path"])
-            if host:
-                groups.setdefault((host, str(source.parent)), []).append((source.name, local_path))
-            else:
-                if not source.is_file():
-                    raise RuntimeError(f"A selected best pose is missing: {source}")
-                shutil.copy2(source, local_path.with_suffix(".pending"))
-                local_path.with_suffix(".pending").replace(local_path)
-        manifest.append({"path": str(local_path.relative_to(campaign)),
-                         "library_id": row["library_id"], "compound_key": row["compound_key"],
-                         "compound_id": row["compound_id"], "score": row["best_score"],
-                         "worker_node_id": row.get("worker_node_id"), "worker_job_code": row.get("worker_job_code")})
+        host = str(row.get("worker_host") or "")
+        relative = Path(row["pose_path"])
+        if relative.parent != Path("artifacts/poses") or relative.suffix.lower() != ".pdbqt":
+            raise ValueError("A worker returned an invalid docking pose path.")
+        source = Path(row["worker_run_dir"]) / relative
+        source_id = hashlib.sha256(json.dumps([*key, host, str(source), row["best_score"]]).encode()).hexdigest()
+        local_path = destination / f"{source_id[:32]}.pdbqt"
+        old = previous.get(key) or {}
+        old_path = (campaign / str(old.get("path") or "")).resolve()
+        same_source = old.get("source_pose_id") == source_id or (
+            "source_pose_id" not in old and old.get("worker_job_code")
+            and old.get("worker_job_code") == row.get("worker_job_code")
+            and old.get("worker_node_id") == row.get("worker_node_id")
+            and old.get("score") == row["best_score"])
+        item = {"library_id": key[0], "compound_key": key[1], "compound_id": row["compound_id"],
+                "score": row["best_score"], "worker_node_id": row.get("worker_node_id"),
+                "worker_job_code": row.get("worker_job_code"), "source_pose_id": source_id}
+        if same_source and old_path.parent == destination.resolve() and old_path.is_file():
+            local_path = old_path
+            item["sha256"] = old.get("sha256") or hashlib.sha256(local_path.read_bytes()).hexdigest()
+        elif host:
+            groups.setdefault((host, str(source.parent)), []).append((source.name, local_path, item))
+        else:
+            if not source.is_file() or source.is_symlink():
+                raise RuntimeError(f"A selected best pose is missing: {source}")
+            pending = local_path.with_suffix(".pending")
+            shutil.copy2(source, pending)
+            checksum = hashlib.sha256(pending.read_bytes()).hexdigest()
+            if checksum != hashlib.sha256(source.read_bytes()).hexdigest():
+                raise RuntimeError("Retained-pose checksum mismatch; worker output was preserved.")
+            pending.replace(local_path)
+            item["sha256"] = checksum
+        item["path"] = str(local_path.relative_to(campaign))
+        manifest.append(item)
     for (host, source_directory), files in groups.items():
         from mn_molecular_design_studio.cluster.distributed_library import _HOST
         if not _HOST.fullmatch(host):
             raise ValueError("A docking worker returned an invalid host name.")
-        names = [name for name, _path in files]
-        if any(Path(name).name != name for name in names):
-            raise ValueError("A docking worker returned an invalid pose filename.")
-        ssh = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", f"{ssh_user}@{host}"]
-        checksums = subprocess.run(ssh + [shlex.join(["sha256sum", "--", *[source_directory + "/" + name for name in names]])],
-                                   check=True, capture_output=True, text=True)
-        expected = {Path(line.split(None, 1)[1].strip()).name: line.split()[0]
-                    for line in checksums.stdout.splitlines()}
-        wanted = dict(files)
-        with tempfile.TemporaryFile() as archive:
-            subprocess.run(ssh + [shlex.join(["tar", "-C", source_directory, "-cf", "-", "--", *names])],
-                           stdout=archive, stderr=subprocess.PIPE, check=True)
-            archive.seek(0)
-            with tarfile.open(fileobj=archive, mode="r|") as stream:
-                for member in stream:
-                    if member.name not in wanted or not member.isfile():
-                        raise RuntimeError("Unexpected file in the retained-pose transfer.")
-                    output = wanted[member.name]
-                    pending = output.with_suffix(".pending")
-                    with stream.extractfile(member) as source, pending.open("wb") as handle:
-                        shutil.copyfileobj(source, handle)
-                    if hashlib.sha256(pending.read_bytes()).hexdigest() != expected.get(member.name):
-                        raise RuntimeError("Retained-pose checksum mismatch; worker output was preserved.")
-                    pending.replace(output)
-        if any(not path.is_file() for _name, path in files):
-            raise RuntimeError("The retained-pose transfer is incomplete; worker output was preserved.")
+        ssh = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", f"{ssh_user}@{host}"]
+        for offset in range(0, len(files), 1024):
+            batch = files[offset:offset + 1024]
+            wanted = {name: (path, item) for name, path, item in batch}
+            if len(wanted) != len(batch):
+                raise RuntimeError("A worker reported the same pose for multiple winners.")
+            checksum_command = "cd " + shlex.quote(source_directory) + " && " + shlex.join(["sha256sum", "--", *wanted])
+            checksums = subprocess.run(ssh + [checksum_command], check=True, capture_output=True,
+                                       text=True, timeout=300)
+            expected = {Path(line.split(None, 1)[1].strip()).name: line.split()[0]
+                        for line in checksums.stdout.splitlines()}
+            with tempfile.TemporaryFile() as archive:
+                subprocess.run(ssh + [shlex.join(["tar", "-C", source_directory, "-cf", "-", "--", *wanted])],
+                               stdout=archive, stderr=subprocess.PIPE, check=True, timeout=300)
+                archive.seek(0)
+                with tarfile.open(fileobj=archive, mode="r|") as stream:
+                    for member in stream:
+                        if member.name not in wanted or not member.isfile():
+                            raise RuntimeError("Unexpected file in the retained-pose transfer.")
+                        output, item = wanted.pop(member.name)
+                        pending = output.with_suffix(".pending")
+                        with stream.extractfile(member) as incoming, pending.open("wb") as handle:
+                            shutil.copyfileobj(incoming, handle)
+                        checksum = hashlib.sha256(pending.read_bytes()).hexdigest()
+                        if checksum != expected.get(member.name):
+                            raise RuntimeError("Retained-pose checksum mismatch; worker output was preserved.")
+                        pending.replace(output)
+                        item["sha256"] = checksum
+            if wanted:
+                raise RuntimeError("The retained-pose transfer is incomplete; worker output was preserved.")
     write_json(manifest_path, {"retained_count": len(manifest), "poses": manifest})
-    keep = {Path(item["path"]).name for item in manifest}
-    for path in destination.glob("*.pdbqt"):
-        if path.name not in keep:
-            path.unlink()
     return [str(item["path"]) for item in manifest]
 
 
-def _cleanup_docking_artifacts(worker_runs: list[dict], *, ssh_user: str) -> None:
-    """Keep scores and job records, and prune bulky per-ligand work after pose retention."""
+def _prune_superseded_poses(data_root: Path, pose_paths: list[str]) -> None:
+    keep = {Path(path).name for path in pose_paths}
+    destination = data_root / "retained_poses"
+    for pattern in ("*.pdbqt", "*.pending"):
+        for path in destination.glob(pattern):
+            if path.name not in keep:
+                path.unlink()
+
+def _publish_ranked_scores(data_root: Path, ranked: list[dict], score_field: str, score_units: str) -> None:
+    manifest = read_json_raw(data_root / "retained_poses.json")
+    retained = {(str(item["library_id"]), int(item["compound_key"])): str(item["path"])
+                for item in manifest.get("poses", [])}
+    final_path = data_root / "docking_scores.parquet"
+    pending = final_path.with_suffix(".pending")
+    try:
+        _save_score_table(pending, [
+            {**row, "score": row["best_score"], "score_field": score_field, "score_units": score_units,
+             "pose_path": retained.get((str(row["library_id"]), int(row["compound_key"])), "")}
+            for row in ranked])
+        pending.replace(final_path)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
+def _cleanup_docking_artifacts(worker_runs: list[dict], *, ssh_user: str,
+                               campaign_id: str, parent_node: str, round_number: int) -> None:
+    """Prune bulky artifacts from verified children on each worker."""
+    from mn_molecular_design_studio.cluster.active_learning_worker import prune_completed_docking_run
     from mn_molecular_design_studio.cluster.distributed_library import _HOST
+
+    paths_by_host: dict[str, set[str]] = {}
     for item in worker_runs:
         host = str(item.get("host") or "")
-        run_dirs = item.get("run_dirs") or [item.get("run_dir")]
-        for run_dir in run_dirs:
-            run_dir = str(run_dir or "")
-            if not run_dir:
-                continue
-            bulky = [f"{run_dir}/artifacts/{name}" for name in ("poses", "ligands", "prepared")]
-            if host:
-                if not _HOST.fullmatch(host):
-                    continue
-                cleanup = shlex.join(["rm", "-rf", "--", *bulky])
-                subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-                                f"{ssh_user}@{host}", "bash -lc " + shlex.quote(cleanup)],
-                               check=False, capture_output=True, text=True, timeout=30)
-            else:
-                for path in bulky:
-                    shutil.rmtree(path, ignore_errors=True)
-
+        for run_dir in item.get("run_dirs") or [item.get("run_dir")]:
+            if run_dir:
+                paths_by_host.setdefault(host, set()).add(str(run_dir))
+    for host, paths in paths_by_host.items():
+        if not host:
+            for path in sorted(paths):
+                prune_completed_docking_run(path, campaign_id, parent_node, round_number)
+            continue
+        if not _HOST.fullmatch(host):
+            raise ValueError("A docking worker returned an invalid host name.")
+        program = ("import json, sys\n" + inspect.getsource(prune_completed_docking_run)
+                   + "\npaths, campaign, node, number = json.load(sys.stdin)\n"
+                   + "for path in paths: prune_completed_docking_run(path, campaign, node, number)\n")
+        command = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                   "--", f"{ssh_user}@{host}", shlex.join(["python3", "-c", program])]
+        result = subprocess.run(command, input=json.dumps([sorted(paths), campaign_id, parent_node, round_number]),
+                                capture_output=True, text=True, timeout=300)
+        if result.returncode:
+            raise RuntimeError(f"Could not clean up docking round {round_number} on {host}: {result.stderr.strip()}")
 
 def _queue_model_step(*, campaign: Path, feature_manifest: Path, database: Path,
                       settings: dict, docking_node: dict, round_number: int,
@@ -745,7 +793,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
     params = {kind: node["data"]["params"] for kind, node in nodes.items()}
     screening_node, seed_node, target_node = (params["active_library"], params["active_seed"], params["active_target"])
     features = _library_sources(screening_node, seed_node)
-    docking = params["active_docking"]
+    docking = dict(params["active_docking"])
     if str(docking.get("engine") or "UniDock Pro") != "UniDock Pro":
         raise ValueError("The active-learning round controller currently uses the selected UniDock Pro engine.")
     target_path = Path(str(target_node.get("target_pdb") or "")).expanduser().resolve(strict=True)
@@ -777,11 +825,21 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
     data_root = campaign / "artifacts" / "active_learning"
     state_path = data_root / "state.json"
     state = read_json(state_path) or {"schema_version": "studio.active-learning-state.v1", "rounds": [],
-                                      "docking_runs": [], "stable_rounds": 0, "previous_top_scores": None}
+                                      "docking_runs": [], "stable_rounds": 0, "previous_top_scores": None,
+                                      "prune_completed_rounds": bool(docking.get("cleanup_after_round", True))}
+    compact = state.get("prune_completed_rounds", False)
+    if compact:
+        from mn_molecular_design_studio.cluster import config as cluster_config
+        parent_node = cluster_config.identity()
+    if state.get("status") == "completed" and read_json(campaign / "metadata.json").get("status") == "completed":
+        return campaign
     state.setdefault("docking_runs", [])
     state.setdefault("initial_seed_count", len(features["seed_sample"]))
     initial_seed_count = int(state["initial_seed_count"])
-    score_db = _score_database(data_root / "scores.sqlite3")
+    score_path = data_root / "scores.sqlite3"
+    if (state["rounds"] or (state.get("pending_round") or {}).get("scores")) and not score_path.is_file():
+        raise RuntimeError("The campaign's checkpointed scores are unavailable. Existing results were preserved.")
+    score_db = _score_database(score_path)
     graph_state_path = campaign / "graph_execution.json"
     graph_state = read_json(graph_state_path) or {"graph_id": graph["id"], "template_id": graph["template_id"], "nodes": {}}
     cancel = threading.Event()
@@ -799,6 +857,19 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
         write_json(state_path, state)
         write_json(graph_state_path, graph_state)
 
+    def publish_history(pose_paths=None):
+        history = {"schema_version": "studio.active-learning-round-history.v1",
+                   "stop_reason": state.get("stop_reason"), "rounds": state["rounds"],
+                   "score_field": score_field, "score_units": score_units, "score_direction": direction,
+                   "screening_library_id": screening_node["library_id"],
+                   "screening_feature_manifest": str(features["feature_manifest_path"]),
+                   "centroid_library_id": seed_node["library_id"],
+                   "centroid_manifest": str(features["centroid_manifest"]),
+                   "retained_pose_limit": retain_poses, "prune_completed_rounds": compact}
+        if pose_paths is not None:
+            history["retained_poses"] = pose_paths
+        write_json(data_root / "round_history.json", history)
+
     def phase(node_id: str, label: str, status="running", **details):
         _write_graph_state(graph_state_path, graph_state, node=node_id, status=status, **details)
         update_status(campaign, "running", current_phase=label, progress_label=label)
@@ -808,9 +879,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
         for kind in ("active_library", "active_seed", "active_target"):
             phase(nodes[kind]["id"], nodes[kind]["data"].get("label") or kind, "completed",
                   source_library_id=(screening_node.get("library_id") if kind == "active_library" else seed_node.get("library_id") if kind == "active_seed" else None))
-        if not state["rounds"]:
-            sample_size = int(seed_node.get("sample_size") or 10_000)
-            sample_seed = int(seed_node.get("sampling_seed") or 0)
+        if not state["rounds"] and not state.get("pending_round"):
             phase(nodes["active_seed"]["id"], "Sampling the centroid source")
             seed_rows = features["seed_sample"]
             state["initial_seed_count"] = initial_seed_count = len(seed_rows)
@@ -821,7 +890,6 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                   status="completed", selection_count=len(seed_rows))
             checkpoint()
 
-        previous_top = state.get("previous_top_scores")
         while True:
             if cancelled():
                 cancel.set()
@@ -840,79 +908,95 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                 break
             round_folder = rounds_dir / f"round-{round_number:04d}"
             round_folder.mkdir(parents=True, exist_ok=True)
-            worker_states = [{"node_id": w["node_id"], "name": w["node_name"], "cpu_cores": w["cpu_cores"],
-                              "gpu_device": w["gpu_device"], "batch_share": w.get("batch_share") or 1,
-                              "status": "queued"} for w in workers]
-            phase(nodes["active_docking"]["id"], f"Docking round {round_number} · {len(selection_rows):,} compounds",
-                  round_number=round_number, compound_count=len(selection_rows), worker_nodes=worker_states)
-
-            def worker_progress(updated):
-                nonlocal worker_states
-                worker_states = updated
+            if "scores" not in pending:
+                worker_states = [{"node_id": w["node_id"], "name": w["node_name"], "cpu_cores": w["cpu_cores"],
+                                  "gpu_device": w["gpu_device"], "batch_share": w.get("batch_share") or 1,
+                                  "status": "queued"} for w in workers]
                 phase(nodes["active_docking"]["id"], f"Docking round {round_number} · {len(selection_rows):,} compounds",
                       round_number=round_number, compound_count=len(selection_rows), worker_nodes=worker_states)
 
-            # Keep every scored batch pose until the campaign knows whether this
-            # is the terminal round. Earlier rounds are pruned only after their
-            # successor completes; the final round remains fully inspectable.
-            # Zero means no per-batch pose cap in the docking adapter.
-            docking["batch_retained_pose_count"] = 0
-            all_results, failed_results = _dock_round(
-                campaign=campaign, round_number=round_number, rows=selection_rows, workers=workers,
-                docking=docking, target=target, owner_id=owner_id, project_id=project_id,
-                ssh_user=str(docking.get("ssh_user") or "compute"), work_directory=round_folder,
-                cancel_check=cancelled, worker_progress=worker_progress,
-            )
-            accounted_count = len(all_results) + len(failed_results)
-            if accounted_count != len(selection_rows):
-                raise RuntimeError(f"Round {round_number} accounted for {accounted_count:,} of {len(selection_rows):,} attempted compounds.")
-            if not all_results:
-                raise RuntimeError(f"Round {round_number} produced no usable docking scores from {len(selection_rows):,} attempts.")
-            worker_summary = _summarize_round_workers(all_results, failed_results)
-            previous_round_workers = list((state.get("rounds") or [])[-1].get("workers") or []) if state.get("rounds") else []
-            phase(nodes["active_docking"]["id"], f"Docking round {round_number} complete",
-                  status="completed", round_number=round_number, compound_count=len(selection_rows),
-                  scored_count=len(all_results), failed_count=len(failed_results),
-                  worker_nodes=[{**item, "status": "completed"} for item in worker_summary])
-            _persist_round_scores(score_db, all_results, round_number=round_number, score_direction=direction)
-            _persist_round_failures(score_db, failed_results, round_number=round_number)
+                def worker_progress(updated):
+                    nonlocal worker_states
+                    worker_states = updated
+                    phase(nodes["active_docking"]["id"], f"Docking round {round_number} · {len(selection_rows):,} compounds",
+                          round_number=round_number, compound_count=len(selection_rows), worker_nodes=worker_states)
+
+                docking["batch_retained_pose_count"] = (
+                    retain_poses if compact and direction == "Lower is better" else 0
+                )
+                all_results, failed_results = _dock_round(
+                    campaign=campaign, round_number=round_number, rows=selection_rows, workers=workers,
+                    docking=docking, target=target, owner_id=owner_id, project_id=project_id,
+                    ssh_user=str(docking.get("ssh_user") or "compute"), work_directory=round_folder,
+                    cancel_check=cancelled, worker_progress=worker_progress,
+                )
+                accounted_count = len(all_results) + len(failed_results)
+                if accounted_count != len(selection_rows):
+                    raise RuntimeError(f"Round {round_number} accounted for {accounted_count:,} of {len(selection_rows):,} attempted compounds.")
+                if not all_results:
+                    raise RuntimeError(f"Round {round_number} produced no usable docking scores from {len(selection_rows):,} attempts.")
+                worker_summary = _summarize_round_workers(all_results, failed_results)
+                phase(nodes["active_docking"]["id"], f"Docking round {round_number} complete",
+                      status="completed", round_number=round_number, compound_count=len(selection_rows),
+                      scored_count=len(all_results), failed_count=len(failed_results),
+                      worker_nodes=[{**item, "status": "completed"} for item in worker_summary])
+                _persist_round_scores(score_db, all_results, round_number=round_number, score_direction=direction)
+                _persist_round_failures(score_db, failed_results, round_number=round_number)
+                pending["scores"] = {"workers": worker_summary, "docked_count": len(all_results),
+                                     "failed_count": len(failed_results)}
+                checkpoint()
             ranked = _ranked_rows(score_db, direction)
-            current_top, stable_now, max_delta, same_order = _top_vector(ranked, top_n, previous_top, tolerance)
-            from mn_molecular_design_studio.screening_convergence import DEFAULT_TOP_COUNTS, summarize_rankings
-            plot_sizes = sorted({*DEFAULT_TOP_COUNTS, top_n})
-            plot_vector = _top_vector(ranked, max(plot_sizes), None, tolerance)[0]
-            score_summaries = summarize_rankings(plot_vector, state.get("previous_convergence_scores"),
-                sizes=plot_sizes, tolerance=tolerance,
-                previous_summaries=(state["rounds"][-1].get("score_summaries") or []) if state["rounds"] else [])
-            state["docking_runs"].extend(worker_summary)
-            if round_number > 1 and stable_now:
-                state["stable_rounds"] = int(state.get("stable_rounds") or 0) + 1
-            else:
-                state["stable_rounds"] = 0
-            history_item = {
-                "round": round_number, "attempted_count": len(selection_rows),
-                "docked_count": len(all_results), "successful_count": len(all_results),
-                "failed_count": len(failed_results),
-                "unique_tested_count": len(ranked), "best_score": ranked[0]["best_score"] if ranked else None,
-                "binder_percent": settings.percentile(round_number), "top_n": top_n,
-                "top_n_stable": stable_now, "stable_round_count": state["stable_rounds"],
-                "maximum_rank_score_change": max_delta, "same_top_order": same_order,
-                "top_scores": current_top, "score_summaries": score_summaries, "workers": worker_summary,
-                "selection_kind": pending.get("selection_kind"), "completed_at": utc_now(),
-            }
-            state["rounds"].append(history_item)
-            state["previous_top_scores"] = current_top
-            state["previous_convergence_scores"] = plot_vector
-            state["pending_round"] = None
-            previous_top = current_top
+            history_item = state["rounds"][-1] if state["rounds"] else {}
+            if history_item.get("round") != round_number:
+                pose_paths = _collect_best_poses(campaign, ranked, retain_poses, ssh_user=ssh_user,
+                                                 require_complete=compact)
+                _publish_ranked_scores(data_root, ranked, score_field, score_units)
+                current_top, stable_now, max_delta, same_order = _top_vector(ranked, top_n, state.get("previous_top_scores"), tolerance)
+                from mn_molecular_design_studio.screening_convergence import DEFAULT_TOP_COUNTS, summarize_rankings
+                plot_sizes = sorted({*DEFAULT_TOP_COUNTS, top_n})
+                plot_vector = _top_vector(ranked, max(plot_sizes), None, tolerance)[0]
+                score_summaries = summarize_rankings(plot_vector, state.get("previous_convergence_scores"),
+                    sizes=plot_sizes, tolerance=tolerance,
+                    previous_summaries=(state["rounds"][-1].get("score_summaries") or []) if state["rounds"] else [])
+                worker_summary = pending["scores"]["workers"]
+                state["docking_runs"].extend(worker_summary)
+                if round_number > 1 and stable_now:
+                    state["stable_rounds"] = int(state.get("stable_rounds") or 0) + 1
+                else:
+                    state["stable_rounds"] = 0
+                history_item = {
+                    "round": round_number, "attempted_count": len(selection_rows),
+                    "docked_count": pending["scores"]["docked_count"],
+                    "successful_count": pending["scores"]["docked_count"],
+                    "failed_count": pending["scores"]["failed_count"],
+                    "retained_pose_count": len(pose_paths), "retained_pose_limit": retain_poses,
+                    "retained_cutoff_score": ranked[len(pose_paths) - 1]["best_score"] if pose_paths and compact else None,
+                    "unique_tested_count": len(ranked), "best_score": ranked[0]["best_score"] if ranked else None,
+                    "binder_percent": settings.percentile(round_number), "top_n": top_n,
+                    "top_n_stable": stable_now, "stable_round_count": state["stable_rounds"],
+                    "maximum_rank_score_change": max_delta, "same_top_order": same_order,
+                    "top_scores": current_top, "score_summaries": score_summaries, "workers": worker_summary,
+                    "selection_kind": pending.get("selection_kind"), "completed_at": utc_now(),
+                }
+                state["rounds"].append(history_item)
+                state["previous_top_scores"] = current_top
+                state["previous_convergence_scores"] = plot_vector
+                checkpoint()
+            _prune_superseded_poses(data_root, [item["path"] for item in
+                                             read_json_raw(data_root / "retained_poses.json").get("poses", [])])
+            if compact and not history_item.get("worker_cleanup_completed"):
+                _cleanup_docking_artifacts(history_item["workers"], ssh_user=ssh_user,
+                                           campaign_id=campaign.name, parent_node=parent_node,
+                                           round_number=round_number)
+                for worker_folder in round_folder.glob("worker-*"):
+                    if worker_folder.name.removeprefix("worker-").isdecimal():
+                        shutil.rmtree(worker_folder)
+                history_item["worker_cleanup_completed"] = True
+                checkpoint()
             write_json(round_folder / "round.json", history_item)
-            checkpoint()
-            # Keep cumulative winners every round before deleting worker files.
-            # The manifest reuses earlier winners whose source files are gone.
-            _collect_best_poses(campaign, ranked, retain_poses, ssh_user=ssh_user)
-            _save_score_table(data_root / "docking_scores.parquet", [
-                {**row, "score": row["best_score"], "score_field": score_field, "score_units": score_units}
-                for row in ranked])
+            publish_history()
+            max_delta = history_item["maximum_rank_score_change"]
+            same_order = history_item["same_top_order"]
             phase(nodes["active_accumulate"]["id"], f"Accumulated and ranked {len(ranked):,} unique compounds",
                   status="completed", round_number=round_number, unique_compound_count=len(ranked), score_units=score_units)
             phase(nodes["active_decision"]["id"], "Comparing cumulative top-ranked scores",
@@ -928,14 +1012,11 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                 reason = "stable_top_scores" if converged else "screening_library_exhausted" if exhausted else "maximum_iterations"
                 state["stop_reason"] = reason
                 state["rounds"][-1]["stop_reason"] = reason
-                checkpoint()
                 phase(nodes["active_decision"]["id"], f"Stopping: {reason.replace('_', ' ')}",
                       status="completed", round_number=round_number, stop_reason=reason,
                       same_top_order=same_order, maximum_score_change=max_delta)
-                # Only prune a round after a later round has completed. This
-                # keeps the terminal round's complete worker workdirs available.
-                if docking.get("cleanup_after_round", True) and previous_round_workers:
-                    _cleanup_docking_artifacts(previous_round_workers, ssh_user=ssh_user)
+                state.pop("pending_round", None)
+                checkpoint()
                 break
 
             binder_percent = settings.percentile(round_number)
@@ -954,15 +1035,14 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             remaining = selection_counts["total"]
             if remaining <= 0:
                 state["stop_reason"] = "screening_library_exhausted"
+                state.pop("pending_round", None)
                 checkpoint()
-                if docking.get("cleanup_after_round", True) and previous_round_workers:
-                    _cleanup_docking_artifacts(previous_round_workers, ssh_user=ssh_user)
                 break
             predicted_count = selection_counts["predicted"]
             random_count = selection_counts["random"]
             model_run, next_selection = _queue_model_step(
                 campaign=campaign, feature_manifest=features["feature_manifest_path"],
-                database=data_root / "scores.sqlite3", settings={**training_settings, **prediction_settings},
+                database=score_path, settings={**training_settings, **prediction_settings},
                 docking_node=docking, round_number=round_number, binder_percent=binder_percent,
                 screening_library_id=str(screening_node["library_id"]), predicted_count=predicted_count,
                 random_count=random_count, selection_seed=int(seed_node.get("sampling_seed") or 0) + next_round,
@@ -985,16 +1065,13 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             selected_rows = _read_selection_table(next_selection)
             if not selected_rows:
                 state["stop_reason"] = "screening_library_exhausted"
+                state.pop("pending_round", None)
                 checkpoint()
-                if docking.get("cleanup_after_round", True) and previous_round_workers:
-                    _cleanup_docking_artifacts(previous_round_workers, ssh_user=ssh_user)
                 break
             next_selection_parent = rounds_dir / f"round-{next_round:04d}-selection.parquet"
             shutil.copy2(next_selection, next_selection_parent)
             state["pending_round"] = {"number": next_round, "selection_path": str(next_selection_parent),
                                        "selection_kind": "predicted_plus_random", "model_run_dir": str(model_run)}
-            if docking.get("cleanup_after_round", True) and previous_round_workers:
-                _cleanup_docking_artifacts(previous_round_workers, ssh_user=ssh_user)
             checkpoint()
             phase(nodes["active_select"]["id"], f"Selected {len(selected_rows):,} compounds for round {next_round}",
                   status="completed", round_number=next_round, predicted_count=predicted_count,
@@ -1004,41 +1081,17 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                   worker_nodes=[model_worker])
 
         ranked = _ranked_rows(score_db, direction)
-        ssh_user = str(docking.get("ssh_user") or "compute")
-        pose_paths = _collect_best_poses(campaign, ranked, retain_poses, ssh_user=ssh_user)
-        pose_manifest = read_json(data_root / "retained_poses.json")
-        retained = {(str(item["library_id"]), int(item["compound_key"])): str(item["path"])
-                    for item in pose_manifest.get("poses", [])}
-        for row in ranked:
-            row["pose_path"] = retained.get((str(row["library_id"]), int(row["compound_key"])), "")
-        table_path = data_root / "docking_scores.parquet"
-        _save_score_table(table_path, [{**row, "score": row["best_score"], "score_field": score_field,
-                                       "score_units": score_units} for row in ranked])
+        if not compact or not (data_root / "docking_scores.parquet").is_file():
+            _collect_best_poses(campaign, ranked, retain_poses, ssh_user=ssh_user, require_complete=compact)
+        _publish_ranked_scores(data_root, ranked, score_field, score_units)
+        pose_paths = [str(item["path"]) for item in read_json_raw(data_root / "retained_poses.json").get("poses", [])]
+        _prune_superseded_poses(data_root, pose_paths)
         failures = [dict(zip([column[1] for column in score_db.execute("PRAGMA table_info(failed_compounds)").fetchall()], row))
                     for row in score_db.execute("SELECT * FROM failed_compounds ORDER BY library_id,compound_key")]
         failed_path = data_root / "failed_compounds.parquet"
         _save_failed_compound_table(failed_path, failures)
-        final_round_number = int(state["rounds"][-1]["round"]) if state.get("rounds") else 0
-        if docking.get("cleanup_after_round", True):
-            final_selection = rounds_dir / f"round-{final_round_number:04d}-selection.parquet"
-            for selection in rounds_dir.glob("round-*-selection.parquet"):
-                if selection != final_selection:
-                    selection.unlink(missing_ok=True)
-            final_round_folder = rounds_dir / f"round-{final_round_number:04d}"
-            for round_folder in rounds_dir.glob("round-[0-9][0-9][0-9][0-9]"):
-                if round_folder == final_round_folder:
-                    continue
-                for worker_folder in round_folder.glob("worker-*"):
-                    shutil.rmtree(worker_folder, ignore_errors=True)
-        history_path = data_root / "round_history.json"
-        write_json(history_path, {"schema_version": "studio.active-learning-round-history.v1",
-                                  "stop_reason": state.get("stop_reason", "completed"), "rounds": state["rounds"],
-                                  "score_field": score_field, "score_units": score_units, "score_direction": direction,
-                                  "screening_library_id": screening_node["library_id"],
-                                  "screening_feature_manifest": str(features["feature_manifest_path"]),
-                                  "centroid_library_id": seed_node["library_id"],
-                                  "centroid_manifest": str(features["centroid_manifest"]),
-                                  "retained_poses": pose_paths})
+        state.setdefault("stop_reason", "completed")
+        publish_history(pose_paths)
         from mn_molecular_design_studio.bulk_screening_results import publish_final_selection
         # Preserve old graph values in graph_snapshot.json, but a saved limit is
         # not a fresh scientific selection. Completion always publishes Results
@@ -1063,12 +1116,6 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                 _write_graph_state(graph_state_path, graph_state, node=nodes[kind]["id"], status="skipped", reason=state.get("stop_reason"))
         _write_graph_state(graph_state_path, graph_state, node=nodes["active_results"]["id"], status="completed",
                            unique_compound_count=len(ranked), round_count=len(state["rounds"]), stop_reason=state.get("stop_reason"))
-        score_db.close()
-        (data_root / "scores.sqlite3-wal").unlink(missing_ok=True)
-        (data_root / "scores.sqlite3-shm").unlink(missing_ok=True)
-        # The packed fingerprints are needed during model fitting, but the
-        # compact final score table and model checkpoint are the durable outputs.
-        (data_root / "scores.sqlite3").unlink(missing_ok=True)
         outputs = {"external_results": "artifacts/active_learning/external_results.json",
                    "docking_scores": "artifacts/active_learning/docking_scores.parquet",
                    "failed_compounds": "artifacts/active_learning/failed_compounds.parquet",
@@ -1084,7 +1131,8 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
         finish_job(campaign, True, {
             "outputs": outputs,
             "metrics": {"round_count": len(state["rounds"]), "unique_docked_compounds": len(ranked),
-                        "failed_compounds": len(failures),
+                        "failed_compounds": len(failures), "retained_pose_count": len(pose_paths),
+                        "retained_pose_limit": retain_poses,
                         "database_imported_compounds": selection["imported_count"],
                         "database_import_error": selection.get("error"),
                         "best_compound_id": ranked[0]["compound_id"] if ranked else "",
@@ -1095,6 +1143,12 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                         "centroid_library_id": seed_node["library_id"]},
             "downstream_artifacts": downstream,
         })
+        score_db.close()
+        (data_root / "scores.sqlite3-wal").unlink(missing_ok=True)
+        (data_root / "scores.sqlite3-shm").unlink(missing_ok=True)
+        # The packed fingerprints are needed during model fitting, but the
+        # compact final score table and model checkpoint are the durable outputs.
+        score_path.unlink(missing_ok=True)
         return campaign
     except BaseException as exc:
         try:
@@ -1123,12 +1177,16 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
     from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import MAX_COMPOUNDS_PER_LAUNCH
 
     if not rows:
-        return []
+        return [], []
     if not workers:
         raise ValueError("Select at least one computer for docking.")
     launch_batch_size = int(docking.get("worker_batch_size") or 2_000)
     if not 1 <= launch_batch_size <= MAX_COMPOUNDS_PER_LAUNCH:
         raise ValueError(f"Each computer's UniDock Pro batch must be between 1 and {MAX_COMPOUNDS_PER_LAUNCH:,} compounds.")
+    if docking.get("batch_retained_pose_count") and len({
+        (row["library_id"], row["compound_key"]) for row in rows
+    }) != len(rows):
+        docking = {**docking, "batch_retained_pose_count": 0}
     random = np.random.default_rng(int(docking.get("sampling_seed") or 42) + round_number)
     indexes = random.permutation(len(rows))
     assignments = _weighted_batch_assignments(rows, workers, indexes, launch_batch_size)

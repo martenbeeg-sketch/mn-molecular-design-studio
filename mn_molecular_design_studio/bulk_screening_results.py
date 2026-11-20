@@ -110,6 +110,8 @@ def screening_results_payload(run_dir, *, preview_limit=100):
             "rounds": rounds, "stop_reason": history.get("stop_reason"),
             "score_field": history.get("score_field"), "score_units": history.get("score_units"),
             "score_direction": history.get("score_direction"),
+            "retained_pose_limit": history.get("retained_pose_limit"),
+            "prune_completed_rounds": history.get("prune_completed_rounds"),
             "stopping_criteria": {key: decision[key] for key in
                                   ("top_n", "score_tolerance", "stable_rounds", "max_iterations") if key in decision},
             "manifest_path": str(manifest_path), "selection": manifest.get("database_selection", {}),

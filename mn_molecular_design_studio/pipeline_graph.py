@@ -258,9 +258,9 @@ NODE_CATALOG.update({
         field("scrub_ph", "Ligand preparation pH", 7.4, minimum=0.0, maximum=14.0, section="basic"),
         field("scrub_skip_tautomer", "Skip tautomer enumeration", True, kind="boolean", section="basic"),
         field("cleanup_preparation", "Remove batch preparation files after docking", True, kind="boolean", section="basic",
-              help="Preparation runs in temporary scratch. When enabled, prepared receptor/ligand intermediates are not copied into the workdir; docking scores, logs and all final-round poses are retained. Turn this off to also keep prepared intermediates for the final round. Earlier rounds still follow the cleanup setting below."),
-        field("cleanup_after_round", "Prune earlier-round docking files", True, kind="boolean", section="basic",
-              help="After a later round completes, remove bulky worker poses, ligands, preparation files and batch staging from earlier rounds. Always keep the final round's complete pose output, scores, logs, workdirs and input selection. Prepared receptor/ligand intermediates follow the separate preparation setting above. Turn this off to retain all rounds. Accumulate results separately controls the copied top-ranked campaign poses."),
+              help="Preparation runs in temporary scratch. Enable this to skip copying preparation intermediates to worker workdirs. Scores and logs remain available."),
+        field("cleanup_after_round", "Prune worker files after each round", True, kind="boolean", section="basic",
+              help="For a new run, remove bulky worker outputs after the cumulative winning poses and score table are saved, including in the final round. Disable this to keep worker copies for debugging."),
         field("score_field", "Score field", "vina_score", kind="text", section="basic"),
         field("score_units", "Score units", "kcal/mol", kind="text", section="basic", help="Declare the units for the selected scoring function, or use unitless."),
         field("score_direction", "Score ranking", "Lower is better", kind="select", options=["Lower is better", "Higher is better"], section="basic"),
@@ -278,7 +278,7 @@ NODE_CATALOG.update({
         field("ssh_user", "SSH user", "compute", kind="text", section="basic"),
     ]),
     "active_accumulate": _spec("active_accumulate", "Accumulate docking results", "Active learning", "Merge every completed docking round, keep the best configured score per source library and stable compound ID, and sort the cumulative table using the docking node's ranking direction. Source namespaces preserve distinct compounds when two libraries reuse an ID. Snapshot the top ranks for comparison with the previous cumulative ranking. Keep poses only for the best-ranked compounds.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#668d75", fields=[
-        field("retained_pose_count", "Top-ranked poses copied into campaign Results", 1000, minimum=0, maximum=1000000, section="basic", help="Copy this many cumulative top-ranked pose files into the campaign folder. Completed docking workdirs retain every pose from the final round; the cleanup setting controls whether bulky outputs from earlier rounds are removed. This does not import compounds into Database."),
+        field("retained_pose_count", "Keep poses for the best unique compounds", 1000, minimum=0, maximum=1000000, section="basic", help="Set the campaign-wide pose limit before launch. After each round, keep the winning poses for this many cumulative library and compound identities. Zero keeps scores only when worker cleanup is enabled. The full score table remains available for training and Results."),
     ]),
     "active_binder_rule": _spec("active_binder_rule", "Binder labeling rule", "Active learning", "Recalculate binder labels on the cumulative docked dataset before each training round. Change the binder percentage logarithmically from the starting percentage to the final percentage across the selected rounds; keep the final percentage afterwards. Label the best-scoring percentage using the ranking direction declared by the docking node.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#668d75", fields=[
         field("binder_percent_start", "Starting binder percentage", 10.0, minimum=0.001, maximum=100, section="basic"),
