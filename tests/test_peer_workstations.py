@@ -419,7 +419,7 @@ def test_agent_starts_when_every_other_machine_and_local_api_are_unavailable(pee
 def test_peer_liveness_pulse_updates_both_sides_without_catalog_sync(peers,monkeypatch):
     nodes,on=peers
     network(peers,monkeypatch,set())
-    monkeypatch.setattr(Agent,'snapshot',lambda self:copy.deepcopy(SNAPSHOT))
+    monkeypatch.setattr(Agent,'snapshot',lambda self, *, cached_reference_hashes_only=False: copy.deepcopy(SNAPSHOT))
     with on(1):
         agent=Agent()
         monkeypatch.setattr(agent,'catalog',lambda:(_ for _ in ()).throw(AssertionError('catalog scan was called')))
@@ -882,7 +882,8 @@ def test_peer_liveness_propagates_checkpoint_probes_and_dispatches_waiting_work(
     with on(1):
         Store().submit(request,needs,user,origin_node=nodes[1]['id'],placement='local')
 
-    def snapshot(self):
+    def snapshot(self, *, cached_reference_hashes_only=False):
+        assert cached_reference_hashes_only
         return copy.deepcopy(SNAPSHOT) | {
             'references':{path:True for path in self._reference_probes},
         }

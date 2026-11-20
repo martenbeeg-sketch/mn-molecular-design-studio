@@ -32,7 +32,10 @@ def api_queue(monkeypatch, tmp_path):
     # Keep API initialization, catalog writes, and queued runs inside this test.
     monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
     monkeypatch.setattr(workspace, "ensure_studio_workspace", lambda: tmp_path)
+    from mn_molecular_design_studio import localfold
     from mn_molecular_design_studio import api
+
+    monkeypatch.setattr(localfold, "_terms_acceptance_path", lambda: tmp_path / "terms.json")
 
     root = tmp_path / "runs"
     root.mkdir()
