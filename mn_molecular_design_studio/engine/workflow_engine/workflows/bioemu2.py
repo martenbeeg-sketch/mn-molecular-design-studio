@@ -28,6 +28,30 @@ Precision = Literal["bf16-mixed", "32-true"]
 MatmulPrecision = Literal["highest", "high", "medium"]
 
 
+def _write_propagation_cif(source: Path, destination: Path) -> None:
+    import gemmi
+
+    structure = gemmi.read_structure(str(source))
+    if len(structure) != 1 or not len(structure[0]):
+        raise ValueError("A BioEmu-2 starting structure must contain one coordinate model.")
+    structure.setup_entities()
+    for index, entity in enumerate(structure.entities, start=1):
+        entity.name = str(index)
+        if entity.entity_type == gemmi.EntityType.Polymer and not entity.full_sequence:
+            # PDBs from prediction jobs often omit SEQRES. Keep the modeled
+            # residues in their recorded order without adding coordinates.
+            entity.full_sequence = [residue.name for residue in structure[0].get_subchain(entity.subchains[0])]
+    structure.assign_label_seq_id()
+    document = structure.make_mmcif_document()
+    block = document.sole_block()
+    polymers = block.get_mmcif_category("_entity_poly.")
+    if polymers:
+        sequences = {entity.name: gemmi.one_letter_code(entity.full_sequence) for entity in structure.entities}
+        polymers["pdbx_seq_one_letter_code_can"] = [sequences[entity_id] for entity_id in polymers["entity_id"]]
+        block.set_mmcif_category("_entity_poly.", polymers)
+    document.write_file(str(destination))
+
+
 def _seed_bioemu2_unpaired_msa_cache(
     sequences: list[str],
     *,
@@ -220,6 +244,10 @@ def run_bioemu2(
             safe_name = "".join(char if char.isalnum() or char in "._-" else "_" for char in source.name)
             destination = input_root / f"complex_{index:03d}_{digest}_{safe_name}"
             shutil.copy2(source, destination)
+            if source.suffix.lower() in {".pdb", ".ent"}:
+                prepared = destination.with_suffix(".cif")
+                _write_propagation_cif(destination, prepared)
+                destination = prepared
             staged_structures.append(destination.relative_to(job.run_dir).as_posix())
 
         request = {

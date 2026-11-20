@@ -41,3 +41,30 @@ def test_structure_visualization_serializes_xtc_coordinates_for_molstar():
     )
 
     assert visualization.to_dict()["trajectory"] == {"coordinates_base64": "eHRj", "format": "xtc"}
+
+
+def test_bioemu_propagation_cif_has_numeric_entities_and_exact_coordinates(tmp_path):
+    import gemmi
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.bioemu2 import _write_propagation_cif
+
+    source = tmp_path / "complex.pdb"
+    source.write_text(
+        "ATOM      1  CA  ALA A  14       1.000   4.000   2.000  1.00 70.00           C\n"
+        "ATOM      2  CA  GLY A  15       2.000   4.000   4.000  1.00 71.00           C\n"
+        "TER\n"
+        "ATOM      3  CA  SER B  23       1.000   8.000   2.000  1.00 60.00           C\n"
+        "ATOM      4  CA  TYR B  24       2.000   8.000   4.000  1.00 61.00           C\n"
+        "END\n"
+    )
+    destination = tmp_path / "complex.cif"
+    _write_propagation_cif(source, destination)
+    block = gemmi.cif.read(str(destination)).sole_block()
+    assert set(block.find_values("_atom_site.label_entity_id")) == {"1", "2"}
+    assert list(block.find_values("_entity_poly.pdbx_seq_one_letter_code_can")) == ["AG", "SY"]
+    assert list(block.find_values("_atom_site.auth_seq_id")) == ["14", "15", "23", "24"]
+
+    def atoms(path):
+        return [(chain.name, str(residue.seqid), atom.name, atom.pos.tolist(), atom.b_iso)
+                for chain in gemmi.read_structure(str(path))[0] for residue in chain for atom in residue]
+
+    assert atoms(source) == atoms(destination)
