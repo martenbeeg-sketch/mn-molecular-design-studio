@@ -608,9 +608,14 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             started = time.monotonic()
             if settings['placement'] != 'local':
                 from mn_molecular_design_studio.cluster import candidate_batches, config
-                if config.enabled():
+                source_node = manifest.get('source_node_id')
+                # A saved collection already on this workstation needs no
+                # transfer. Keep any prior cluster submission on its receipt.
+                local_source = (source_node and source_node == config.identity()
+                                and 'prepared_envelope' not in batch)
+                if config.enabled() and not local_source:
                     request['resources']['gpu_device'] = selected_gpu
-                    dispatch_settings = {**settings, 'placement': manifest.get('source_node_id') or settings['placement']}
+                    dispatch_settings = {**settings, 'placement': source_node or settings['placement']}
                     result = candidate_batches.submit(request, batch['manifest'], submission_key, dispatch_settings,
                         owner_id=owner_id, project_id=project_id, state=batch,
                         allow_development=allow_development)
@@ -620,7 +625,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                     batch.update(status='queued', cluster_job_id=result['cluster_job_id'])
                     persist()
                     continue
-                if settings['placement'] != 'auto':
+                if not local_source and settings['placement'] != 'auto':
                     raise ValueError('Configure trusted peers before selecting a remote workstation.')
             if matches:
                 child = matches[0]

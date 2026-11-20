@@ -39,6 +39,30 @@ def test_portable_candidate_snapshot_moves_only_selected_inputs_and_verifies_has
         bundles.unpack(archive, tmp_path / 'bad', expected_digest=checksum)
 
 
+def test_candidate_bundle_leaves_saved_source_on_its_owning_peer(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import runtime
+
+    monkeypatch.setenv('MDS_CLUSTER_HOME', str(tmp_path / 'cluster'))
+    monkeypatch.setattr(runtime, 'runs_root', lambda: tmp_path / 'peer-runs')
+    source = 'cluster://peer-workstation/refolding-validation/saved'
+    candidate = source + '/artifacts/normalized_candidates/candidates.jsonl'
+    request = {'workflow': 'analysis.validation_acceptance',
+               'parameters': {'source_run_dir': source, 'candidates_jsonl': candidate}}
+    archive = tmp_path / 'peer.zip'
+    prepared, checksum, references, size = cb.pack_request(request, archive)
+    assert prepared == request and not references and size == 0
+    with zipfile.ZipFile(archive) as bundle:
+        assert bundle.namelist() == ['input-manifest.json']
+
+    restored = bundles.restore(prepared, staging=tmp_path, node_id='peer-workstation')['parameters']
+    assert Path(restored['source_run_dir']) == tmp_path / 'peer-runs/refolding-validation/saved'
+    assert Path(restored['candidates_jsonl']) == Path(restored['source_run_dir']) / 'artifacts/normalized_candidates/candidates.jsonl'
+
+    request['parameters']['candidates_jsonl'] = candidate.replace('/saved/', '/different-run/')
+    with pytest.raises(ValueError, match='owning source run'):
+        cb.pack_request(request, archive)
+
+
 def test_candidate_bundle_is_content_stable_and_does_not_copy_checkpoints(tmp_path, monkeypatch):
     monkeypatch.setenv('MDS_CLUSTER_HOME', str(tmp_path / 'cluster'))
     reference = tmp_path / 'reference'; reference.mkdir()

@@ -111,6 +111,46 @@ def test_new_dispatch_limits_leave_existing_clustering_execution_unchanged():
     assert ce.dispatch_limits('sequence_qc', settings) == {'max_runtime_seconds': 60}
 
 
+@pytest.mark.parametrize('source_node', ['local-workstation', 'peer-workstation'])
+def test_saved_run_dispatch_stays_with_the_source_owner(tmp_path, monkeypatch, source_node):
+    from mn_molecular_design_studio import runtime
+    from mn_molecular_design_studio.cluster import candidate_batches, config
+
+    monkeypatch.setattr(config, 'identity', lambda: 'local-workstation')
+    monkeypatch.setattr(config, 'enabled', lambda: True)
+    monkeypatch.setattr(runtime, 'runs_root', lambda: tmp_path / 'runs')
+    source_run = tmp_path / 'runs' / 'refolding-validation' / 'saved'
+    source_run.mkdir(parents=True)
+    source = {'run_sources': [{'node_id': source_node, 'run_dir': str(source_run), 'run_id': 'saved',
+                               'task_group': 'refolding-validation', 'source_candidate_count': 2}]}
+    node = {'id': 'acceptance', 'data': {'kind': 'tile_validation_acceptance', 'label': 'Acceptance'}}
+    local_requests = []
+    peer_placements = []
+
+    def submit_local(request, *_args, **_kwargs):
+        local_requests.append(request)
+        return tmp_path / 'runs' / 'analysis' / 'child'
+
+    def submit_peer(_request, _manifest, _key, settings, **_kwargs):
+        peer_placements.append(settings['placement'])
+        return {'cluster_job_id': 'cluster-child'}
+
+    monkeypatch.setattr(gp, '_submit', submit_local)
+    monkeypatch.setattr(candidate_batches, 'submit', submit_peer)
+    current = {}
+    settings = ce.policy({'mode': 'sharded', 'placement': 'auto'})
+    ce.tick(tmp_path, node, current, source, {'workflow_parameters': {'acceptance_policy': {}}},
+            'a' * 64, settings, graph=gp, owner_id='user', project_id='project', gpu_device='none',
+            persist=lambda: None)
+    assert current['batches'][0]['status'] == 'queued'
+    if source_node == 'local-workstation':
+        assert not peer_placements
+        assert local_requests[0]['parameters']['source_run_dir'] == str(source_run)
+    else:
+        assert not local_requests
+        assert peer_placements == [source_node]
+
+
 def test_timed_processing_drains_started_batch_and_reports_unprocessed_inputs(tmp_path, monkeypatch):
     from mn_molecular_design_studio import runtime, campaign_objectives
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json

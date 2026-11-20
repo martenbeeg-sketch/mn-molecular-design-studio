@@ -122,10 +122,22 @@ def pack_request(request, destination):
             # records rather than installing upstream models or transferring
             # recursively referenced prior candidate collections.
             provenance = {'candidate_execution', 'checkpoint_provenance', 'input_provenance'} if key == 'raw_metadata' else set()
+            source_run = value.get('source_run_dir')
+            owned_source = isinstance(source_run, str) and source_run.startswith('cluster://')
+            candidates = value.get('candidates_jsonl')
+            if owned_source and candidates and candidates != source_run.rstrip('/') + '/artifacts/normalized_candidates/candidates.jsonl':
+                raise ValueError('Select the normalized candidate manifest from the owning source run.')
+            skipped = {'source_run_dir', 'candidates_jsonl'} if owned_source else {'source_run_dir'}
             result = {k: ({'origin_node': config.identity(), 'record': json.dumps(v, sort_keys=True)}
                           if k in provenance else transform(v, base, k))
-                      for k, v in value.items() if k != 'source_run_dir'}
-            if value.get('source_run_dir') and value.get('candidates_jsonl'):
+                      for k, v in value.items() if k not in skipped}
+            if owned_source:
+                # The coordinator checks source project access and pins the
+                # request to the workstation that owns these paths.
+                result['source_run_dir'] = source_run
+                if 'candidates_jsonl' in value:
+                    result['candidates_jsonl'] = candidates
+            elif source_run and candidates:
                 uri = result['candidates_jsonl']
                 if not uri.startswith('cluster-input:///'):
                     raise ValueError('A portable candidate snapshot is required.')
