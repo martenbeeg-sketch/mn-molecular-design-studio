@@ -151,7 +151,8 @@ def test_md_pipeline_executes_an_analysis_child_and_collects_it_not_designs(tmp_
     assert state["nodes"]["results"]["status"] == ("completed" if success else "blocked")
     assert result["metrics"]["candidate_count"] == 0
     if success:
-        assert result["outputs"]["surface_analyses"][0]["kind"] == "md_analysis"
+        assert result["outputs"]["md_analyses"][0]["kind"] == "md_analysis"
+        assert not result["outputs"]["surface_analyses"]
         assert state["nodes"]["md_analysis"]["output"]["content_manifest"]
 
 
