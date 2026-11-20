@@ -20256,26 +20256,13 @@
       "label": "BinderScope",
       "workflow": "analysis.binderscope",
       "category": "Analysis",
-      "inputs": [
-        {
-          "id": "candidates",
-          "label": "Candidate collection",
-          "artifact_types": [
-            "candidates",
-            "backbone",
-            "sequence",
-            "prediction"
-          ],
-          "required": false,
-          "multiple": false
-        }
-      ],
+      "inputs": [],
       "outputs": [
         {
           "id": "out",
-          "label": "Candidate collection",
+          "label": "Saved Results",
           "artifact_types": [
-            "candidates"
+            "tool_result"
           ],
           "metrics": []
         }
@@ -20284,10 +20271,7 @@
         "parameter_fields": {
           "workflow_parameters": {}
         },
-        "formats": [
-          "pdb",
-          "cif"
-        ],
+        "formats": [],
         "molecule_tasks": [],
         "target_types": [],
         "component_types": [],
@@ -21881,13 +21865,6 @@
     {
       "from": "abmpnn",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "abmpnn",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -21902,105 +21879,7 @@
     {
       "from": "active_accumulate",
       "output": "out",
-      "to": "active_accumulate",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_accumulate",
-      "output": "out",
-      "to": "active_binder_rule",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_accumulate",
-      "output": "out",
       "to": "active_decision",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_accumulate",
-      "output": "out",
-      "to": "active_docking",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_accumulate",
-      "output": "out",
-      "to": "active_predict",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_accumulate",
-      "output": "out",
-      "to": "active_results",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_accumulate",
-      "output": "out",
-      "to": "active_select",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_accumulate",
-      "output": "out",
-      "to": "active_train",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_binder_rule",
-      "output": "out",
-      "to": "active_accumulate",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_binder_rule",
-      "output": "out",
-      "to": "active_binder_rule",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_binder_rule",
-      "output": "out",
-      "to": "active_decision",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_binder_rule",
-      "output": "out",
-      "to": "active_docking",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_binder_rule",
-      "output": "out",
-      "to": "active_predict",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_binder_rule",
-      "output": "out",
-      "to": "active_results",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_binder_rule",
-      "output": "out",
-      "to": "active_select",
       "input": "in",
       "artifact": "active_learning_state"
     },
@@ -22014,13 +21893,6 @@
     {
       "from": "active_decision",
       "output": "out",
-      "to": "active_accumulate",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_decision",
-      "output": "out",
       "to": "active_binder_rule",
       "input": "in",
       "artifact": "active_learning_state"
@@ -22028,42 +21900,7 @@
     {
       "from": "active_decision",
       "output": "out",
-      "to": "active_decision",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_decision",
-      "output": "out",
-      "to": "active_docking",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_decision",
-      "output": "out",
-      "to": "active_predict",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_decision",
-      "output": "out",
       "to": "active_results",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_decision",
-      "output": "out",
-      "to": "active_select",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_decision",
-      "output": "out",
-      "to": "active_train",
       "input": "in",
       "artifact": "active_learning_state"
     },
@@ -22075,93 +21912,9 @@
       "artifact": "active_learning_state"
     },
     {
-      "from": "active_docking",
-      "output": "out",
-      "to": "active_binder_rule",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_docking",
-      "output": "out",
-      "to": "active_decision",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_docking",
-      "output": "out",
-      "to": "active_docking",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_docking",
-      "output": "out",
-      "to": "active_predict",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_docking",
-      "output": "out",
-      "to": "active_results",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_docking",
-      "output": "out",
-      "to": "active_select",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_docking",
-      "output": "out",
-      "to": "active_train",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_library",
-      "output": "out",
-      "to": "active_accumulate",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_library",
-      "output": "out",
-      "to": "active_binder_rule",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_library",
-      "output": "out",
-      "to": "active_decision",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_library",
-      "output": "out",
-      "to": "active_docking",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
       "from": "active_library",
       "output": "out",
       "to": "active_predict",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_library",
-      "output": "out",
-      "to": "active_results",
       "input": "in",
       "artifact": "active_learning_state"
     },
@@ -22173,86 +21926,9 @@
       "artifact": "active_learning_state"
     },
     {
-      "from": "active_library",
-      "output": "out",
-      "to": "active_train",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_predict",
-      "output": "out",
-      "to": "active_accumulate",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_predict",
-      "output": "out",
-      "to": "active_binder_rule",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_predict",
-      "output": "out",
-      "to": "active_decision",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_predict",
-      "output": "out",
-      "to": "active_docking",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_predict",
-      "output": "out",
-      "to": "active_predict",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_predict",
-      "output": "out",
-      "to": "active_results",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
       "from": "active_predict",
       "output": "out",
       "to": "active_select",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_predict",
-      "output": "out",
-      "to": "active_train",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_seed",
-      "output": "out",
-      "to": "active_accumulate",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_seed",
-      "output": "out",
-      "to": "active_binder_rule",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_seed",
-      "output": "out",
-      "to": "active_decision",
       "input": "in",
       "artifact": "active_learning_state"
     },
@@ -22264,107 +21940,9 @@
       "artifact": "active_learning_state"
     },
     {
-      "from": "active_seed",
-      "output": "out",
-      "to": "active_predict",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_seed",
-      "output": "out",
-      "to": "active_results",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_seed",
-      "output": "out",
-      "to": "active_select",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_seed",
-      "output": "out",
-      "to": "active_train",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_select",
-      "output": "out",
-      "to": "active_accumulate",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_select",
-      "output": "out",
-      "to": "active_binder_rule",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_select",
-      "output": "out",
-      "to": "active_decision",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
       "from": "active_select",
       "output": "out",
       "to": "active_docking",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_select",
-      "output": "out",
-      "to": "active_predict",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_select",
-      "output": "out",
-      "to": "active_results",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_select",
-      "output": "out",
-      "to": "active_select",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_select",
-      "output": "out",
-      "to": "active_train",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_target",
-      "output": "out",
-      "to": "active_accumulate",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_target",
-      "output": "out",
-      "to": "active_binder_rule",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_target",
-      "output": "out",
-      "to": "active_decision",
       "input": "in",
       "artifact": "active_learning_state"
     },
@@ -22376,86 +21954,9 @@
       "artifact": "active_learning_state"
     },
     {
-      "from": "active_target",
-      "output": "out",
-      "to": "active_predict",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_target",
-      "output": "out",
-      "to": "active_results",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_target",
-      "output": "out",
-      "to": "active_select",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_target",
-      "output": "out",
-      "to": "active_train",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_train",
-      "output": "out",
-      "to": "active_accumulate",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_train",
-      "output": "out",
-      "to": "active_binder_rule",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_train",
-      "output": "out",
-      "to": "active_decision",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_train",
-      "output": "out",
-      "to": "active_docking",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
       "from": "active_train",
       "output": "out",
       "to": "active_predict",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_train",
-      "output": "out",
-      "to": "active_results",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_train",
-      "output": "out",
-      "to": "active_select",
-      "input": "in",
-      "artifact": "active_learning_state"
-    },
-    {
-      "from": "active_train",
-      "output": "out",
-      "to": "active_train",
       "input": "in",
       "artifact": "active_learning_state"
     },
@@ -22835,13 +22336,6 @@
       "output": "out",
       "to": "shared_filter",
       "input": "in",
-      "artifact": "prediction"
-    },
-    {
-      "from": "af2",
-      "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
       "artifact": "prediction"
     },
     {
@@ -23239,13 +22733,6 @@
     {
       "from": "af3",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "af3",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -23332,13 +22819,6 @@
       "output": "out",
       "to": "sabr",
       "input": "in",
-      "artifact": "backbone"
-    },
-    {
-      "from": "backbone_source",
-      "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
       "artifact": "backbone"
     },
     {
@@ -23736,13 +23216,6 @@
     {
       "from": "bindcraft2",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "bindcraft2",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -24116,13 +23589,6 @@
       "output": "out",
       "to": "shared_filter",
       "input": "in",
-      "artifact": "sequence"
-    },
-    {
-      "from": "bindcraft2_generator",
-      "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
       "artifact": "sequence"
     },
     {
@@ -24849,13 +24315,6 @@
     {
       "from": "biotite_interface",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "biotite_interface",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -25248,13 +24707,6 @@
     {
       "from": "boltz2",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "boltz2",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -25647,13 +25099,6 @@
     {
       "from": "boltzgen",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "boltzgen",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -26046,13 +25491,6 @@
     {
       "from": "boltzgen_fold_batch",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "boltzgen_fold_batch",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -26431,13 +25869,6 @@
     {
       "from": "boltzgen_generator",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "boltzgen_generator",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -26816,13 +26247,6 @@
     {
       "from": "boltzgen_inverse",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "boltzgen_inverse",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -27201,13 +26625,6 @@
     {
       "from": "caliby",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "caliby",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -27586,13 +27003,6 @@
     {
       "from": "campaign_stop",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "campaign_stop",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -27985,13 +27395,6 @@
     {
       "from": "candidate_analyzer",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "candidate_analyzer",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "candidates"
@@ -28384,13 +27787,6 @@
     {
       "from": "candidate_merge",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "candidate_merge",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "candidates"
@@ -28783,13 +28179,6 @@
     {
       "from": "candidate_rank",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "candidate_rank",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "candidates"
@@ -29322,13 +28711,6 @@
     {
       "from": "complex_analysis",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "complex_analysis",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "candidates"
@@ -29721,13 +29103,6 @@
     {
       "from": "complexa",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "complexa",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -30106,13 +29481,6 @@
     {
       "from": "complexa_generator",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "complexa_generator",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -30491,13 +29859,6 @@
     {
       "from": "design_source",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "design_source",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -30890,13 +30251,6 @@
     {
       "from": "esm1v_score",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "esm1v_score",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -31275,13 +30629,6 @@
     {
       "from": "esm_binder",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "esm_binder",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -31660,13 +31007,6 @@
     {
       "from": "esm_if1",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "esm_if1",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -32059,13 +31399,6 @@
     {
       "from": "esmfold",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "esmfold",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -32458,13 +31791,6 @@
     {
       "from": "esmif_score",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "esmif_score",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -33613,27 +32939,6 @@
     {
       "from": "filter",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "filter",
-      "output": "fail",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "filter",
-      "output": "unresolved",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "filter",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "candidates"
@@ -34054,13 +33359,6 @@
     {
       "from": "foldseek",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "foldseek",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -34439,13 +33737,6 @@
     {
       "from": "foundry_mpnn",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "foundry_mpnn",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -34824,13 +34115,6 @@
     {
       "from": "generation_source",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "generation_source",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -34922,13 +34206,6 @@
     {
       "from": "genie3",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "backbone"
-    },
-    {
-      "from": "genie3",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "backbone"
@@ -35321,13 +34598,6 @@
     {
       "from": "genie3_pipeline",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "genie3_pipeline",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -35715,13 +34985,6 @@
       "output": "out",
       "to": "shared_filter",
       "input": "in",
-      "artifact": "prediction"
-    },
-    {
-      "from": "interface_clustering",
-      "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
       "artifact": "prediction"
     },
     {
@@ -36119,13 +35382,6 @@
     {
       "from": "ipsae",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "ipsae",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "candidates"
@@ -36212,13 +35468,6 @@
       "output": "out",
       "to": "sabr",
       "input": "in",
-      "artifact": "backbone"
-    },
-    {
-      "from": "kejia_idr",
-      "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
       "artifact": "backbone"
     },
     {
@@ -36597,13 +35846,6 @@
       "output": "out",
       "to": "shared_filter",
       "input": "in",
-      "artifact": "sequence"
-    },
-    {
-      "from": "ligandmpnn",
-      "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
       "artifact": "sequence"
     },
     {
@@ -37008,13 +36250,6 @@
     {
       "from": "molecule_source",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "molecule_source",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -37407,13 +36642,6 @@
     {
       "from": "openfold3_legacy",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "openfold3_legacy",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -37806,13 +37034,6 @@
     {
       "from": "pandamap",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "pandamap",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -38205,13 +37426,6 @@
     {
       "from": "pep_patch",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "pep_patch",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -38590,13 +37804,6 @@
     {
       "from": "peptide_trap",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "peptide_trap",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -38989,13 +38196,6 @@
     {
       "from": "plip",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "plip",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -39388,13 +38588,6 @@
     {
       "from": "posebusters",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "posebusters",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -39787,13 +38980,6 @@
     {
       "from": "prediction_af3_torch",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_af3_torch",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -40186,13 +39372,6 @@
     {
       "from": "prediction_atlasfold",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_atlasfold",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -40585,13 +39764,6 @@
     {
       "from": "prediction_boltzgen_fold",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_boltzgen_fold",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -40984,13 +40156,6 @@
     {
       "from": "prediction_chai1",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_chai1",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -41383,13 +40548,6 @@
     {
       "from": "prediction_colabfold",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_colabfold",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -41782,13 +40940,6 @@
     {
       "from": "prediction_esmfold",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_esmfold",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -42181,13 +41332,6 @@
     {
       "from": "prediction_esmfold2",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_esmfold2",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -42580,13 +41724,6 @@
     {
       "from": "prediction_esmfold2_fast",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_esmfold2_fast",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -42979,13 +42116,6 @@
     {
       "from": "prediction_localfold",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_localfold",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -43378,13 +42508,6 @@
     {
       "from": "prediction_mol1",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_mol1",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -43777,13 +42900,6 @@
     {
       "from": "prediction_opendde_native",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_opendde_native",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -44176,13 +43292,6 @@
     {
       "from": "prediction_openfold3_jax",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_openfold3_jax",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -44575,13 +43684,6 @@
     {
       "from": "prediction_openfold3_ob0",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_openfold3_ob0",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -44974,13 +44076,6 @@
     {
       "from": "prediction_protenix_v1",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_protenix_v1",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -45373,13 +44468,6 @@
     {
       "from": "prediction_protenix_v2",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "prediction_protenix_v2",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -45758,13 +44846,6 @@
     {
       "from": "project_design_source",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "project_design_source",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -46157,13 +45238,6 @@
     {
       "from": "proteinsol",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "proteinsol",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -46556,13 +45630,6 @@
     {
       "from": "protenix",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "protenix",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -46955,13 +46022,6 @@
     {
       "from": "protenix_cli",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "protenix_cli",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -47053,13 +46113,6 @@
     {
       "from": "protpardelle",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "backbone"
-    },
-    {
-      "from": "protpardelle",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "backbone"
@@ -47452,13 +46505,6 @@
     {
       "from": "protpardelle_pipeline",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "protpardelle_pipeline",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -47550,13 +46596,6 @@
     {
       "from": "pxdesign",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "backbone"
-    },
-    {
-      "from": "pxdesign",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "backbone"
@@ -47949,13 +46988,6 @@
     {
       "from": "pxdesign_pipeline",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "pxdesign_pipeline",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -48348,13 +47380,6 @@
     {
       "from": "rf3",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "rf3",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -48446,13 +47471,6 @@
     {
       "from": "rfd3",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "backbone"
-    },
-    {
-      "from": "rfd3",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "backbone"
@@ -48831,13 +47849,6 @@
     {
       "from": "rfd4",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "sequence"
-    },
-    {
-      "from": "rfd4",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "sequence"
@@ -49230,13 +48241,6 @@
     {
       "from": "rfd4_fold",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "rfd4_fold",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -49328,13 +48332,6 @@
     {
       "from": "rfdiffusion",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "backbone"
-    },
-    {
-      "from": "rfdiffusion",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "backbone"
@@ -49426,13 +48423,6 @@
     {
       "from": "rfdiffusion_beta_pairing",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "backbone"
-    },
-    {
-      "from": "rfdiffusion_beta_pairing",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "backbone"
@@ -49825,13 +48815,6 @@
     {
       "from": "rosetta_metrics",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "rosetta_metrics",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -49902,41 +48885,6 @@
     {
       "from": "run_source",
       "output": "out",
-      "to": "campaign_stop",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
-      "to": "candidate_analyzer",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
-      "to": "candidate_merge",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
-      "to": "candidate_rank",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
-      "to": "complex_analysis",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
       "to": "esm1v_score",
       "input": "in",
       "artifact": "candidates"
@@ -49965,28 +48913,7 @@
     {
       "from": "run_source",
       "output": "out",
-      "to": "filter",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
-      "to": "foldseek",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
       "to": "foundry_mpnn",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
-      "to": "interface_clustering",
       "input": "in",
       "artifact": "candidates"
     },
@@ -50168,13 +49095,6 @@
     {
       "from": "run_source",
       "output": "out",
-      "to": "results",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
       "to": "rf3",
       "input": "in",
       "artifact": "candidates"
@@ -50182,28 +49102,7 @@
     {
       "from": "run_source",
       "output": "out",
-      "to": "rfd4_fold",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
       "to": "rosetta_metrics",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
-      "to": "sabr",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
-      "to": "sequence_clustering",
       "input": "in",
       "artifact": "candidates"
     },
@@ -50219,20 +49118,6 @@
       "output": "out",
       "to": "shared_filter",
       "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "run_source",
-      "output": "out",
-      "to": "tile_bioemu2",
-      "input": "candidates",
       "artifact": "candidates"
     },
     {
@@ -50604,13 +49489,6 @@
       "output": "out",
       "to": "shared_filter",
       "input": "in",
-      "artifact": "sequence"
-    },
-    {
-      "from": "sabr",
-      "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
       "artifact": "sequence"
     },
     {
@@ -51008,13 +49886,6 @@
     {
       "from": "sequence_clustering",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "sequence_clustering",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -51407,13 +50278,6 @@
     {
       "from": "sequence_qc",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "sequence_qc",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -51787,13 +50651,6 @@
       "output": "out",
       "to": "shared_filter",
       "input": "in",
-      "artifact": "sequence"
-    },
-    {
-      "from": "shared_filter",
-      "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
       "artifact": "sequence"
     },
     {
@@ -52527,13 +51384,6 @@
     {
       "from": "tile_af3_jax",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "prediction"
-    },
-    {
-      "from": "tile_af3_jax",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "prediction"
@@ -52555,401 +51405,9 @@
     {
       "from": "tile_binderscope",
       "output": "out",
-      "to": "abmpnn",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "af2",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "af3",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "biotite_interface",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "boltz2",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "boltzgen_fold_batch",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "boltzgen_inverse",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "caliby",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "campaign_stop",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "candidate_analyzer",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "candidate_merge",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "candidate_rank",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "complex_analysis",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "esm1v_score",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "esm_if1",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "esmfold",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "esmif_score",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "filter",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "foldseek",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "foundry_mpnn",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "interface_clustering",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "ipsae",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "ligandmpnn",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "openfold3_legacy",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "pandamap",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "pep_patch",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "plip",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "posebusters",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_af3_torch",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_atlasfold",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_boltzgen_fold",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_chai1",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_colabfold",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_esmfold",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_esmfold2",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_esmfold2_fast",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_localfold",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_mol1",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_opendde_native",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_openfold3_jax",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_openfold3_ob0",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_protenix_v1",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "prediction_protenix_v2",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "proteinsol",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "protenix",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "protenix_cli",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
       "to": "results",
       "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "rf3",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "rfd4_fold",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "rosetta_metrics",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "sabr",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "sequence_clustering",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "sequence_qc",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "shared_filter",
-      "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "tile_bioemu2",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_binderscope",
-      "output": "out",
-      "to": "tile_validation_acceptance",
-      "input": "candidates",
-      "artifact": "candidates"
+      "artifact": "tool_result"
     },
     {
       "from": "tile_bioemu2",
@@ -53360,13 +51818,6 @@
     {
       "from": "tile_design_boltzgen_mimosa",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_design_boltzgen_mimosa",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "candidates"
@@ -53759,13 +52210,6 @@
     {
       "from": "tile_design_rfantibody",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_design_rfantibody",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "candidates"
@@ -54158,13 +52602,6 @@
     {
       "from": "tile_design_rfantibody_mimosa",
       "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_design_rfantibody_mimosa",
-      "output": "out",
       "to": "tile_bioemu2",
       "input": "candidates",
       "artifact": "candidates"
@@ -54552,13 +52989,6 @@
       "output": "out",
       "to": "shared_filter",
       "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_design_rfpeptides",
-      "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
       "artifact": "candidates"
     },
     {
@@ -55553,13 +53983,6 @@
       "output": "out",
       "to": "shared_filter",
       "input": "in",
-      "artifact": "candidates"
-    },
-    {
-      "from": "tile_validation_acceptance",
-      "output": "out",
-      "to": "tile_binderscope",
-      "input": "candidates",
       "artifact": "candidates"
     },
     {
@@ -61242,8 +59665,8 @@
     },
     "registered_tile_modes_without_canvas_operation": 0,
     "current_operation_count": 129,
-    "current_typed_port_match_count": 4866,
-    "port_match_meaning": "A potential wiring. Runtime validation and native tests are separate evidence.",
+    "current_typed_port_match_count": 4643,
+    "port_match_meaning": "Declared canvas port matches. Validate a saved graph to check inputs, formats and scientific constraints.",
     "native_handoffs": [
       {
         "reference": "local:campaign:20261120-163017-b6bdb653",
@@ -61282,6 +59705,8 @@
         "runtime": "Production through paired MCP",
         "production_release": "d8d0479d0ff6"
       }
-    ]
+    ],
+    "validation_revision": "d43ff3dffcdc4ee61dd11760e4089180acbe4aa5",
+    "closure_report": "tool-validation-closure.md"
   }
 }
