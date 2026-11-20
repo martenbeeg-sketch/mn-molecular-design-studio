@@ -1,6 +1,6 @@
 # Studio tool connections and acceptance evidence
 
-The **Tool Validation** project (`db1c0f35f19847079eb3dfb29ce970a3`) contains small acceptance runs submitted through the paired MCP connection. The test project uses public example inputs and a five-compound fixture. The live application release was `8edf4e5`.
+The **Tool Validation** project (`db1c0f35f19847079eb3dfb29ce970a3`) contains small acceptance runs submitted through the paired MCP connection. The initial live baseline was `8edf4e5`. The matrix retains historical execution evidence and records the current canvas catalogue.
 
 ## Query the map from Studio
 
@@ -31,7 +31,9 @@ Each tile mode has a coverage row for live execution, MCP Results, Streamlit Res
 
 The rendered All tools page contains **95 tiles**. All 95 setup pages loaded their controls in an isolated Streamlit test. Every tile maps to a workflow available through MCP. The MCP setup endpoint returned valid parameter schemas for **123 workflows**. Some workflows share a tile or a submission endpoint, with parameters selecting the engine or mode.
 
-The matrix records the tile names and modes, workflow parameters, **96** canvas operations, and **4,087** typed port matches. A port match describes artifact compatibility. Graph validation also checks required inputs, supported scientific modes, selection rules, and provenance. **34 tiles** have no corresponding registered canvas operation in the catalogue mapping. Some can still hand off real results by manifest, a Results action, or an MCP request with `source_job`. The `verified_handoffs` section identifies actual producer and consumer runs with the artifacts transferred between them. [Connection matrix](tool-connection-matrix.json)
+The current matrix records **129** canvas operations and **4,866** typed port matches. All **95 tiles** and their modes have a canvas operation. Thirty-three new adapters use the registered workflow parameters and file contracts. SAbR is mapped to its existing operation. Graph validation checks required inputs, supported scientific modes, selection rules, and provenance. The `verified_handoffs` and `canvas_update.native_handoffs` sections identify runs that transferred recorded artifacts. A port match alone establishes wiring eligibility. [Connection matrix](tool-connection-matrix.json)
+
+The adapter can read a saved target, candidate collection, compound set, fingerprint manifest, or prepared complex where a compatible input is declared. When wiring an MD job, supply ligand SDF chemistry and the ligand identifier alongside the prepared complex. A deferred multi-run candidate selector may require materializing its candidates before passing them to a standalone-tool adapter.
 
 ## Main test chains
 
