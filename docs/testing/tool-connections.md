@@ -2,6 +2,8 @@
 
 The **Tool Validation** project (`db1c0f35f19847079eb3dfb29ce970a3`) contains small acceptance runs submitted through the paired MCP connection. The initial live baseline was `8edf4e5`. The matrix retains historical execution evidence and records the current canvas catalogue.
 
+[Production fleet verification](tool-fleet-verification.md) records the release and the 14 successful production retests.
+
 ## Query the map from Studio
 
 The authenticated `GET /api/v1/workflows/connections` endpoint and the read-only `tool_connections` MCP tool use the same catalogue as the **All tools** page and the same port rules as the canvas. The response is paginated with `offset`, `limit` and `total`.

@@ -61261,6 +61261,26 @@
         "runtime": "Isolated workspace with real native tools and authenticated MCP",
         "compounds": 3,
         "centroids": 3
+      },
+      {
+        "reference": "local:campaign:20261120-164037-b1580e1c",
+        "test": "LDDM → Vina → Results",
+        "compounds": 4,
+        "scores": 4,
+        "runtime": "Isolated workspace with native tools and authenticated MCP"
+      },
+      {
+        "reference": "local:campaign:20261120-163310-d804d568",
+        "test": "Complex Preparation → OpenMM → MD Analysis → Results",
+        "analysis_count": 1,
+        "runtime": "Isolated workspace with native tools and authenticated MCP"
+      },
+      {
+        "reference": "local:campaign:20261120-170012-33ea61a1",
+        "test": "Saved MD run → MD Analysis → Results",
+        "analysis_count": 1,
+        "runtime": "Production through paired MCP",
+        "production_release": "d8d0479d0ff6"
       }
     ]
   }
