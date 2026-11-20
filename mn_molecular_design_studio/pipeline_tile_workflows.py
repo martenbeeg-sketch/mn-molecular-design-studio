@@ -65,8 +65,7 @@ TILES = {
     "tile_bioemu2": TileWorkflow("BioEmu-2", "simulation.bioemu2", "Molecular dynamics", inputs=CANDIDATES),
     "tile_af3_jax": TileWorkflow("ColabFold 2.0 preview", "refolding.af3_jax_cofolding", "Structure prediction",
                                  "prediction"),
-    "tile_binderscope": TileWorkflow("BinderScope", "analysis.binderscope", "Analysis",
-                                     "candidates", CANDIDATES, cpu=True),
+    "tile_binderscope": TileWorkflow("BinderScope", "analysis.binderscope", "Analysis", cpu=True),
     "tile_validation_acceptance": TileWorkflow("Validation & Acceptance", "analysis.validation_acceptance",
                                                "Analysis", "candidates", CANDIDATES, cpu=True),
 }
@@ -108,6 +107,13 @@ def validate_parameters(tile: TileWorkflow, settings: dict, connected_ports: set
     missing = [name for name, required in parameters.items() if required and name not in supplied]
     if runnable and missing:
         raise ValueError(f"{tile.label} needs {', '.join(missing)}.")
+    if runnable and tile.workflow == "analysis.binderscope":
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.binderscope import validate_request
+
+        if not settings.get("native_run_dirs"):
+            raise ValueError("Select native BindCraft campaigns and their input target for this canvas step. "
+                             "Analyze saved database designs from Data Browser.")
+        validate_request(settings, require_files=False)
 
 
 def workflow_request(tile: TileWorkflow, settings: dict, inputs: dict, name: str) -> dict:

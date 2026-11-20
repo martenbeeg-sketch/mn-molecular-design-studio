@@ -89,11 +89,9 @@ def test_tool_input_digests_track_explicit_files_and_preserve_inline_values(tmp_
     assert tiles.input_digests(settings, tmp_path) != initial
 
 
-@pytest.mark.parametrize("kind,settings", [
-    ("tile_binderscope", {}),
-    ("tile_validation_acceptance", {"acceptance_policy": {"rules": []}}),
-])
-def test_saved_run_uses_the_exact_candidate_manifest_in_tile_requests(kind, settings):
+def test_saved_run_uses_the_exact_candidate_manifest_for_acceptance():
+    kind = "tile_validation_acceptance"
+    settings = {"acceptance_policy": {"rules": []}}
     source = {"deferred_run_source": True, "run_dir": "/work/design/cohort",
               "candidates_jsonl": "/work/design/cohort/artifacts/normalized_candidates/candidates.jsonl"}
     request = source_request(kind, {"workflow_parameters": settings}, source, "Saved Run")
@@ -108,3 +106,15 @@ def test_saved_run_rejects_outputs_the_batch_collector_cannot_merge():
     assert not connection_compatibility("run_source", "tile_bioemu2", target_handle="candidates")["compatible"]
     assert connection_compatibility("project_design_source", "tile_bioemu2", target_handle="candidates")["compatible"]
     assert not connection_compatibility("run_source", "candidate_merge")["compatible"]
+
+
+def test_binderscope_requires_an_explicit_native_campaign_on_canvas():
+    tile = tiles.TILES["tile_binderscope"]
+    for kind in ("run_source", "project_design_source", "tile_validation_acceptance"):
+        assert not connection_compatibility(kind, "tile_binderscope", target_handle="candidates")["compatible"]
+    assert tile.output == "tool_result"
+    with pytest.raises(ValueError, match="Analyze saved database designs from Data Browser"):
+        tiles.validate_parameters(tile, {"source_run_dir": "/work/design", "candidates_jsonl": "/work/candidates.jsonl"},
+                                  set(), runnable=True)
+    settings = {"native_run_dirs": ["/work/bindcraft"], "target_pdb": "/work/target.pdb"}
+    assert tiles.workflow_request(tile, settings, {}, "Native campaign")["parameters"] == settings
