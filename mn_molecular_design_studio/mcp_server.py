@@ -300,8 +300,13 @@ def create_server(client=None):
 
     @server.tool(annotations=read)
     async def result_presentation(reference: str, ctx: Context, offset: int = 0, limit: int = 100) -> dict[str, Any]:
-        """Page local result candidates, binder acceptance and saved models, including the preferred BinderScope assessment."""
-        return await call(ctx, "GET", f"/api/v1/jobs/{job_segment(reference)}/presentation", query={"offset": offset, "limit": limit})
+        """Page local candidates and saved assessments. Follow next_offset since large responses use smaller pages."""
+        path = f"/api/v1/jobs/{job_segment(reference)}/presentation"
+        result = await call(ctx, "GET", path, query={"offset": offset, "limit": limit})
+        while limit > 1 and result.get("response_too_large") and result.get("status_code") == 200:
+            limit = max(1, limit // 2)
+            result = await call(ctx, "GET", path, query={"offset": offset, "limit": limit})
+        return result
 
     @server.tool(annotations=write)
     async def save_visualization(request: dict, ctx: Context) -> dict[str, Any]:

@@ -123,9 +123,14 @@ A saved refold with matching lineage is the default design model in Data Browser
 When its BinderScope assessment is available, Results opens it first as
 **Refolded model**. Other matching assessments can be opened on their own models.
 A remote job shows this information after loading full Results from its workstation.
+BindCraft2's ranked refolded complex is named in the viewer. Historical records
+use this label when the producing result identifies the same saved structure,
+candidate, run, and checksum as the ranked output.
+
 The local MCP `result_presentation` tool returns the same per-candidate
-`binder_outcome` evidence with the existing pagination, including the preferred
-assessment's observation ID when available.
+`binder_outcome` evidence, including the preferred assessment's observation ID.
+Follow `next_offset` until it is null. MCP retries with a smaller page when a
+response exceeds its size limit.
 
 ## Verification
 

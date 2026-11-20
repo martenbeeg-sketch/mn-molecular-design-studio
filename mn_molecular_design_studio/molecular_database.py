@@ -1346,6 +1346,8 @@ class MolecularDatabase:
             # Accumulate only observations and representations accessible to this user,
             # including other groups when viewing a particular collection.
             structures = connection.execute("SELECT * FROM molecule_structures WHERE molecule_id IN (SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?)) ORDER BY created_at DESC", (ids, accessible)).fetchall()
+            from mn_molecular_design_studio.structure_labels import ranked_bindcraft2_labels
+            labels = ranked_bindcraft2_labels(connection, [row["id"] for row in structures if row["label"] == "Complex Pdb"])
             observations = connection.execute("SELECT * FROM molecule_observations WHERE molecule_id IN (SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?)) ORDER BY created_at DESC,id DESC", (ids, accessible)).fetchall()
             sources = connection.execute("SELECT * FROM molecule_sources WHERE molecule_id IN (SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?))", (ids, accessible)).fetchall()
             selection_parameters = []
@@ -1361,7 +1363,8 @@ class MolecularDatabase:
             if "name" not in record:
                 record.update(name=member["name"], metadata=json.loads(member["metadata"]), components=json.loads(member["components"]), origin=json.loads(member["origin"]), schema=json.loads(member["schema_json"]))
         for row in structures:
-            result[row["molecule_id"]]["structures"].append({**dict(row), "context": json.loads(row["context"])})
+            result[row["molecule_id"]]["structures"].append({**dict(row), "context": json.loads(row["context"]),
+                "label": labels.get(row["id"], row["label"])})
         for row in observations:
             record = result[row["molecule_id"]]
             observation = {**dict(row), "metrics": json.loads(row["metrics"]), "context": json.loads(row["context"])}

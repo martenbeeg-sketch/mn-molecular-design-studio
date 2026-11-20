@@ -14,6 +14,7 @@ from mn_molecular_design_studio.database_outcomes import filter_outcomes, has_sa
 from mn_molecular_design_studio.molecular_database import MolecularDatabase
 from mn_molecular_design_studio.output_vocabulary import sql_common_metrics
 from mn_molecular_design_studio.scientific_naming import design_name, meaningful_name
+from mn_molecular_design_studio.structure_labels import ranked_bindcraft2_labels
 
 
 class ReadOnlyLibrary(MolecularDatabase):
@@ -86,6 +87,9 @@ def load_saved_record(database, user, result):
             "SELECT * FROM molecule_structures WHERE molecule_id=? AND group_id IN (SELECT value FROM json_each(?)) "
             "AND id IN (SELECT value FROM json_each(?)) ORDER BY created_at DESC,id",
             (*parameters, json.dumps(structure_ids)))]
+        labels = ranked_bindcraft2_labels(connection, [s["id"] for s in record["structures"] if s["label"] == "Complex Pdb"])
+        for structure in record["structures"]:
+            structure["label"] = labels.get(structure["id"], structure["label"])
         record["structures"].sort(key=lambda row: row["id"] not in result["structure_ids"])
         if result.get("receipt", {}).get("representation_role") == "refolded_validation":
             for structure in record["structures"]:

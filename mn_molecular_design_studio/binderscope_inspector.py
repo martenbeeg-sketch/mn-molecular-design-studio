@@ -219,7 +219,16 @@ def render_inspector(result, *, database=None, user=None, key=""):
     source = result.get("source") or {}
     label = source.get("source", {}).get("record_name") or source.get("label") or result.get("candidate_id") or "Saved design"
     st.markdown("#### " + label)
-    st.caption(str(source.get("source", {}).get("structure_label") or "Exact assessed complex") + " · saved author residue numbering")
+    structure_label = source.get("source", {}).get("structure_label") or "Exact assessed complex"
+    binding = result.get("_studio_sql_binding") or {}
+    if (structure_label == "Complex Pdb" and database is not None and user and binding.get("structure_id")
+            and binding.get("structure_digest") and binding["structure_digest"] == source.get("input_structure_digest")):
+        from mn_molecular_design_studio.structure_labels import ranked_bindcraft2_labels
+        visible = database._visible_ids(user, scope="all", collection="all")
+        with database.connection() as connection:
+            labels = ranked_bindcraft2_labels(connection, [binding["structure_id"]], visible_groups=visible)
+        structure_label = labels.get(binding["structure_id"], structure_label)
+    st.caption(f"{structure_label} · saved author residue numbering")
     render_summary(result)
     analysis = result.get("analysis") or {}
     if analysis.get("confidence_status"):

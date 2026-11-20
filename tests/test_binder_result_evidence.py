@@ -123,6 +123,7 @@ def test_results_and_mcp_only_link_registered_exact_models(api_data):
             report = await mcp.call_tool("result_presentation", {"reference": reference, "limit": 1})
             assert not report.is_error, report.content
             assert report.structured_content["items"][0]["binder_outcome"] == observed["exact"]
+            assert report.structured_content["next_offset"] == 1
 
     asyncio.run(journey())
 

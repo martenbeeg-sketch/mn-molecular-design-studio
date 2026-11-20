@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 
+from mn_molecular_design_studio.structure_labels import ranked_bindcraft2_labels
 
 _BINDER_TOOLS = {"bindcraft", "bindcraft2", "kejia_idr", "peptide_trap", "rfd4_binder_acceptance_campaign"}
 _BINDER_TASKS = {"targeted_protein_binder", "template_peptide_idr", "protein_binder"}
@@ -172,12 +173,14 @@ def _saved_models(database, user, job, anchors):
             pair = (str(provenance.get("run_id") or ""), str(provenance.get("candidate_id") or ""))
             if pair in anchors:
                 sources[(row["group_id"], row["molecule_id"], pair[1])].add(pair)
-        for row in connection.execute(
+        structures = connection.execute(
             "SELECT s.* FROM molecule_structures s JOIN molecule_members m "
             "ON s.group_id=m.group_id AND s.molecule_id=m.molecule_id "
             "WHERE s.group_id IN (SELECT value FROM json_each(?)) "
             "AND json_extract(s.context,'$.candidate_id') IN (SELECT value FROM json_each(?))", args,
-        ):
+        ).fetchall()
+        labels = ranked_bindcraft2_labels(connection, [row["id"] for row in structures if row["label"] == "Complex Pdb"])
+        for row in structures:
             context = json.loads(row["context"])
             candidate_id = str(context.get("candidate_id") or "")
             origin = groups[row["group_id"]].get("origin") or {}
@@ -186,7 +189,7 @@ def _saved_models(database, user, job, anchors):
             for pair in pairs & anchors:
                 matches[pair].append({
                     "structure_id": row["id"], "molecule_id": row["molecule_id"], "group_id": row["group_id"],
-                    "label": row["label"], "sha256": _saved_digest(database, row, context),
+                    "label": labels.get(row["id"], row["label"]), "sha256": _saved_digest(database, row, context),
                     "source_sha256": context.get("source_structure_digest") or "",
                     "representation_role": str(context.get("design_representation_role") or ""),
                     "binder_chains": sorted(context.get("binder_chains") or []),

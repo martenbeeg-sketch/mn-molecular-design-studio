@@ -88,6 +88,7 @@ def install(app, current_user, *, resolve_job, call):
         record, selected = selected_structure(database, user, molecule_id, structure_id)
         source = call(database.structure_file, user, selected["id"])
         layers = [{"molecule_id": molecule_id, "structure_id": selected["id"], "label": record["name"],
+                   "structure_label": selected["label"],
                    "url": "/api/v1/molecules/structures/" + quote(selected["id"], safe="") + "/file",
                    "representation": "ball-and-stick" if is_bound_pose(selected) else "cartoon",
                    "format": selected.get("format") or source.suffix.lstrip("."),
@@ -133,6 +134,7 @@ def install(app, current_user, *, resolve_job, call):
             for item, outcome in zip(items, call(binder_outcomes, ReadOnlyLibrary(), user, row, visible)):
                 item["binder_outcome"] = outcome
         return {"items": items, "total": len(candidates), "offset": offset, "limit": limit,
+                "next_offset": offset + len(items) if offset + len(items) < len(candidates) else None,
                 "metric_fields": sorted({key for c in candidates for key in c.get("metrics", {})}),
                 "reports_url": "/api/v1/jobs/" + quote(reference, safe="") + "/reports"}
 

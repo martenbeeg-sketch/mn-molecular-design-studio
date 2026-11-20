@@ -96,6 +96,34 @@ def test_results_read_tools_do_not_request_remote_inspection():
     asyncio.run(check())
 
 
+def test_result_presentation_retries_large_pages_without_skipping_rows():
+    from mcp import Client
+    from mn_molecular_design_studio.mcp_server import create_server
+
+    requests = []
+
+    class Recorder:
+        async def request(self, method, path, *, query, **kwargs):
+            assert method == "GET"
+            assert path.endswith("/presentation")
+            requests.append(dict(query))
+            limit, offset = query["limit"], query["offset"]
+            if limit > 25:
+                return {"response_too_large": True, "status_code": 200}
+            return {"items": list(range(offset, offset + limit)), "offset": offset, "limit": limit,
+                    "total": 150, "next_offset": offset + limit}
+
+    async def check():
+        async with Client(create_server(Recorder())) as client:
+            parameters = {"reference": "design/fixture", "offset": 13}
+            result = await client.call_tool("result_presentation", parameters)
+            assert result.structured_content["items"] == list(range(13, 38))
+            assert result.structured_content["next_offset"] == 38
+            assert requests == [{"offset": 13, "limit": size} for size in (100, 50, 25)]
+
+    asyncio.run(check())
+
+
 def test_stdio_tools_explain_missing_login(monkeypatch, tmp_path):
     from mcp import Client
     from mn_molecular_design_studio.mcp_server import create_server

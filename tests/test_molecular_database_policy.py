@@ -733,6 +733,48 @@ def test_generated_complex_reindex_keeps_binder_identity_and_only_passing_design
     assert not any(any(component.get("sequence") == "VVV" for component in row["components"]) for row in rows)
 
 
+def test_bindcraft2_ranked_complex_label_preserves_historical_model_identity(database):
+    from mn_molecular_design_studio.data_browser import load_saved_record
+    from mn_molecular_design_studio.structure_labels import BINDCRAFT2_RANKED_LABEL, ranked_bindcraft2_labels
+
+    relative_path = "artifacts/raw/bindcraft2/output/3_Ranked/design.pdb"
+    candidate = {
+        "candidate_id": "bindcraft2_00001", "source_tool": "bindcraft2", "stage": "complex_refolding",
+        "binder_sequence": "EFG", "binder_chains": ["B"], "target_chains": ["A"],
+        "complex_pdb": relative_path, "metrics": {"native_pass_filters": True},
+    }
+    run = _make_run(database, "design", "bindcraft2-ranked", workflow="design_generation",
+                    tool="bindcraft2", candidates=[candidate])
+    source = run / relative_path
+    source.parent.mkdir(parents=True)
+    source.write_text(_pdb_acd_efg_complex())
+    assert ingest_run(run, database=database) == 1
+
+    group = next(row for row in database.groups(A, collection="all") if row["origin"].get("run_id") == run.name)
+    record, = database.list_molecules(A, group_id=group["id"])["items"]
+    structure, = record["structures"]
+    structure_id = structure["id"]
+    assert structure["label"] == BINDCRAFT2_RANKED_LABEL
+    with database.connection() as connection:
+        assert connection.execute("SELECT label FROM molecule_structures WHERE id=?", (structure_id,)).fetchone()[0] == BINDCRAFT2_RANKED_LABEL
+        connection.execute("UPDATE molecule_structures SET label='Complex Pdb' WHERE id=?", (structure_id,))
+
+    lookup = {"group_id": group["id"], "molecule_id": record["id"], "structure_ids": [structure_id], "evaluation_id": ""}
+    projected, = load_saved_record(database, A, lookup)["structures"]
+    assert projected == structure
+    assert ingest_run(run, database=database, force=True) == 1
+    assert database.list_molecules(A, group_id=group["id"])["items"][0]["structures"] == [structure]
+    with database.connection() as connection:
+        assert connection.execute("SELECT label FROM molecule_structures WHERE id=?", (structure_id,)).fetchone()[0] == "Complex Pdb"
+        assert ranked_bindcraft2_labels(connection, [structure_id], visible_groups=[]) == {}
+        connection.execute(
+            "UPDATE molecule_observations SET context=json_set(context,'$.structure_digest',?) "
+            "WHERE namespace='bindcraft2' AND json_extract(context,'$.representation_id')=?",
+            ("f" * 64, structure_id),
+        )
+    assert load_saved_record(database, A, lookup)["structures"][0]["label"] == "Complex Pdb"
+
+
 def test_generated_binder_links_existing_exact_modeled_target_and_preserves_complex(database):
     import hashlib
     target = database.import_records(A, molecule_imports.parse_sequences("ACD"),

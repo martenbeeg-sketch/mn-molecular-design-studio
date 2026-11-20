@@ -16,6 +16,7 @@ from pathlib import Path
 
 from mn_molecular_design_studio import molecule_imports as imports
 from mn_molecular_design_studio.molecular_database import MolecularDatabase, _id, _json, _now
+from mn_molecular_design_studio.structure_labels import BINDCRAFT2_RANKED_LABEL, is_bindcraft2_ranked_path
 
 log = logging.getLogger(__name__)
 _LAST_SYNC = {}
@@ -230,8 +231,15 @@ def _record(candidate, run_dir):
         if all(existing.get("path") != str(path) for existing in files):
             representation = raw_metadata.get("design_representation") or {}
             validation_model = key == "complex_pdb" and representation.get("schema") == "studio.rfd4-representations.v1"
-            files.append({"path": str(path), "label": "Refolded validation complex" if validation_model else
-                          "Generated design complex" if key == "generated_complex_pdb" else key.replace("_", " ").title(), "dimensions": 3,
+            label = key.replace("_", " ").title()
+            if validation_model:
+                label = "Refolded validation complex"
+            elif key == "generated_complex_pdb":
+                label = "Generated design complex"
+            elif (key == "complex_pdb" and candidate.get("source_tool") == "bindcraft2"
+                  and candidate.get("stage") == "complex_refolding" and is_bindcraft2_ranked_path(str(path))):
+                label = BINDCRAFT2_RANKED_LABEL
+            files.append({"path": str(path), "label": label, "dimensions": 3,
                           **({"design_representation_role": "refolded_validation",
                               "b_factor_interpretation": representation["b_factor_interpretation"]} if validation_model else
                              {"design_representation_role": "generated_design"} if key == "generated_complex_pdb" else {}),
