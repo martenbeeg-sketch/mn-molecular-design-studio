@@ -975,6 +975,9 @@ def test_adapters_disable_hidden_downstream_pipelines_and_bind_existing_signatur
     for kind,spec in graph.NODE_CATALOG.items():
         if not spec["workflow"]:continue
         p={f["name"]:f["default"] for f in spec["fields"]}
+        if "workflow_parameters" in p:
+            from mn_molecular_design_studio.pipeline_tile_workflows import parameters_for
+            p["workflow_parameters"] = {name: None for name, required in parameters_for(spec["workflow"]) if required}
         request=runner.node_request(kind,p,source,"test")
         inspect.signature(_get_function(WORKFLOWS[request["workflow"]])).bind(**request["parameters"])
         if kind in {"rfdiffusion","genie3","pxdesign","protpardelle"}:

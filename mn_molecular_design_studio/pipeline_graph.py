@@ -1596,6 +1596,8 @@ def clean_graph(graph: dict) -> dict:
                 raise ValueError(f"{f['label']} must be text.")
             elif f['type']=='json' and not isinstance(value,list) and not (kind == 'run_source' and f['name'] == 'selected_docking_poses' and value is None):
                 raise ValueError(f"{f['label']} must be a list.")
+            elif f["type"] == "object" and not isinstance(value, dict):
+                raise ValueError(f"{f['label']} must be a JSON object.")
             if f["type"] == "select" and not any(
                 type(value) is type(option) and value == option for option in f["options"]
             ):
@@ -2268,6 +2270,11 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> 
             relative = params["topology_relative_path"]
             if Path(relative).is_absolute() or ".." in Path(relative).parts or "://" in relative or "\\" in relative:
                 raise ValueError("Choose a topology path relative to the selected MD run.")
+        if kind in tile_workflows.TILES:
+            tile_workflows.validate_parameters(
+                tile_workflows.TILES[kind], node["data"]["params"]["workflow_parameters"],
+                {edge.get("targetHandle", "in") for edge in incoming_edges[node_id]}, runnable=require_inputs,
+            )
         if kind == "md_analysis":
             from mn_molecular_design_studio.md_pipeline import validate_analysis_parameters
             validate_analysis_parameters(node["data"]["params"])
@@ -2522,6 +2529,33 @@ SUPPORTED_TEMPLATE_IDS = (set(LEGACY_STARTER_TEMPLATES.values()) | set(STARTER_T
                           | {'bindcraft2', 'boltzgen', 'complexa', 'rfdiffusion_beta_pairing'}
                           | {key + '_generated' for key in ('complexa', 'rfdiffusion', 'genie3', 'pxdesign',
                                                            'protpardelle', 'kejia_idr', 'peptide_trap', 'rfdiffusion_beta_pairing')})
+
+
+from mn_molecular_design_studio import pipeline_tile_workflows as tile_workflows
+
+# SAbR already runs in the graph executor and annotates the input structures.
+NODE_CATALOG["sabr"]["workflow_aliases"] = ["analysis.sabr"]
+for _kind, _tile in tile_workflows.TILES.items():
+    _node = _spec(
+        _kind, _tile.label, _tile.category, "Run the registered Studio tool and retain its native Results.",
+        output=_tile.output, workflow=_tile.workflow, formats=("pdb", "cif")
+        if _tile.output in {"candidates", "prediction"} else (),
+        fields=[field("workflow_parameters", "Tool parameters (JSON)", {}, kind="object", section="basic",
+                      help="Use the workflow parameters shown below. Connected inputs supply their corresponding fields.")],
+    )
+    _node["fields"][0]["workflow"] = _tile.workflow
+    _node["inputs"] = [
+        {"id": handle, "label": tile_workflows.PORT_LABELS[artifact],
+         "accepts": [artifact, "backbone", "sequence", "prediction"] if artifact == "candidates" else [artifact],
+         "optional": True}
+        for handle, artifact in _tile.inputs
+    ]
+    _node["outputs"][0]["label"] = tile_workflows.PORT_LABELS.get(_tile.output, _tile.output)
+    NODE_CATALOG[_kind] = _node
+NODE_CATALOG["results"]["inputs"][0]["accepts"].extend(
+    sorted(set(tile.output for tile in tile_workflows.TILES.values()) -
+           set(NODE_CATALOG["results"]["inputs"][0]["accepts"]))
+)
 
 
 def _declared_output_metrics(kind: str, spec: dict | None = None) -> list[dict]:

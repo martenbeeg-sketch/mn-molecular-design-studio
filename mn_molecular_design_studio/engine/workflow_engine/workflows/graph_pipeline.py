@@ -21,6 +21,7 @@ from mn_molecular_design_studio.pipeline_graph import (
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import create_job, finish_job, read_json, update_status, utc_now, write_json
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
 from mn_molecular_design_studio.mimosa_motif import hydrate_candidate_fixed_motif
+from mn_molecular_design_studio import pipeline_tile_workflows
 
 
 def file_digest(path: Path) -> str:
@@ -504,12 +505,17 @@ def filter_candidates(rows: list[dict], settings: dict) -> list[dict]:
 
 
 def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
+    """Turn a registered graph node into a workflow request."""
+    if kind in pipeline_tile_workflows.TILES:
+        return pipeline_tile_workflows.workflow_request(
+            pipeline_tile_workflows.TILES[kind], params["workflow_parameters"],
+            source.get("workflow_inputs", {}), name,
+        )
     if source.get("run_sources"):
         from mn_molecular_design_studio.run_graph import source_request, deferred_source
         return source_request(kind, params, deferred_source(source["run_sources"][0], source), name)
     if source.get("deferred_run_source") and kind in OPTIMIZED_PREDICTION_NODE_ENGINES:
         return _optimized_prediction_request(OPTIMIZED_PREDICTION_NODE_ENGINES[kind], params, source, name)
-    """Only allowlisted adapters can turn graph data into a workflow call."""
     workflow = NODE_CATALOG[kind]["workflow"]
     p = copy.deepcopy(params)
     if kind == "md_analysis":
@@ -830,9 +836,18 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     request["database_collection_policy"] = "none"
     from mn_molecular_design_studio.quality_tools import WORKFLOWS as quality_workflows
     workflow = str(request.get("workflow", ""))
+    tile = pipeline_tile_workflows.WORKFLOWS.get(workflow)
+    if tile:
+        from mn_molecular_design_studio.localfold import apply_user_terms_acceptance
+        request = apply_user_terms_acceptance(request, user_id=owner_id)
     cpu_analysis = workflow == "ligand.md.analysis" or workflow.startswith("analysis.") and not quality_workflows.get(workflow, {}).get("gpu", False)
     request["resources"] = {**request.get("resources", {}), "gpu_device": "none" if cpu_analysis or workflow in {"design.kejia_idr", "design.peptide_trap"} else gpu_device, "cpu_cores": request.get("resources", {}).get("cpu_cores", 4)}
-    if cpu_analysis:
+    if tile:
+        if request["parameters"].get("cpu_cores") is not None:
+            request["resources"]["cpu_cores"] = request["parameters"]["cpu_cores"]
+        if tile.cpu or request["parameters"].get("use_gpu") is False:
+            request["resources"]["gpu_device"] = "none"
+    if request["resources"]["gpu_device"] == "none":
         request["resources"]["min_vram_gb"] = 0
     if workflow == "ligand.md.analysis":
         request["resources"]["cpu_cores"] = int(request["parameters"].get("cpu_cores", 8))
@@ -924,6 +939,41 @@ def _child_output(child: Path, target: dict) -> dict:
         return output
     return {"run_dir": str(child), "candidates_jsonl": str(candidate_path), "target": target, "candidate_count": len(candidates),
             "source_run_id": child.name, "source_provenance": provenance, "stage_counts": candidate_sets.native_counts(provenance)}
+
+
+def _tile_output(kind: str, child: Path, target: dict, *, owner_id: str, project_id: str) -> dict:
+    tile = pipeline_tile_workflows.TILES[kind]
+    result = read_json(child / "result.json")
+    counts = result.get("metrics") or {}
+    output = pipeline_tile_workflows.artifact_output(tile, child, result)
+    output.update(target=target, candidate_count=0)
+    if tile.output in {"candidates", "prediction"}:
+        output.update(_child_output(child, target))
+    elif tile.output == "analysis":
+        output.update(_child_analysis_output(child, target))
+    elif tile.output == "md_trajectory":
+        from mn_molecular_design_studio.md_analysis_ui import _source_options_for_job
+        from mn_molecular_design_studio.md_pipeline import source_output
+        options = _source_options_for_job({"run_dir": str(child)})
+        if len(options) != 1:
+            raise ValueError("Connect Saved MD run to choose the production segment explicitly.")
+        option = options[0]
+        topology_paths = option["topology_paths"]
+        if not topology_paths:
+            raise ValueError("The MD production trajectory has no recorded compatible topology.")
+        output.update(source_output({
+            "source_run_dir": str(child), "option_id": option["option_id"],
+            "topology_relative_path": Path(topology_paths[0]).relative_to(child).as_posix(),
+        }, owner_id=owner_id, project_id=project_id))
+    output["tile_run"] = {"run_dir": str(child), "run_id": child.name, "task_group": child.parent.name,
+                          "workflow": tile.workflow, "label": tile.label, "metrics": counts}
+    paths = [child / "result.json"]
+    if output.get("tile_artifact"):
+        paths.append(Path(output["tile_artifact"]["path"]))
+    if output.get("candidates_jsonl"):
+        paths.append(_path(output["candidates_jsonl"], child))
+    output.setdefault("content_manifest", {}).update({str(path): file_digest(path) for path in paths})
+    return output
 
 
 def _attach_refold_input_references(output: dict, source: dict, parent: Path, node_id: str) -> dict:
@@ -1152,6 +1202,10 @@ def _cache_valid(output: dict) -> bool:
             return False
         if output.get("analysis_run"):
             return True
+        if output.get("tile_run") and not output.get("candidates_jsonl"):
+            root = _path(output["tile_run"]["run_dir"])
+            return (read_json(root / "metadata.json").get("status") == "completed"
+                    and read_json(root / "result.json").get("success") is True)
         path = _path(output["candidates_jsonl"])
         if output.get("review_candidates_jsonl"):
             review_path = _path(output["review_candidates_jsonl"])
@@ -1386,7 +1440,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         if node_states[node_id].get("batches") is not None:
             node_states[node_id].setdefault("stage_counts", {})["processing_jobs"] = len(node_states[node_id]["batches"])
         analyses = [*(output.get("analysis_runs") or []), *([output["analysis_run"]] if output.get("analysis_run") else [])]
-        if (output.get("candidates_jsonl") or output.get("analysis_run", {}).get("success")) and all(a.get("success") for a in analyses) and status not in {"cached", "partial", "failed"} and not output.get('partial_pool') and not output.get('candidate_execution', {}).get('missing_batches'):
+        if (output.get("candidates_jsonl") or output.get("analysis_run", {}).get("success") or output.get("tile_run")) and all(a.get("success") for a in analyses) and status not in {"cached", "partial", "failed"} and not output.get('partial_pool') and not output.get('candidate_execution', {}).get('missing_batches'):
             write_json(cache_root / f"{key}.json", {"output": output})
         persist()
     try:
@@ -1486,6 +1540,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                    if edge["source"] in parents and edge["source"] in outputs]
                     upstream = [output_for_edge(edge) for edge in input_edges]
                     source = upstream[0] if upstream else {}
+                    if kind in pipeline_tile_workflows.TILES:
+                        by_port = {edge.get("targetHandle", "in"): item for edge, item in zip(input_edges, upstream)}
+                        source = {**source, "workflow_inputs": by_port}
                     if any(item.get("run_sources") for item in upstream) and len(upstream) > 1:
                         if not all(item.get("run_sources") for item in upstream):
                             raise ValueError("Process Run inputs through a compatible tool before merging them with newly generated collections.")
@@ -1718,6 +1775,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         # paths whose scientific contents are covered by upstream keys.
                         key_params["effective_parameters"] = {k: v for k, v in effective.items() if k not in
                             {"source_run_dir", "candidates_jsonl", "job_name", "campaign_name", "target_pdb", "target_structure"}}
+                        if kind in pipeline_tile_workflows.TILES:
+                            key_params["tool_input_contents"] = pipeline_tile_workflows.input_digests(effective, parent)
                         if "seed" in effective:
                             seed_key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
                             seed_file = cache_root / (seed_key + ".seed.json")
@@ -1727,7 +1786,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             current["resolved_seed"] = resolved_seed
                             if reuse_completed:
                                 write_json(seed_file, {"seed": resolved_seed})
-                            params = {**params, "seed": resolved_seed}
+                            if kind in pipeline_tile_workflows.TILES:
+                                params = {**params, "workflow_parameters": {**params["workflow_parameters"], "seed": resolved_seed}}
+                            else:
+                                params = {**params, "seed": resolved_seed}
                             key_params["effective_parameters"]["seed"] = resolved_seed
                         current["execution_specification"] = key_params
                     key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
@@ -1790,7 +1852,11 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 persist()
                             progressed=True
                         elif current["status"] == "completed" and child_result.get("success") is True:
-                            if kind == "md_analysis":
+                            if kind in pipeline_tile_workflows.TILES:
+                                complete(node_id, _tile_output(kind, child, source.get("target", {}),
+                                                               owner_id=owner_id, project_id=project_id), key)
+                                progressed = True
+                            elif kind == "md_analysis":
                                 from mn_molecular_design_studio.md_pipeline import analysis_output
                                 complete(node_id, analysis_output(child), key)
                                 progressed = True
@@ -2163,7 +2229,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         surface_analyses=[]
         md_analyses=[]
         seen_analysis_runs=set()
+        tile_runs=[]
         for node_id, output in outputs.items():
+            if output.get("tile_run"):
+                tile_runs.append({**output["tile_run"], "node_id": node_id})
             analyses = [*(output.get("analysis_runs") or []), *([output["analysis_run"]] if output.get("analysis_run") else [])]
             for analysis in analyses:
                 identity = (str(analysis.get("task_group") or "detection"), str(analysis.get("run_id") or analysis.get("run_dir") or ""))
@@ -2230,7 +2299,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
             workflow_summary["shared_campaign"] = shared_summary
             state["shared_campaign"] = shared_summary
             persist()
-        finish_job(parent, success, {"outputs": {"workflow_summary": workflow_summary, "candidates": candidates, "surface_analyses": surface_analyses, "md_analyses": md_analyses, "pipeline_nodes": node_states,
+        finish_job(parent, success, {"outputs": {"workflow_summary": workflow_summary, "candidates": candidates, "surface_analyses": surface_analyses, "md_analyses": md_analyses, "tile_runs": tile_runs, "pipeline_nodes": node_states,
                     "comparison_status": comparison_status, "successful_result_nodes": successful_results,
                     **({"shared_campaign": shared_summary} if shared_summary else {})}, "metrics": {"candidate_count": len(candidates), "surface_analysis_count": len(surface_analyses), "md_analysis_count": len(md_analyses), "node_count": len(nodes), "cached_steps": sum(v.get("status")=="cached" for v in node_states.values()), "failed_steps": len(failures),
                     **({"shared_unique_accepted": shared_summary["unique_accepted"], "shared_accepted_target": shared_summary["accepted_target"]} if shared_summary and shared_summary.get('objective_type') == 'accepted' else {}),

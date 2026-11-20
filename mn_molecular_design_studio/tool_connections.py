@@ -37,7 +37,8 @@ def _tile_modes(tile):
         "workflow": AF2_TILE_WORKFLOW if workflow == "refolding.af2_initial_guess" else workflow,
         "engine_profile": profile,
         "pipeline_operations": [kind for kind, node in sorted(NODE_CATALOG.items())
-                                if (node.get("engine_profile") == profile if profile else node.get("workflow") == workflow)],
+                                if (node.get("engine_profile") == profile if profile else
+                                    node.get("workflow") == workflow or workflow in node.get("workflow_aliases", ()))],
     } for label, workflow, profile in modes]
 
 

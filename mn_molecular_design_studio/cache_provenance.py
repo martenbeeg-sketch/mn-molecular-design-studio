@@ -115,7 +115,12 @@ def execution_identity(kind, params, workflow):
         identity['generator_checkpoints'] = {str(p): file_digest(p) if p.is_file() else None for p in weights}
     manifests = Path(inspect.getfile(implementation)).parents[1] / 'manifests'
     # Tool manifests are also execution inputs, including mutable image tags.
-    for name in {kind, kind.removesuffix('_generator'), 'ligandmpnn' if workflow == 'sequence.mpnn' else kind}:
+    names = {kind, kind.removesuffix('_generator'), 'ligandmpnn' if workflow == 'sequence.mpnn' else kind}
+    if kind.startswith('tile_'):
+        names.add(WORKFLOWS[workflow].tool)
+        if workflow.startswith('ligand.generation.'):
+            names.add(workflow.removeprefix('ligand.generation.'))
+    for name in names:
         manifest = manifests / (name + '.yaml')
         if manifest.is_file():
             import yaml
@@ -137,7 +142,13 @@ def execution_identity(kind, params, workflow):
         images.add(mpnn_input.IMAGE)
     from mn_molecular_design_studio.runtime import reference_root
     checkpoints = []
-    if kind == 'rfd3':
+    if kind.startswith('tile_generation_'):
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import generation_required_references
+
+        checkpoints = [reference_root() / name for name in generation_required_references(
+            workflow.removeprefix('ligand.generation.'), pharmacophore_conditioned=bool(params.get('pharmacophore_json')),
+        )]
+    elif kind == 'rfd3':
         checkpoints = [reference_root() / 'foundry/rfd3_latest.ckpt']
     elif kind in {'rf3', 'boltz2'}:
         checkpoints = ([reference_root() / 'foundry/rf3_foundry_01_24_latest_remapped.ckpt'] if kind == 'rf3'

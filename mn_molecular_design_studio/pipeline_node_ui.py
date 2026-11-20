@@ -421,16 +421,23 @@ def _render_field(field, values, key):
         from mn_molecular_design_studio.peptide_trap_input import SCAFFOLDS
         return st.multiselect(label, list(SCAFFOLDS), default=list(value or []),
                               format_func=lambda item: SCAFFOLDS[item]["label"], **kwargs)
-    if field["type"] == "json":
+    if field["type"] in {"json", "object"}:
+        if field["type"] == "object":
+            from mn_molecular_design_studio.pipeline_tile_workflows import parameters_for
+            if field.get("workflow"):
+                parameters = parameters_for(field["workflow"])
+                with st.expander("Workflow parameter names"):
+                    st.table([{"Parameter": name, "Required": required} for name, required in parameters])
         text = st.text_area(label, value=json.dumps(value, indent=2), **kwargs)
         try:
             parsed = json.loads(text)
-            if not isinstance(parsed, list):
-                raise ValueError("Expected a JSON list.")
+            expected = list if field["type"] == "json" else dict
+            if not isinstance(parsed, expected):
+                raise ValueError("Expected a JSON list." if expected is list else "Expected a JSON object.")
             return parsed
         except ValueError as exc:
             st.error(str(exc))
-            return text  # graph validation prevents saving an invalid list
+            return text  # Graph validation rejects this value.
     if field["type"] == "boolean":
         return st.checkbox(label, value=bool(value), **kwargs)
     if field["type"] == "select":

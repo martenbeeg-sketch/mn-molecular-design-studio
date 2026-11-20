@@ -111,7 +111,8 @@ def requirements(payload, *, references=(), installed_images=None):
         for node in payload["graph"]["nodes"]:
             spec = NODE_CATALOG[node["data"]["kind"]]
             if spec.get("workflow"):
-                workflows.append((spec["workflow"], node["data"].get("params", {})))
+                parameters = node["data"].get("params", {})
+                workflows.append((spec["workflow"], parameters.get("workflow_parameters", parameters)))
     else:
         from mn_molecular_design_studio.batching import parameter_items
         workflows.extend((payload["workflow"], item) for item in parameter_items(payload.get("parameters", {})))

@@ -7816,6 +7816,17 @@ def _render_job_details() -> None:
 
         from mn_molecular_design_studio.result_presentation import render_workflow_results_summary
         render_workflow_results_summary(run_dir)
+        if tool_runs := result_payload.get("tile_runs"):
+            st.subheader("Pipeline tool results")
+            selected_run = st.selectbox(
+                "Tool run", range(len(tool_runs)),
+                format_func=lambda index: f"{tool_runs[index]['label']} · {tool_runs[index]['run_id']}",
+                key=f"pipeline-tool-run-{run_id}",
+            )
+            if st.button("Open tool Results", key=f"pipeline-tool-results-{run_id}"):
+                child = tool_runs[selected_run]
+                st.session_state["selected-job-reference"] = f"{child['task_group']}/{child['run_id']}"
+                st.rerun()
         if candidates_path.is_file():
             if any((row.get("raw_metadata") or {}).get(key) for row in result_candidates for key in ("measurement_status", "selection", "source_candidate", "candidate_set")):
                 from mn_molecular_design_studio.result_presentation import candidate_state_rows
