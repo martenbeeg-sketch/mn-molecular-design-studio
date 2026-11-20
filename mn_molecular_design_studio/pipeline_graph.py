@@ -2156,6 +2156,11 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> 
         a, b = (NODE_CATALOG[nodes[i]["data"]["kind"]] for i in (source, target))
         source_handle = edge.get("sourceHandle", "out")
         target_handle = edge.get("targetHandle", "in")
+        if edge.get("loop_back") is True and (
+            graph.get("template_id") != "unidock_active_learning"
+            or a["key"] != "active_select" or b["key"] != "active_docking"
+        ):
+            raise ValueError("Only next-batch selection can return compounds to docking.")
         compatibility = connection_compatibility(
             nodes[source]["data"]["kind"], nodes[target]["data"]["kind"],
             source_handle=source_handle, target_handle=target_handle,
@@ -2163,8 +2168,6 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> 
         if not compatibility["compatible"]:
             raise ValueError(compatibility["reason"])
         if edge.get("loop_back") is True:
-            if graph.get("template_id") != "unidock_active_learning" or a["key"] != "active_select" or b["key"] != "active_docking":
-                raise ValueError("Only next-batch selection can return compounds to docking.")
             continue
         incoming[target].append(source)
         outgoing[source].append(target)
