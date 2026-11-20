@@ -1017,16 +1017,29 @@ def _show_pipeline_campaign(prefix, project_id, submit_api):
     dialog()
 
 
+def _change_archive_status(draft, project_id, submit_api, *, archived):
+    try:
+        submit_api(f"/api/v1/pipelines/{draft['graph']['id']}/archive", {
+            "project_id": project_id, "archived": archived, "expected_revision": draft["revision"]})
+        return True
+    except (ValueError, RuntimeError) as exc:
+        st.error(str(exc))
+        return False
+
+
 def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs, read_only_projects=()):
     st.markdown("<style>.block-container{max-width:1900px;padding-top:1.35rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
     project_id = project_selector("visual-pipeline")
     prefix = f"visual-pipeline-{project_id or 'unassigned'}"
     state_key = prefix + "-graph"
-    definitions = list_definitions(owner_id, project_id) if project_id else []
+    saved_drafts = list_definitions(owner_id, project_id, include_archived=True) if project_id else []
+    definitions = [item for item in saved_drafts if not item.get("archived_at")]
+    archived = [item for item in saved_drafts if item.get("archived_at")]
     if project_id in read_only_projects:
         st.info("This project is read-only. You can inspect and download its saved pipeline graphs.")
-        if definitions:
-            draft = st.selectbox("Saved pipeline", definitions, format_func=lambda item: item["graph"]["name"], key=prefix + "-archived-draft")
+        if saved_drafts:
+            draft = st.selectbox("Saved pipeline", saved_drafts, format_func=lambda item: item["graph"]["name"],
+                                 key=prefix + "-archived-draft")
             versions = list_versions(owner_id, project_id, draft["graph"]["id"])
             snapshot = st.selectbox("Revision", [draft, *versions], key=prefix + "-archived-revision",
                 format_func=lambda item: ("Draft" if "versions" in item else "Saved version")
@@ -1058,8 +1071,25 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     with st.expander("Saved pipelines & versions", expanded=True):
         if definitions:
             saved = st.selectbox("Saved draft", definitions, format_func=lambda d:f"{d['graph']['name']} · {d['versions']} saved versions", key=prefix+"-saved")
-            st.button("Open saved draft", key=prefix+"-open", on_click=_activate_graph,
+            open_col, archive_col = st.columns(2)
+            open_col.button("Open saved draft", key=prefix+"-open", on_click=_activate_graph,
                 args=(prefix, saved["graph"], saved["revision"]))
+            if archive_col.button("Archive draft", key=prefix + "-archive"):
+                if _change_archive_status(saved, project_id, submit_api, archived=True):
+                    if saved["graph"]["id"] == graph["id"]:
+                        replacement = next((item for item in definitions if item["graph"]["id"] != graph["id"]), None)
+                        if replacement:
+                            _activate_graph(prefix, replacement["graph"], replacement["revision"])
+                        else:
+                            _activate_graph(prefix, new_graph("targeted_protein_binder"))
+                    st.rerun()
+        if archived:
+            with st.expander("Archived drafts"):
+                selected = st.selectbox("Archived draft", archived, format_func=lambda item: item["graph"]["name"],
+                                        key=prefix + "-archived-pipeline")
+                if st.button("Restore draft", key=prefix + "-unarchive"):
+                    if _change_archive_status(selected, project_id, submit_api, archived=False):
+                        st.rerun()
         versions = list_versions(owner_id, project_id, graph["id"]) if project_id else []
         if versions:
             version = st.selectbox("Version history", versions, format_func=lambda d:f"{d['saved_at'][:19].replace('T',' ')} UTC · {d['revision'][:10]}", key=prefix+"-version-"+graph["id"])
@@ -1068,12 +1098,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         if not definitions and not versions:
             st.caption("Canvas edits autosave to the current draft. Use Save as… to create a separate pipeline; Save version keeps immutable history.")
 
-    with st.expander("Molecular dynamics analysis", expanded=True):
-        st.caption("Saved MD run → MD Analysis → Results. Configure an exact production segment and sampling window; source files remain read-only on this pipeline workstation.")
-        st.button("Create MD analysis pipeline", key=prefix + "-md-template",
-            on_click=_activate_graph, args=(prefix, new_graph("md_analysis")))
-    from mn_molecular_design_studio.scientific_tasks_ui import render_legacy_recipe_selector
-    created = render_legacy_recipe_selector(prefix)
+    from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
+    created = render_task_setup(prefix)
     if created is not None:
         _activate_graph(prefix, created)
     graph = st.session_state[state_key]

@@ -95,9 +95,14 @@ def install(app, current_user, *, validate_paths, resolve_job):
 
     @router.get("/pipelines/templates")
     def pipeline_templates(user=Depends(current_user)):
-        from mn_molecular_design_studio.pipeline_graph import STARTER_TEMPLATES, LEGACY_STARTER_TEMPLATES, TEMPLATE_REFERENCES
+        from mn_molecular_design_studio.pipeline_graph import MAIN_STARTERS, STARTER_TEMPLATES, LEGACY_STARTER_TEMPLATES, TEMPLATE_REFERENCES
         from mn_molecular_design_studio.scientific_tasks import catalogue
-        return {"items": [{"id": key, "label": label, "reference": TEMPLATE_REFERENCES.get(key)}
+        from mn_molecular_design_studio.workflow_modes import MODES
+        variants = dict.fromkeys(MODES, "targeted_protein_binder") | {"md_simulation": "md_analysis"}
+        return {"items": [{"id": key, "label": label, "reference": TEMPLATE_REFERENCES.get(key),
+                           "section": ("main" if key in MAIN_STARTERS.values() else
+                                       "variant" if key in variants else "advanced"),
+                           **({"parent_id": variants[key]} if key in variants else {})}
                           for label, key in STARTER_TEMPLATES.items()], "tasks": catalogue(),
                 "legacy_items": [{"id": key, "label": label} for label, key in LEGACY_STARTER_TEMPLATES.items()]}
 

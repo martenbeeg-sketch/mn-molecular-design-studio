@@ -827,15 +827,19 @@ ACTIVE_LEARNING_LAYOUT = {
 
 
 def new_graph(template="foundry") -> dict[str, Any]:
-    if template == "md_analysis":
-        kinds = ["md_source", "md_analysis", "results"]
+    if template in {"md_analysis", "md_simulation"}:
+        kinds = (["md_source", "md_analysis", "results"] if template == "md_analysis" else
+                 ["tile_complex_prepare", "tile_md_openmm", "md_analysis", "results"])
+        name = ("Saved MD run → MD Analysis → Results" if template == "md_analysis" else
+                "Complex Preparation → OpenMM → MD Analysis → Results")
         return clean_graph({"schema_version": SCHEMA, "id": uuid.uuid4().hex,
-            "name": "Saved MD run → MD Analysis → Results", "template_id": "md_analysis",
+            "name": name, "template_id": template,
             "nodes": [{"id": kind, "type": "studio", "position": {"x": 50 + 350 * index, "y": 160},
                 "data": {"kind": kind, "label": NODE_CATALOG[kind]["label"], "params": {}}}
                 for index, kind in enumerate(kinds)],
             "edges": [{"id": "md-edge-" + str(index), "source": kinds[index], "target": kinds[index + 1],
-                "sourceHandle": "out", "targetHandle": "in"} for index in range(2)],
+                "sourceHandle": "out", "targetHandle": "complex" if kinds[index + 1] == "tile_md_openmm" else "in"}
+                for index in range(len(kinds) - 1)],
             "viewport": {"x": 0, "y": 0, "zoom": .8}})
     if template == "accepted_complex_analysis":
         kinds = ["project_design_source", "candidate_merge", "shared_filter", "complex_analysis", "biotite_interface", "results"]
@@ -1548,6 +1552,10 @@ def clean_graph(graph: dict) -> dict:
         if kind == 'boltz2':
             from mn_molecular_design_studio.prediction_configuration import boltz_settings
             params = boltz_settings(params, saved_graph=True)
+        # Some older active-learning drafts already carry the current template
+        # version but still have a pre-worker CPU field.
+        if kind == "active_docking" and graph.get("template_id") == "unidock_active_learning":
+            params.pop("cpu_cores", None)
         if kind == 'af2' and 'af2_validation_mode' not in params:
             upstream_kinds = {n.get('id'): n.get('data', {}).get('kind') for n in nodes}
             direct = any(e.get('target') == node['id'] and upstream_kinds.get(e.get('source')) == 'cofold_input' for e in edges)
@@ -2438,6 +2446,8 @@ def save_definition(graph: dict, owner_id: str, project_id: str, *, version=Fals
             current = json.loads(draft.read_text(encoding="utf-8"))
         except FileNotFoundError:
             current = None
+        if current is not None and current.get("archived_at"):
+            raise PipelineDraftConflictError("Restore this archived pipeline or save a separate copy.")
         current_revision = current["revision"] if current is not None else None
         if not for_run and expected_revision != current_revision and digest != current_revision:
             raise PipelineDraftConflictError("The saved draft has changed. Open the saved draft or use Save as… to keep your edits separately.")
@@ -2453,11 +2463,56 @@ def save_definition(graph: dict, owner_id: str, project_id: str, *, version=Fals
     return payload
 
 
-def list_definitions(owner_id: str, project_id: str) -> list[dict]:
+def require_active_draft(owner_id: str, project_id: str, pipeline_id: str) -> None:
+    """Check the saved draft on the organizer before dispatching to a worker."""
+    if not re.fullmatch(r"[a-f0-9]{32}", pipeline_id):
+        raise ValueError("Invalid pipeline ID.")
+    path = scope_root(owner_id, project_id) / pipeline_id / "draft.json"
+    try:
+        draft = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    if draft.get("archived_at"):
+        raise PipelineDraftConflictError("Restore this archived pipeline or save a separate copy.")
+
+
+def set_draft_archived(owner_id: str, project_id: str, pipeline_id: str, *,
+                       archived: bool, expected_revision: str) -> dict:
+    """Archive or restore a draft while keeping its graph and version IDs."""
+    from mn_molecular_design_studio.cluster.config import atomic_json
+
+    if not re.fullmatch(r"[a-f0-9]{32}", pipeline_id):
+        raise ValueError("Invalid pipeline ID.")
+    if not isinstance(expected_revision, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_revision):
+        raise ValueError("Use the revision from the saved pipeline draft.")
+    if type(archived) is not bool:
+        raise ValueError("archived must be true or false.")
+    draft = scope_root(owner_id, project_id) / pipeline_id / "draft.json"
+    if not draft.is_file():
+        raise LookupError("Pipeline draft not found.")
+    with (draft.parent / ".draft.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = json.loads(draft.read_text(encoding="utf-8"))
+        if current["revision"] != expected_revision:
+            raise PipelineDraftConflictError("The saved draft has changed. Open the latest draft.")
+        if bool(current.get("archived_at")) != archived:
+            if archived:
+                current["archived_at"] = datetime.now(timezone.utc).isoformat()
+            else:
+                current.pop("archived_at", None)
+            atomic_json(draft, current)
+    return current
+
+
+def list_definitions(owner_id: str, project_id: str, *, include_archived=False) -> list[dict]:
     definitions = []
     for path in scope_root(owner_id, project_id).glob("*/draft.json"):
         try:
-            d = json.loads(path.read_text()); d["versions"] = len(list((path.parent / "versions").glob("*.json"))); definitions.append(d)
+            draft = json.loads(path.read_text())
+            if draft.get("archived_at") and not include_archived:
+                continue
+            draft["versions"] = len(list((path.parent / "versions").glob("*.json")))
+            definitions.append(draft)
         except (OSError, ValueError):
             continue
     return sorted(definitions, key=lambda d: d["saved_at"], reverse=True)
@@ -2528,7 +2583,20 @@ for _kind, _specification in NODE_CATALOG.items():
     if _specification['category'] in {'Design engine', 'Design pipeline'}:
         _specification['scientific_workflow'] = workflow_capability(_kind)
 
-STARTER_TEMPLATES = {label: mode for mode, label in MODES.items()} | {spec['label']: key for key, spec in TASKS.items()} | {"Accepted Results → Complex Analysis": "accepted_complex_analysis", "Multi-Generator Binder Design & Evaluation": "multi_generator_binder", "Saved MD run → MD Analysis → Results": "md_analysis", "Blank canvas": "blank"}
+MAIN_STARTERS = {
+    "Binder design": "targeted_protein_binder",
+    "Peptide / IDR design": "template_peptide_idr",
+    "Structure prediction and cofolding": "molecular_structure_prediction",
+    "Docking and library screening": "small_molecule_hit_prioritization",
+    "Molecular dynamics": "md_analysis",
+    "Analysis of saved results": "accepted_complex_analysis",
+}
+STARTER_TEMPLATES = (
+    MAIN_STARTERS | {label: mode for mode, label in MODES.items()}
+    | {spec["label"]: key for key, spec in TASKS.items() if key not in MAIN_STARTERS.values()}
+    | {"Multi-Generator Binder Design & Evaluation": "multi_generator_binder",
+       "Prepare complex → OpenMM → MD Analysis": "md_simulation", "Blank canvas": "blank"}
+)
 SUPPORTED_TEMPLATE_IDS = (set(LEGACY_STARTER_TEMPLATES.values()) | set(STARTER_TEMPLATES.values())
                           | {'bindcraft2', 'boltzgen', 'complexa', 'rfdiffusion_beta_pairing'}
                           | {key + '_generated' for key in ('complexa', 'rfdiffusion', 'genie3', 'pxdesign',

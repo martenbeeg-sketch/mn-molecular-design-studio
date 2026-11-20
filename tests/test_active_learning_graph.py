@@ -503,3 +503,16 @@ def test_active_learning_unidock_parameters_include_reference_ligand_alignment(t
     assert request["mode"] == "hybrid"
     assert request["search_mode"] == "balance"
     assert request["reference_ligand_sdf"] == str(ligand)
+
+
+def test_active_learning_draft_normalizes_retired_cpu_setting():
+    from mn_molecular_design_studio import pipeline_graph
+
+    old = pipeline_graph.new_graph("unidock_active_learning")
+    docking = next(node["data"]["params"] for node in old["nodes"] if node["data"]["kind"] == "active_docking")
+    docking.update(cpu_cores=8, worker_batch_size=250)
+    draft = pipeline_graph.clean_graph(old)
+    current = next(node["data"]["params"] for node in draft["nodes"] if node["data"]["kind"] == "active_docking")
+    assert "cpu_cores" not in current
+    assert current["worker_batch_size"] == 250
+    assert docking["cpu_cores"] == 8

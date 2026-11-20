@@ -1,11 +1,13 @@
 # Visual pipelines
 
-Open **Pipelines → Node canvas**, select a project, then choose a scientific objective.
-Configure molecular inputs, choose one compatible method, configure optional stages,
-and click **Create editable pipeline**. Selecting another objective alone does not
-replace the current draft. Six standard tasks and two experimental tasks replace
-the engine-combination menu. **Blank canvas / custom workflow**, the node library,
-standalone Tools, and **Legacy recipes and continuation compatibility** remain available.
+Open **Pipelines**, select a project and expand **New pipeline**. Choose
+binder design, peptide/IDR design, structure prediction and cofolding, docking
+and library screening, molecular dynamics, or analysis of saved results.
+Pick a method and click **Create editable pipeline** to open it on the canvas.
+The binder settings offer complete native, comparative and modular workflows.
+Specialist recipes, the blank canvas and legacy templates are under **Advanced**.
+The MCP `pipeline_templates` tool identifies main starters, variants with their
+parent IDs, and advanced starters. Existing template IDs remain callable.
 
 The default binder recipe connects Target → Binder Design Context → RFdiffusion3 →
 initial ProteinMPNN → Boltz-2 → Results. Backbone methods require initial sequence
@@ -35,9 +37,10 @@ shortlist. See [Phase 5 implementation and validation](testing/task-catalogue-co
 
 ## Working on the canvas
 
-**MD analysis:** use **Create MD analysis pipeline**, or add **Saved MD run** and
-**MD Analysis** from the Molecular dynamics tool group. The typed connection
-carries one exact trajectory/topology pair into the CPU analysis. Connect its
+Under **Molecular dynamics**, choose **Analyze a saved MD run** or **Prepare a
+complex and run OpenMM**. Both starters connect the exact trajectory and
+topology to the CPU analysis and Results. The simulation starter includes the
+existing complex preparation tool. Connect its
 MD measurements output to Results; branch the saved source to compare sampling
 windows/settings. Source files stay read-only on the pipeline workstation.
 This route calculates RMSD, Cα/ligand RMSF, mass-weighted Rg and geometric
@@ -80,6 +83,12 @@ The [Python API tutorial](https://github.com/RosettaCommons/RFD4-Proteina/blob/m
 
 Drafts autosave within the selected project. **Save version** keeps an immutable copy;
 restoring a version replaces the draft without changing that version or an earlier run.
+Use **Archive draft** to take a recipe out of the active list. The **Archived drafts**
+panel restores it with its versions intact. In MCP, call `list_saved_pipelines` with
+`include_archived=true` and use `archive_pipeline_draft` with the current revision
+and `archived=false` to restore it. Saved versions and Results can still be read
+while a draft is archived. Restore it before running it again.
+
 **Run pipeline** submits a CPU coordinator and ordinary child jobs through the existing scheduler.
 It freezes the graph and target input for that run and preserves original design artifacts.
 

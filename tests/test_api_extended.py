@@ -1591,3 +1591,52 @@ def test_screen_retention_settings_and_round_results_through_mcp(api_data, monke
                 assert pose_content.contents[0].text == selected.read_text()
 
     asyncio.run(journey())
+
+
+
+def test_archived_pipeline_draft_is_restorable_through_mcp(api_data):
+    pytest.importorskip("mcp")
+    from mcp import Client
+    from mn_molecular_design_studio.api_client import StudioClient
+    from mn_molecular_design_studio.mcp_server import create_server
+
+    data = api_data
+    project = data["project"]["id"]
+    student = StudioClient("http://studio.test", token=data["student_token"],
+                           transport=httpx.ASGITransport(app=data["app"]))
+
+    async def journey():
+        async with Client(create_server(student)) as client:
+            async def tool(name, args, *, failure=False):
+                result = await client.call_tool(name, args)
+                assert result.is_error == failure, result.content
+                return result.structured_content
+            draft = await tool("create_pipeline_draft", {"template": "md_analysis", "project_id": project})
+            graph = draft["graph"]
+            saved = await tool("save_pipeline_draft", {"graph": graph, "project_id": project, "version": True})
+            identity = {"project_id": project, "pipeline_id": graph["id"], "expected_revision": saved["revision"]}
+            await tool("archive_pipeline_draft", {**identity, "expected_revision": "a" * 64}, failure=True)
+            archived = await tool("archive_pipeline_draft", identity)
+            assert archived["archived_at"] and archived["revision"] == saved["revision"]
+            assert (await tool("list_saved_pipelines", {"project_id": project}))["items"] == []
+            inclusive = await tool("list_saved_pipelines", {"project_id": project, "include_archived": True})
+            assert inclusive["items"][0]["graph"] == graph
+            await tool("save_pipeline_draft", {"project_id": project, "graph": graph,
+                                                "expected_revision": saved["revision"]}, failure=True)
+            blocked_run = data["client"].post("/api/v1/pipelines/run",
+                json={"project_id": project, "graph": graph}, headers=headers(data, "student"))
+            assert blocked_run.status_code == 409, blocked_run.text
+            versions = await tool("list_saved_pipelines", {"project_id": project, "pipeline_id": graph["id"]})
+            assert versions["items"] == [saved]
+            other = data["client"].post(f"/api/v1/pipelines/{graph['id']}/archive",
+                json={"project_id": project, "archived": False, "expected_revision": saved["revision"]},
+                headers=headers(data, "other"))
+            assert other.status_code == 404
+            another_owner = data["client"].post(f"/api/v1/pipelines/{graph['id']}/archive",
+                json={"project_id": project, "expected_revision": saved["revision"], "archived": False})
+            assert another_owner.status_code == 404
+            restored = await tool("archive_pipeline_draft", {**identity, "archived": False})
+            assert restored == saved
+            assert (await tool("list_saved_pipelines", {"project_id": project}))["items"][0]["graph"] == graph
+
+    asyncio.run(journey())

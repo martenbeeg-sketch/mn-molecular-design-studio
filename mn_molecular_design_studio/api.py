@@ -1032,7 +1032,7 @@ def submit_campaign(
 
 def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
     import re
-    from mn_molecular_design_studio.pipeline_graph import clean_graph, execution_options, validate_graph
+    from mn_molecular_design_studio.pipeline_graph import clean_graph, execution_options, migrate_template_graph, validate_graph
     from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import (
         source_designs, source_generations, source_molecule_selection, source_project_designs,
     )
@@ -1042,7 +1042,10 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
         raise HTTPException(status_code=422, detail="Unsupported pipeline request fields.")
     if runnable:
         _call(execution_options, request)
-    graph = _call(clean_graph, request.get("graph"))
+    raw_graph = request.get("graph")
+    if runnable and isinstance(raw_graph, dict):
+        raw_graph = _call(migrate_template_graph, raw_graph)
+    graph = _call(clean_graph, raw_graph)
     _validate_user_path_values(graph, user, _request_directory(user, None))
     for node in graph["nodes"]:
         if node["data"]["kind"] == "run_source":
@@ -1169,10 +1172,25 @@ def save_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] = De
 
 
 @app.get("/api/v1/pipelines")
-def list_saved_pipelines(project_id: str, user: dict[str, Any] = Depends(_current_user)):
+def list_saved_pipelines(project_id: str, include_archived: bool = False, user: dict[str, Any] = Depends(_current_user)):
     from mn_molecular_design_studio.pipeline_graph import list_definitions
     _require_pipeline_history_access(project_id, user)
-    return _call(list_definitions, str(user["id"]), project_id)
+    return _call(list_definitions, str(user["id"]), project_id, include_archived=include_archived)
+
+
+@app.post("/api/v1/pipelines/{pipeline_id}/archive")
+def archive_pipeline(pipeline_id: str, payload: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(_current_user)):
+    from mn_molecular_design_studio.pipeline_graph import PipelineDraftConflictError, set_draft_archived
+
+    request, project_id = _request_payload_and_project(payload, user)
+    if set(request) != {"archived", "expected_revision"}:
+        raise HTTPException(422, "Provide archived and the last opened draft revision.")
+    try:
+        return set_draft_archived(str(user["id"]), project_id, pipeline_id, **request)
+    except PipelineDraftConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (OSError, TypeError, ValueError, LookupError) as exc:
+        raise _http_error(exc) from exc
 
 
 def _require_pipeline_history_access(project_id, user):
@@ -1212,14 +1230,22 @@ def validate_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] 
 def run_visual_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(_current_user),
                         credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
                         idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None):
-    from mn_molecular_design_studio.pipeline_graph import execution_options, save_definition
+    from mn_molecular_design_studio.pipeline_graph import PipelineDraftConflictError, execution_options, require_active_draft, save_definition
     from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import enqueue_graph_pipeline
     from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import job_reference
     request, selected_project = _request_payload_and_project(payload, user)
     request_dir = _request_directory(user, None)
     def perform(on_dispatch):
         local_request = dict(request)
-        _validate_user_path_values(local_request.get("graph"), user, request_dir)
+        candidate = local_request.get("graph")
+        if isinstance(candidate, dict):
+            try:
+                require_active_draft(str(user["id"]), selected_project, str(candidate.get("id", "")))
+            except PipelineDraftConflictError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            except (OSError, TypeError, ValueError) as exc:
+                raise _http_error(exc) from exc
+        _validate_user_path_values(candidate, user, request_dir)
         remote = _cluster_submission(local_request, selected_project, user, request_dir, credentials,
                                      kind="pipeline", on_dispatch=on_dispatch)
         if remote is not None:
@@ -1227,7 +1253,12 @@ def run_visual_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any
         payload = dict(local_request, project_id=selected_project)
         graph, project_id, run_request = _pipeline_payload(payload, user, runnable=True)
         reuse, device = execution_options(run_request)
-        version = _call(save_definition, graph, str(user["id"]), project_id, for_run=True)
+        try:
+            version = save_definition(graph, str(user["id"]), project_id, for_run=True)
+        except PipelineDraftConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (OSError, TypeError, ValueError, LookupError) as exc:
+            raise _http_error(exc) from exc
         from mn_molecular_design_studio.engine.workflow_engine.core.jobs import submission_tags
         with submission_tags(
             studio_owner_id=str(user["id"]), studio_project_id=project_id,

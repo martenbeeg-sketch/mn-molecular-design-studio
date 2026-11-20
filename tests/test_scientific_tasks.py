@@ -29,8 +29,9 @@ def test_each_task_has_a_valid_editable_default(task):
 def test_catalogue_has_six_standard_and_two_experimental_tasks_and_blank():
     assert len(TASKS) == 8
     assert sum(bool(t.get("experimental")) for t in TASKS.values()) == 2
-    assert len(graph.STARTER_TEMPLATES) == 15
-    assert graph.STARTER_TEMPLATES["Saved MD run → MD Analysis → Results"] == "md_analysis"
+    assert len(graph.MAIN_STARTERS) == 6
+    assert graph.MAIN_STARTERS["Molecular dynamics"] == "md_analysis"
+    assert "md_simulation" in graph.STARTER_TEMPLATES.values()
     assert graph.STARTER_TEMPLATES["Multi-Generator Binder Design & Evaluation"] == "multi_generator_binder"
     assert "blank" in graph.STARTER_TEMPLATES.values()
 
@@ -268,6 +269,10 @@ def test_api_supports_task_configuration_and_old_identifiers(api_data):
     client, project = api_data["client"], api_data["project"]["id"]
     listing = client.get("/api/v1/pipelines/templates").json()
     assert len(listing["tasks"]) == 8 and len(listing["legacy_items"]) == 23
+    tasks = {item["id"]: item for item in listing["items"]}
+    assert {k for k, v in tasks.items() if v["section"] == "main"} == set(graph.MAIN_STARTERS.values())
+    assert tasks["native_comparative"]["parent_id"] == "targeted_protein_binder"
+    assert tasks["md_simulation"]["parent_id"] == "md_analysis"
     request = {"project_id": project, "template": "molecular_structure_prediction", "configuration": {
         "mode": "protein_ligand", "methods": ["boltz2"], "inputs": {"target_protein_sequences": "GGGG", "ligand_smiles": "CCO"}}}
     response = client.post("/api/v1/pipelines/drafts", json=request)
@@ -288,7 +293,12 @@ render_pipeline_builder(owner_id="test-user", project_selector=lambda _:None,
     assert not app.exception
     prefix = "visual-pipeline-unassigned"
     original = copy.deepcopy(app.session_state[prefix + "-graph"])
-    assert not any(getattr(widget, "key", "") == prefix + "-task" for widget in app.selectbox)
+    assert app.selectbox(key=prefix + "-task").options == [
+        "Binder design", "Peptide / IDR design", "Structure prediction and cofolding",
+        "Docking and library screening", "Molecular dynamics", "Analysis of saved results", "Advanced",
+    ]
+    app.selectbox(key=prefix + "-task").set_value("advanced").run()
+    app.selectbox(key=prefix + "-advanced-recipe").set_value("legacy").run()
     app.selectbox(key=prefix + "-legacy").set_value("Foundry · RFD3 → MPNN → RF3").run()
     assert not app.exception
     assert app.session_state[prefix + "-graph"] == original
@@ -306,11 +316,24 @@ graph = render_task_setup("task-test")
 if graph is not None:
     st.session_state["created"] = graph
 ''').run()
+    from mn_molecular_design_studio.pipeline_graph import MAIN_STARTERS
     for task in [*TASKS, "blank"]:
-        app.selectbox(key="task-test-task").set_value(task).run()
+        main = task in MAIN_STARTERS.values()
+        app.selectbox(key="task-test-task").set_value(task if main else "advanced").run()
+        if not main:
+            app.selectbox(key="task-test-advanced-recipe").set_value(task).run()
         assert not app.exception, task
         app.button(key="task-test-create-task").click().run()
         assert not app.exception, task
         assert app.session_state["created"]["nodes"]
         if task != "blank":
             assert app.session_state["created"]["task_configuration"]["task_id"] == task
+
+
+
+def test_md_starter_pairs_prepared_complex_and_trajectory_ports():
+    simulation = graph.new_graph("md_simulation")
+    assert kinds(simulation) == ["tile_complex_prepare", "tile_md_openmm", "md_analysis", "results"]
+    assert simulation["edges"][0]["targetHandle"] == "complex"
+    plan = graph.validate_graph(simulation)
+    assert plan["order"] == kinds(simulation)

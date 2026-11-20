@@ -1802,3 +1802,34 @@ def test_ipsae_structure_analysis_outputs_candidates_for_downstream_acceptance()
     assert analysis["outputs"][0]["type"] == "candidates"
     assert "candidates" in analysis["inputs"][0]["accepts"]
     assert analysis["outputs"][0]["type"] in acceptance["inputs"][0]["accepts"]
+
+
+def test_canvas_archive_moves_open_draft_and_can_restore_it(monkeypatch, tmp_path):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
+    original = graph.new_graph("md_analysis")
+    graph.save_definition(original, "test-user", "test-project", version=True)
+    script = '''
+from mn_molecular_design_studio.pipeline_graph import set_draft_archived
+from mn_molecular_design_studio.pipeline_graph_ui import render_pipeline_builder
+
+def submit_api(endpoint, payload):
+    return set_draft_archived("test-user", payload["project_id"], endpoint.split("/")[-2],
+        archived=payload["archived"], expected_revision=payload["expected_revision"])
+
+render_pipeline_builder(owner_id="test-user", project_selector=lambda _: "test-project",
+    submit_api=submit_api, search_jobs=lambda **_: {"items": []})
+'''
+    app = AppTest.from_string(script).run()
+    prefix = "visual-pipeline-test-project"
+    assert app.session_state[prefix + "-graph"]["id"] == original["id"]
+    app.button(key=prefix + "-archive").click().run()
+    assert not app.exception
+    assert app.session_state[prefix + "-graph"]["id"] != original["id"]
+    assert graph.list_definitions("test-user", "test-project") == []
+    app.button(key=prefix + "-unarchive").click().run()
+    assert not app.exception
+    assert graph.list_definitions("test-user", "test-project")[0]["versions"] == 1
+    app.button(key=prefix + "-open").click().run()
+    assert app.session_state[prefix + "-graph"]["id"] == original["id"]

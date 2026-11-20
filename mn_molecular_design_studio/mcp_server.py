@@ -338,11 +338,22 @@ def create_server(client=None):
                           and (include_archived or not project.get("archived_at"))]}
 
     @server.tool(annotations=read)
-    async def list_saved_pipelines(project_id: str, ctx: Context, pipeline_id: str | None = None) -> dict[str, Any]:
+    async def list_saved_pipelines(project_id: str, ctx: Context, pipeline_id: str | None = None,
+                                   include_archived: bool = False) -> dict[str, Any]:
         """Read saved drafts or, with a pipeline ID, its immutable versions. Archived projects can be read."""
         path = "/api/v1/pipelines" + ("/" + segment(pipeline_id) + "/versions" if pipeline_id else "")
-        result = await call(ctx, "GET", path, query={"project_id": project_id})
+        query = {"project_id": project_id}
+        if not pipeline_id:
+            query["include_archived"] = include_archived
+        result = await call(ctx, "GET", path, query=query)
         return result if isinstance(result, dict) else {"items": result}
+
+    @server.tool(annotations=write)
+    async def archive_pipeline_draft(project_id: str, pipeline_id: str, expected_revision: str, ctx: Context,
+                                     archived: bool = True) -> dict[str, Any]:
+        """Archive or restore a saved draft. Use the current revision from list_saved_pipelines."""
+        return await call(ctx, "POST", f"/api/v1/pipelines/{segment(pipeline_id)}/archive", body={
+            "project_id": project_id, "archived": archived, "expected_revision": expected_revision})
 
     @server.tool(annotations=write)
     async def save_pipeline_draft(project_id: str, graph: dict, ctx: Context, expected_revision: str | None = None,
