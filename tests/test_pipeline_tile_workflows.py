@@ -77,6 +77,21 @@ def test_pipeline_tools_reject_undeclared_parameters_and_missing_inputs():
         tiles.validate_parameters(tile, {}, {"complex"}, runnable=True)
 
 
+@pytest.mark.parametrize("empty", [None, "", "  "])
+def test_md_starter_requires_a_ligand_input_before_queuing(empty):
+    from mn_molecular_design_studio.pipeline_graph import PipelineInputError, new_graph, validate_graph
+
+    graph = new_graph("md_simulation")
+    steps = {node["id"]: node["data"]["params"] for node in graph["nodes"]}
+    steps["tile_complex_prepare"]["workflow_parameters"] = {"source_pdb": "complex.pdb"}
+    steps["tile_md_openmm"]["workflow_parameters"] = {"ligand_sdf": empty, "ligand_key": "LIG"}
+
+    validate_graph(graph)
+    with pytest.raises(PipelineInputError, match="ligand_sdf") as exc:
+        validate_graph(graph, require_inputs=True, require_files=False)
+    assert exc.value.node_id == "tile_md_openmm"
+
+
 def test_tool_input_digests_track_explicit_files_and_preserve_inline_values(tmp_path):
     inputs = tmp_path / "inputs.json"
     unrelated = tmp_path / "unrelated.txt"

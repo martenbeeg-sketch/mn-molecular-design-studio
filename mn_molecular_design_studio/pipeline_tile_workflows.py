@@ -97,7 +97,10 @@ def validate_parameters(tile: TileWorkflow, settings: dict, connected_ports: set
     unknown = set(settings) - parameters.keys()
     if unknown:
         raise ValueError(f"{tile.label} has no settings named {', '.join(sorted(unknown))}.")
-    supplied = settings.keys() | {
+    supplied = {
+        name for name, value in settings.items()
+        if value is not None and (not isinstance(value, str) or value.strip())
+    } | {
         name for names, port in ((("target_pdb", "chain_ids", "chain_id"), "target"),
                                   (("source_run_dir", "candidates_jsonl"), "candidates"),
                                   (("compound_set_file",), "compounds"),

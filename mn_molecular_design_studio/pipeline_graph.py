@@ -2142,6 +2142,14 @@ def execution_options(request):
     return reuse, device
 
 
+class PipelineInputError(ValueError):
+    """A pipeline step needs input before the graph can be submitted."""
+
+    def __init__(self, node_id, message):
+        super().__init__(message)
+        self.node_id = node_id
+
+
 def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> dict:
     graph = clean_graph(migrate_template_graph(graph))
     nodes = {n["id"]: n for n in graph["nodes"]}
@@ -2274,69 +2282,85 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> 
             raise ValueError(f"Connect {node['data']['label']} to a downstream step or Results node.")
         if require_inputs and kind == "target":
             if not node["data"]["params"].get("target_pdb"):
-                raise ValueError("Load a target structure before running the pipeline.")
+                raise PipelineInputError(node_id, "Load a target structure before running the pipeline.")
         if require_inputs and kind == "md_source":
             params = node["data"]["params"]
             if not all(params.get(key) for key in ("source_run_dir", "option_id", "topology_relative_path")):
-                raise ValueError("Choose a completed MD job, recorded segment and matching topology in Saved MD run.")
+                raise PipelineInputError(node_id, "Choose a completed MD job, recorded segment and matching topology in Saved MD run.")
             relative = params["topology_relative_path"]
             if Path(relative).is_absolute() or ".." in Path(relative).parts or "://" in relative or "\\" in relative:
-                raise ValueError("Choose a topology path relative to the selected MD run.")
+                raise PipelineInputError(node_id, "Choose a topology path relative to the selected MD run.")
         if kind in tile_workflows.TILES:
-            tile_workflows.validate_parameters(
-                tile_workflows.TILES[kind], node["data"]["params"]["workflow_parameters"],
-                {edge.get("targetHandle", "in") for edge in incoming_edges[node_id]}, runnable=require_inputs,
-            )
+            try:
+                tile_workflows.validate_parameters(
+                    tile_workflows.TILES[kind], node["data"]["params"]["workflow_parameters"],
+                    {edge.get("targetHandle", "in") for edge in incoming_edges[node_id]}, runnable=require_inputs,
+                )
+            except ValueError as exc:
+                raise PipelineInputError(node_id, str(exc)) from exc
         if kind == "md_analysis":
             from mn_molecular_design_studio.md_pipeline import validate_analysis_parameters
             validate_analysis_parameters(node["data"]["params"])
         if require_inputs and kind == "kejia_idr":
             from mn_molecular_design_studio.kejia_idr_input import prepare_request
-            prepare_request(node["data"]["params"], require_files=require_files)
+            try:
+                prepare_request(node["data"]["params"], require_files=require_files)
+            except ValueError as exc:
+                raise PipelineInputError(node_id, str(exc)) from exc
         if require_inputs and kind == "peptide_trap":
             from mn_molecular_design_studio.peptide_trap_input import prepare_request
-            prepare_request(node["data"]["params"], require_files=require_files)
+            try:
+                prepare_request(node["data"]["params"], require_files=require_files)
+            except ValueError as exc:
+                raise PipelineInputError(node_id, str(exc)) from exc
         if require_inputs and kind == "active_library":
             seed = next((n for n in nodes.values() if n["data"]["kind"] == "active_seed"), None)
             if seed is not None:
                 check_library = validate_active_library_sources if require_files else _validate_active_library_selection
-                check_library(node["data"]["params"], seed["data"]["params"])
+                try:
+                    check_library(node["data"]["params"], seed["data"]["params"])
+                except ValueError as exc:
+                    seed_params = seed["data"]["params"]
+                    seed_missing = not seed_params.get("library_id") or not seed_params.get("centroid_manifest")
+                    screening_params = node["data"]["params"]
+                    screening_ready = screening_params.get("library_id") and screening_params.get("feature_manifest")
+                    raise PipelineInputError(seed["id"] if screening_ready and seed_missing else node_id, str(exc)) from exc
         if require_inputs and kind == "active_target":
             target_path = str(node["data"]["params"].get("target_pdb") or "").strip()
             if not target_path or (require_files and not Path(target_path).expanduser().is_file()):
-                raise ValueError("Choose an existing imported receptor structure.")
+                raise PipelineInputError(node_id, "Choose an existing imported receptor structure.")
         if require_inputs and kind == 'cofold_input':
             params = node['data']['params']
             task = params.get('task_type')
             if not params.get('target_protein_sequences', '').strip() and not params.get('sequence_file'):
-                raise ValueError('Enter at least one target protein sequence in Cofolding Inputs.')
+                raise PipelineInputError(node_id, 'Enter at least one target protein sequence in Cofolding Inputs.')
             target_count = len([part for part in re.split(r'[:\n\r]+', params.get('target_protein_sequences', '')) if part.strip()])
             partner_count = len([part for part in re.split(r'[:\n\r]+', params.get('partner_protein_sequences', '')) if part.strip()])
             if task == 'protein' and target_count != 1 and not params.get('sequence_file'):
-                raise ValueError('The protein monomer task accepts exactly one protein sequence.')
+                raise PipelineInputError(node_id, 'The protein monomer task accepts exactly one protein sequence.')
             if task in {'protein_protein', 'protein_macrocyclic'} and not params.get('partner_protein_sequences', '').strip():
-                raise ValueError('Enter at least one partner protein sequence for this cofolding task.')
+                raise PipelineInputError(node_id, 'Enter at least one partner protein sequence for this cofolding task.')
             if task == 'protein_macrocyclic' and partner_count != 1:
-                raise ValueError('The protein–macrocyclic peptide task accepts exactly one cyclic partner sequence.')
+                raise PipelineInputError(node_id, 'The protein–macrocyclic peptide task accepts exactly one cyclic partner sequence.')
             if task == 'protein_ligand' and not (params.get('compound_set_file') or params.get('ligand_ccd_codes', '').strip() or params.get('ligand_smiles', '').strip()):
-                raise ValueError('Enter a CCD code or SMILES string for the protein–ligand task.')
+                raise PipelineInputError(node_id, 'Enter a CCD code or SMILES string for the protein–ligand task.')
             ligand_format = params.get('ligand_input_type', 'smiles')
             if task == 'protein_ligand' and not params.get('compound_set_file') and ligand_format == 'ccd' and not params.get('ligand_ccd_codes', '').strip():
-                raise ValueError('Enter a CCD code for the selected ligand notation.')
+                raise PipelineInputError(node_id, 'Enter a CCD code for the selected ligand notation.')
             if task == 'protein_ligand' and not params.get('compound_set_file') and ligand_format == 'smiles' and not params.get('ligand_smiles', '').strip():
-                raise ValueError('Enter a SMILES string for the selected ligand notation.')
+                raise PipelineInputError(node_id, 'Enter a SMILES string for the selected ligand notation.')
             if task == 'protein_dna' and not params.get('dna_sequences', '').strip():
-                raise ValueError('Enter a DNA sequence for the protein–DNA task.')
+                raise PipelineInputError(node_id, 'Enter a DNA sequence for the protein–DNA task.')
             if task == 'protein_rna' and not params.get('rna_sequences', '').strip():
-                raise ValueError('Enter an RNA sequence for the protein–RNA task.')
+                raise PipelineInputError(node_id, 'Enter an RNA sequence for the protein–RNA task.')
             if task == 'protein_macrocyclic' and not params.get('cyclic_partner'):
-                raise ValueError('Mark the protein partner as cyclic for the macrocyclic task.')
+                raise PipelineInputError(node_id, 'Mark the protein partner as cyclic for the macrocyclic task.')
             optional_target_path = str(params.get('target_pdb') or '').strip()
             for selection_key in ('compound_set_file', 'sequence_file'):
                 if require_files and params.get(selection_key) and not Path(params[selection_key]).expanduser().is_file():
-                    raise ValueError(f'The {selection_key} collection in Cofolding Inputs does not exist.')
+                    raise PipelineInputError(node_id, f'The {selection_key} collection in Cofolding Inputs does not exist.')
             if require_files and optional_target_path and not Path(optional_target_path).expanduser().is_file():
-                raise ValueError('The optional target PDB path in Cofolding Inputs does not exist.')
+                raise PipelineInputError(node_id, 'The optional target PDB path in Cofolding Inputs does not exist.')
         if require_inputs and NODE_CATALOG[kind].get('requires_target_structure'):
             if cofold_task_context.get(node_id):
                 source_id = cofold_source_context.get(node_id)
@@ -2373,9 +2397,9 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> 
             raise ValueError("Select a completed generator job from this project.")
         if require_inputs and kind == "project_design_source":
             if not node["data"]["params"].get("source_run_dir"):
-                raise ValueError("Select a completed design job from this project.")
+                raise PipelineInputError(node_id, "Select a completed design job from this project.")
             if not node["data"]["params"].get("selected_candidate_ids"):
-                raise ValueError("Select one or more design candidates from that job.")
+                raise PipelineInputError(node_id, "Select one or more design candidates from that job.")
         if require_inputs and kind=='backbone_source' and not node['data']['params'].get('source_run_dir'):
             raise ValueError('Select a completed generator job from this project.')
         if require_inputs and kind in {"sabr", "abmpnn"} and not incoming[node_id]:

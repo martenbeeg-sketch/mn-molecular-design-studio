@@ -977,7 +977,7 @@ def test_adapters_disable_hidden_downstream_pipelines_and_bind_existing_signatur
         p={f["name"]:f["default"] for f in spec["fields"]}
         if "workflow_parameters" in p:
             from mn_molecular_design_studio.pipeline_tile_workflows import parameters_for
-            p["workflow_parameters"] = {name: None for name, required in parameters_for(spec["workflow"]) if required}
+            p["workflow_parameters"] = {name: "test-input" for name, required in parameters_for(spec["workflow"]) if required}
             if spec["workflow"] == "analysis.binderscope":
                 p["workflow_parameters"].update(native_run_dirs=[str(source_run)],
                                                 target_pdb=source["target"]["target_pdb"])
@@ -1368,6 +1368,67 @@ render_pipeline_builder(owner_id="test-user",project_selector=lambda _:None,
 ''').run()
     assert not app.exception
     assert any("Choose a project" in c.value for c in app.info)
+
+
+def test_starter_opens_the_required_input_editor(monkeypatch, tmp_path):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import pipeline_graph_ui
+
+    monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
+    monkeypatch.setattr(pipeline_graph_ui, "_show_node_editor", lambda *args, **kwargs: None)
+    app = AppTest.from_string("""
+from mn_molecular_design_studio.pipeline_graph_ui import render_pipeline_builder
+render_pipeline_builder(owner_id="test-user", project_selector=lambda _: "project",
+    submit_api=lambda *a: (_ for _ in ()).throw(AssertionError("No request expected")),
+    search_jobs=lambda **k: {"items": []})
+""").run()
+    assert not app.exception
+    app.button(key="visual-pipeline-project-configure-required").click().run()
+    assert not app.exception
+    draft = app.session_state["visual-pipeline-project-graph"]
+    target = next(node for node in draft["nodes"] if node["data"]["kind"] == "target")
+    assert app.session_state["visual-pipeline-project-editor"]["node_id"] == target["id"]
+
+
+@pytest.mark.parametrize(("job", "reference"), [
+    ({"run_id": "pipeline-1", "task_group": "campaign"}, "campaign/pipeline-1"),
+    ({"cluster_job_id": "pipeline-1", "status": "waiting_for_workstation"}, "cluster:pipeline-1"),
+])
+def test_canvas_submission_opens_exact_run_in_same_session(monkeypatch, tmp_path, job, reference):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import pipeline_graph_ui
+
+    monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
+    monkeypatch.setattr(pipeline_graph_ui, "_component", lambda: lambda **props: {
+        "graph": props["graph"], "action": {"id": "submit", "type": "run"},
+    })
+    sent = []
+
+    def submit(path, payload):
+        sent.append(path)
+        return {"job": job} if path.endswith("/run") else {"revision": "revision"}
+
+    app = AppTest.from_function(_render_test_pipeline, args=(submit,)).run()
+    assert not app.exception
+    app.button(key="visual-pipeline-project-open-latest-result").click().run()
+    assert not app.exception
+    assert app.session_state["selected-job-reference"] == reference
+    assert app.session_state["page"] == "Job details"
+    assert sent == ["/api/v1/pipelines/save", "/api/v1/pipelines/run"]
+
+
+def _render_test_pipeline(submit):
+    import streamlit as st
+    from mn_molecular_design_studio.pipeline_graph_ui import _activate_graph, render_pipeline_builder
+    from mn_molecular_design_studio.scientific_tasks import new_task_graph
+
+    prefix = "visual-pipeline-project"
+    if prefix + "-graph" not in st.session_state:
+        _activate_graph(prefix, new_task_graph("molecular_structure_prediction", {
+            "inputs": {"target_protein_sequences": "ACDE"},
+        }))
+    render_pipeline_builder(owner_id="test-user", project_selector=lambda _: "project",
+        submit_api=submit, search_jobs=lambda **kwargs: {"items": []})
 
 
 def test_canvas_edits_preserve_trusted_parameters_for_every_tool_kind():

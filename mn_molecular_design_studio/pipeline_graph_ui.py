@@ -10,7 +10,7 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-from mn_molecular_design_studio.pipeline_graph import ACTIVE_LEARNING_LAYOUT, NODE_CATALOG, clean_graph, fingerprint, list_definitions, list_versions, migrate_template_graph, new_graph, validate_graph
+from mn_molecular_design_studio.pipeline_graph import ACTIVE_LEARNING_LAYOUT, NODE_CATALOG, PipelineInputError, clean_graph, fingerprint, list_definitions, list_versions, migrate_template_graph, new_graph, validate_graph
 from mn_molecular_design_studio.api_client import StudioAPIConflictError
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
@@ -1124,12 +1124,13 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             nodes = Store().nodes()
     except (OSError, ValueError, KeyError, TypeError):
         nodes = []
-    execution_controls_ready = True
-
     contexts = {}
     if not project_id:
         st.info("Choose a project before saving a pipeline version or running it. Each pipeline run is recorded under its selected project.")
+    launch_panel = st.container()
     last_job = st.session_state.get(prefix+"-last-job", {})
+    if st.session_state.get(prefix + "-last-job-graph") != graph["id"]:
+        last_job = {}
     execution = {}
     if last_job.get("run_dir"):
         last_path = Path(last_job["run_dir"])
@@ -1197,25 +1198,38 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     elif action["type"] == "save_version":
                         st.success(f"Version {saved['revision'][:10]} saved.")
                     elif action["type"] == "run":
-                        if not execution_controls_ready:
-                            raise ValueError('Correct the dispatch time limits before starting this pipeline.')
                         result=submit_api("/api/v1/pipelines/run", {"project_id":project_id,"graph":graph,"reuse_completed":reuse,"gpu_device":"all"})
-                        st.session_state[prefix+"-last-job"] = result["job"]
-                        st.session_state["last_submitted_job"] = result["job"]
-                        st.success(f"Pipeline queued · {result['job'].get('job_code') or result['job']['run_id']}")
+                        last_job = result["job"]
+                        st.session_state[prefix+"-last-job"] = last_job
+                        st.session_state[prefix+"-last-job-graph"] = graph["id"]
+                        st.session_state["last_submitted_job"] = last_job
             except StudioAPIConflictError:
                 st.rerun()
             except (ValueError, OSError, TypeError, KeyError) as exc:
                 st.error(str(exc))
+    from mn_molecular_design_studio.cluster.ui import _job_details_reference, _navigate_to_job_details
+    with launch_panel:
+        try:
+            plan = validate_graph(graph, require_inputs=True, require_files=False)
+        except PipelineInputError as exc:
+            node = next(n for n in graph["nodes"] if n["id"] == exc.node_id)
+            st.info(str(exc))
+            st.button(f"Configure {node['data']['label']}", key=prefix + "-configure-required",
+                      on_click=_open_node_editor, args=(prefix, node["id"]))
+        except ValueError as exc:
+            st.info(f"Before running · {exc}")
+        else:
+            if project_id:
+                st.caption(f"{len(plan['order'])} steps configured. Choose Run pipeline to validate and submit.")
+        if last_job:
+            reference = _job_details_reference(last_job)
+            st.caption(f"Last submission · {last_job.get('job_code') or reference}")
+            if st.button("Open run results", key=prefix + "-open-latest-result"):
+                _navigate_to_job_details(reference, final_results=graph.get("template_id") == "unidock_active_learning")
     _show_pipeline_campaign(prefix, project_id, submit_api)
     _show_pipeline_resources(prefix, owner_id, project_id, submit_api)
     _show_pipeline_save_as(prefix, project_id, submit_api)
     _show_node_editor(prefix, owner_id=owner_id, project_id=project_id, submit_api=submit_api, search_jobs=search_jobs)
-    try:
-        plan=validate_graph(graph, require_inputs=True)
-        st.caption(f"✓ Connections and inputs ready · {len(plan['order'])} steps. Runs use a separate snapshot of this graph.")
-    except ValueError as exc:
-        st.caption(f"Before running: {exc}")
     if project_id:
         with st.expander("Pipeline runs", expanded=bool(last_job)):
             if st.button("Refresh run status", key=prefix+"-refresh"):
@@ -1241,7 +1255,9 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 columns=st.columns([2,1,1])
                 columns[0].write(f"{row.get('job_code')} · {row.get('campaign_name') or graph['name']}")
                 columns[1].write(row.get("status", "queued"))
-                columns[2].link_button("Open results", "/?job_ref="+row["run_id"])
+                if columns[2].button("Open results", key=prefix + "-open-run-" + row["run_id"]):
+                    _navigate_to_job_details(_job_details_reference(row),
+                                             final_results=snapshot.get("template_id") == "unidock_active_learning")
                 execution=read_json(run_dir/"graph_execution.json")
                 if execution.get("comparison_status") == "partial":
                     st.warning("Comparison partially completed: successful branches are available in Results. Failed branches and their errors are listed below.")
