@@ -21,6 +21,14 @@ entries remain. The model-ranked and uniform random portions exclude previous
 attempts from the screening library, and the random portion also excludes the
 compounds already selected by the model for that round.
 
+The screen uses two prepared datasets. **Predict** and **Select next docking
+batch** refer to the same screening fingerprint library. **Centroid library**
+draws the first-round sample from a completed, registered **Create centroids**
+output. The centroid dataset may come from a different library with compatible
+fingerprint settings. **Prepare library** and **Create centroids** are reusable
+tools. The stages managed by the active-learning controller are available within
+the complete **Large-library screen** recipe.
+
 Open **Pipelines** and select a project. In the **Pipeline browser**, expand **Starter pipelines** and choose
 binder design, peptide/IDR design, structure prediction and cofolding, docking
 and library screening, molecular dynamics, or analysis of saved results.

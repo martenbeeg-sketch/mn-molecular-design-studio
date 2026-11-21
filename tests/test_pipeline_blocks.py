@@ -3,10 +3,10 @@ import copy
 import pytest
 
 from mn_molecular_design_studio.pipeline_blocks import (
-    SCREEN, add_block, blank_program, canvas_program, connect_blocks, drop_block, move_canvas_block,
+    SCREEN, add_block, blank_program, canvas_cards, canvas_program, connect_blocks, drop_block, move_canvas_block,
     next_blocks, place_canvas_block, placements, program,
 )
-from mn_molecular_design_studio.pipeline_graph import new_graph, validate_graph
+from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, new_graph, validate_graph
 
 
 def test_screen_reads_as_native_repeat_and_decision():
@@ -25,6 +25,11 @@ def test_screen_reads_as_native_repeat_and_decision():
     assert screen["selection"]["example"] == "Up to 5,000 with 10,000 initial centroids"
     assert screen["selection"]["predicted_count"] == "4,000"
     assert screen["selection"]["random_count"] == "1,000"
+    library_id = nodes["active_library"]["id"]
+    assert screen["source_refs"] == {
+        nodes["active_predict"]["id"]: [("Score", library_id)],
+        nodes["active_select"]["id"]: [("Random picks from", library_id)],
+    }
     assert screen["finish"] == [nodes["active_results"]["id"]]
     assert screen["next_round"][-1] == nodes["active_select"]["id"]
     assert graph == before
@@ -47,7 +52,8 @@ def test_screen_reports_edited_seed_mix_size_cap_and_cleanup():
         "predicted": "60% highest model probabilities", "predicted_count": "300",
         "random": "40% uniform random from the rest", "random_count": "200",
     }
-    assert screen["step_details"][nodes["active_seed"]["id"]] == "Round 1 · 2,000 randomly sampled centroids · seed 67."
+    assert screen["step_details"][nodes["active_seed"]["id"]] == (
+        "Round 1 · Sample 2,000 compounds from a prepared centroid dataset · seed 67.")
     assert screen["step_details"][nodes["active_accumulate"]["id"]].endswith("No campaign poses retained. Keep worker files.")
 
 
@@ -103,6 +109,11 @@ def test_screen_recipe_snaps_into_an_empty_program():
     empty = blank_program()
     slots, cards = placements(empty, "")
     graph, selected = drop_block(empty, slots, cards, "start", f"{SCREEN}/")
+    native_stages = {node["data"]["kind"] for node in graph["nodes"]}
+    assert all(NODE_CATALOG[kind]["hidden"] for kind in native_stages)
+    assert not native_stages.intersection(canvas_cards(empty))
+    assert not native_stages.intersection(card["kind"] for card in cards.values())
+    assert {SCREEN, "tile_prepare_library", "tile_library_centroids"} <= canvas_cards(empty).keys()
     assert selected in program(graph)["screen"]["setup"]
     assert placements(graph, selected) == ({}, {})
     after_input, selected = drop_block(empty, slots, cards, "start", "cofold_input/")

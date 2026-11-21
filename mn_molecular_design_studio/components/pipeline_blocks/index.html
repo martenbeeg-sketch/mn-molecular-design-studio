@@ -290,6 +290,12 @@
     step.setAttribute("aria-pressed", String(selected === id));
     step.append(element("span", "snap-action", value.action + " "), element("span", "snap-name", value.label));
     if (screen.step_details[id]) step.append(element("span", "snap-detail", screen.step_details[id]));
+    for (const [purpose, source] of screen.source_refs[id] || []) {
+      const reference = element("span", "snap-ref", purpose + " ");
+      const input = args.program.blocks[source];
+      reference.append(element("span", "snap-dataset " + input.role, input.label));
+      step.append(reference);
+    }
     if (id === screen.selection_id) {
       const selection = screen.selection;
       step.append(element("span", "snap-detail", selection.size), element("span", "snap-example", selection.example));

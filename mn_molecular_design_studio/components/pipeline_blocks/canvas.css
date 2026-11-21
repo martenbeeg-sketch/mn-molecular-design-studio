@@ -102,6 +102,11 @@ button.flow-port { touch-action: none; cursor: crosshair }
 .snap-action { margin-right: 8px; font-size: 11px; font-weight: 650 }
 .snap-name { font-weight: 720; overflow-wrap: anywhere }
 .snap-detail { display: block; margin-top: 3px; font-size: 11px; line-height: 1.4; color: var(--muted, #45594f) }
+.snap-ref { display: block; margin-top: 5px; font-size: 11px; line-height: 1.4 }
+.snap-dataset {
+  display: inline-block; padding: 2px 6px; border: 1px solid var(--accent); border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 20%, var(--block, #fbfdfb)); font-weight: 670;
+}
 .snap-control { --rib: 19px; --control: #ba864a; display: grid; min-width: 0 }
 .snap-decision { --control: #ab7666; --rib: 17px }
 .snap-bar, .snap-end { --accent: var(--control); font-weight: 730 }

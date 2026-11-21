@@ -90,12 +90,15 @@ def program(graph):
         ]
         if limit := decision["max_iterations"]:
             conditions.append(f"The campaign reaches {limit:,.0f} rounds")
+        library_id, predict_id, select_id = ids(("active_library", "active_predict", "active_select"))
         result["screen"] = dict(
             setup=ids(SCREEN_INPUTS), rounds=ids(SCREEN_ROUND), decision=by_kind["active_decision"]["id"],
             finish=ids(("active_results",)), next_round=ids(SCREEN_CONTINUE),
             stop_conditions=conditions, retention=retention,
-            selection_id=by_kind["active_select"]["id"],
+            selection_id=select_id,
             selection=_screen_selection(params),
+            source_refs={predict_id: [("Score", library_id)],
+                         select_id: [("Random picks from", library_id)]},
             step_details={by_kind[kind]["id"]: detail for kind, detail in _screen_step_details(params, retention).items()},
         )
     return result
@@ -133,15 +136,15 @@ def _screen_step_details(params, retention):
     pose_detail = f"Keep one best pose per unique molecule, up to {retention:,}." if retention else "No campaign poses retained."
     cleanup = "Prune worker files after saving results." if docking["cleanup_after_round"] else "Keep worker files."
     return {
-        "active_library": "Fingerprint library for predictions and random exploration in later rounds.",
-        "active_seed": f"Round 1 · {seed['sample_size']:,.0f} randomly sampled centroids · seed {seed['sampling_seed']:.0f}.",
+        "active_library": "Use the registered screening dataset and its prepared fingerprints.",
+        "active_seed": f"Round 1 · Sample {seed['sample_size']:,.0f} compounds from a prepared centroid dataset "
+                       f"· seed {seed['sampling_seed']:.0f}.",
         "active_target": " · ".join(filter(None, (target["target_name"], "Receptor structure and docking box"))),
         "active_docking": f"{docking['engine']} · {docking['docking_mode'].replace('_', '-')} mode · "
                           f"up to {docking['worker_batch_size']:,.0f} compounds per worker batch.",
         "active_accumulate": "Merge scores from every completed round. " + pose_detail + " " + cleanup,
         "active_binder_rule": f"{schedule} sets the positive-label cutoff on cumulative docking scores.",
         "active_train": f"Fit an OpenVS-style model on 1,024-bit Morgan fingerprints · up to {training['epochs']:.0f} epochs.",
-        "active_predict": "Run the model across the screening fingerprint library.",
         "active_results": "Publish the scores, round history and saved poses. Import a shortlist manually from Results.",
     }
 
@@ -177,7 +180,7 @@ def canvas_cards(graph):
         return {}
     cards = {}
     for kind, spec in NODE_CATALOG.items():
-        if spec["category"] == "Active learning" or kind == "active_results":
+        if spec.get("hidden"):
             continue
         action, role = block_action(kind)
         cards[kind] = {"label": spec["label"], "action": action, "role": role, "targets": []}
@@ -278,7 +281,6 @@ def insert_block(graph, edge_id, kind, target_port):
 @lru_cache(maxsize=None)
 def _compatible_ports(kind, output):
     return tuple((target_kind, port["id"]) for target_kind, spec in NODE_CATALOG.items()
-                 if spec["category"] != "Active learning" and target_kind != "active_results"
                  for port in spec["inputs"] if connection_compatibility(
                      kind, target_kind, source_handle=output, target_handle=port["id"],
                  )["compatible"])
@@ -290,6 +292,8 @@ def next_blocks(graph, source, output, *, include_new=True, include_existing=Tru
     compatible = _compatible_ports(kind, output)
     new_blocks = []
     for target_kind, port in compatible if include_new else ():
+        if NODE_CATALOG[target_kind].get("hidden"):
+            continue
         try:
             add_block(graph, target_kind, source=source, output=output, target_port=port)
         except ValueError:
@@ -331,7 +335,7 @@ def placements(graph, selected):
 
     slots["start"] = {"label": "Start a stack", "action": "start"}
     for kind, spec in NODE_CATALOG.items():
-        if (spec["outputs"] and spec["category"] != "Active learning"
+        if (spec["outputs"] and not spec.get("hidden")
                 and all(port.get("optional") for port in spec["inputs"])):
             offer("start", kind)
     if not graph["nodes"]:

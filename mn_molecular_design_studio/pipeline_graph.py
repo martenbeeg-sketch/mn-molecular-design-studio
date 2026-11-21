@@ -313,6 +313,10 @@ NODE_CATALOG.update({
 NODE_CATALOG["active_docking"]["inputs"][0]["multiple"] = True
 NODE_CATALOG["active_predict"]["inputs"][0]["multiple"] = True
 NODE_CATALOG["active_select"]["inputs"][0]["multiple"] = True
+for _kind in {kind for connection in _ACTIVE_LEARNING_EDGES for kind in connection}:
+    # These nodes are scheduled together by the screening controller. Keep
+    # their contracts available to saved drafts and API callers.
+    NODE_CATALOG[_kind]["hidden"] = True
 NODE_CATALOG["complexa_generator"]["inputs"][0]["optional"] = True
 
 from mn_molecular_design_studio.quality_tools import TOOLS as QUALITY_TOOLS
