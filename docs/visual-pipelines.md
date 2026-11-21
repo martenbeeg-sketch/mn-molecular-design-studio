@@ -1,7 +1,9 @@
 # Visual pipelines
 
-**Pipeline Builder** opens a block view of the same project drafts. Select a
-block to configure it or see compatible next steps. A filter exposes separate
+**Pipeline Builder** opens a block view of the same project drafts. Drag a
+block from the palette into a highlighted socket, or pick a block and click
+the socket. Insert a step in an existing connection or start a new branch.
+Select a block to configure it or see what fits next. A filter exposes separate
 Pass, Fail and Unresolved branches. For the large-library screen, the block view
 shows the controller's repeat loop, stop conditions, and final Results branch.
 Edit that loop through its existing step settings. Both editors use the same

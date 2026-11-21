@@ -96,7 +96,7 @@ def program(graph):
     return result
 
 
-def add_block(graph, kind, *, source=None, output="out", target_port="in"):
+def _new_block(graph, kind, source):
     if graph.get("template_id") == SCREEN:
         raise ValueError("The screening controller manages these blocks.")
     spec = NODE_CATALOG[kind]
@@ -106,8 +106,18 @@ def add_block(graph, kind, *, source=None, output="out", target_port="in"):
         parent = next(node for node in graph["nodes"] if node["id"] == source)
         branches = sum(edge["source"] == source for edge in graph["edges"])
         position = {"x": parent["position"]["x"] + 310, "y": parent["position"]["y"] + 155 * branches}
-    node = {"id": node_id, "type": "studio", "position": position,
+    return {"id": node_id, "type": "studio", "position": position,
             "data": {"kind": kind, "label": spec["label"], "params": {}}}
+
+
+def _edge(source, output, target, target_port):
+    return {"id": uuid.uuid4().hex, "source": source, "sourceHandle": output,
+            "target": target, "targetHandle": target_port}
+
+
+def add_block(graph, kind, *, source=None, output="out", target_port="in"):
+    node = _new_block(graph, kind, source)
+    node_id = node["id"]
     updated = {**graph, "nodes": [*graph["nodes"], node]}
     if source:
         return connect_blocks(updated, source, output, node_id, target_port), node_id
@@ -117,13 +127,25 @@ def add_block(graph, kind, *, source=None, output="out", target_port="in"):
 def connect_blocks(graph, source, output, target, target_port):
     if graph.get("template_id") == SCREEN:
         raise ValueError("The screening controller manages these connections.")
-    connection = {"source": source, "sourceHandle": output, "target": target, "targetHandle": target_port}
     if any(edge["source"] == source and edge["target"] == target
            and edge.get("sourceHandle", "out") == output and edge.get("targetHandle", "in") == target_port
            for edge in graph["edges"]):
         raise ValueError("These ports are already connected.")
-    updated = {**graph, "edges": [*graph["edges"], {"id": uuid.uuid4().hex, **connection}]}
+    updated = {**graph, "edges": [*graph["edges"], _edge(source, output, target, target_port)]}
     return validate_graph(updated, allow_incomplete=True)["graph"]
+
+
+def insert_block(graph, edge_id, kind, target_port):
+    """Replace one wire with both new wires as a single validated edit."""
+    edge = next(item for item in graph["edges"] if item["id"] == edge_id)
+    node = _new_block(graph, kind, edge["source"])
+    before = _edge(edge["source"], edge.get("sourceHandle", "out"), node["id"], target_port)
+    after = _edge(node["id"], "out", edge["target"], edge.get("targetHandle", "in"))
+    updated = {
+        **graph, "nodes": [*graph["nodes"], node],
+        "edges": [item for item in graph["edges"] if item["id"] != edge_id] + [before, after],
+    }
+    return validate_graph(updated, allow_incomplete=True)["graph"], node["id"]
 
 
 @lru_cache(maxsize=None)
@@ -135,19 +157,19 @@ def _compatible_ports(kind, output):
                  )["compatible"])
 
 
-def next_blocks(graph, source, output):
+def next_blocks(graph, source, output, *, include_new=True, include_existing=True):
     """Offer only blocks whose connection the shared editor validator accepts."""
     kind = next(node["data"]["kind"] for node in graph["nodes"] if node["id"] == source)
     compatible = _compatible_ports(kind, output)
     new_blocks = []
-    for target_kind, port in compatible:
+    for target_kind, port in compatible if include_new else ():
         try:
             add_block(graph, target_kind, source=source, output=output, target_port=port)
         except ValueError:
             continue
         new_blocks.append((target_kind, port))
     existing = []
-    for node in graph["nodes"]:
+    for node in graph["nodes"] if include_existing else ():
         target_id = node["id"]
         if target_id == source:
             continue
@@ -159,3 +181,79 @@ def next_blocks(graph, source, output):
                     continue
                 existing.append((target_id, port))
     return new_blocks, existing
+
+
+def placements(graph, selected):
+    """Build the palette and exact allowed sockets for the current selection."""
+    slots, cards = {}, {}
+    if graph.get("template_id") == SCREEN:
+        return slots, cards
+
+    def offer(socket, kind, port=""):
+        if kind == SCREEN:
+            label, action, role = "Large-library screen", "Repeat", "control"
+        else:
+            spec = NODE_CATALOG[kind]
+            label, (action, role) = spec["label"], block_action(kind)
+            if port and len(spec["inputs"]) > 1:
+                label += " · " + next(item["label"] for item in spec["inputs"] if item["id"] == port)
+        card = cards.setdefault(f"{kind}/{port}", {
+            "kind": kind, "port": port, "label": label, "action": action, "role": role, "targets": [],
+        })
+        card["targets"].append(socket)
+
+    slots["start"] = {"label": "Start a stack", "action": "start"}
+    for kind, spec in NODE_CATALOG.items():
+        if (spec["outputs"] and spec["category"] != "Active learning"
+                and all(port.get("optional") for port in spec["inputs"])):
+            offer("start", kind)
+    if not graph["nodes"]:
+        offer("start", SCREEN)
+
+    nodes = {node["id"]: node["data"] for node in graph["nodes"]}
+    if selected in nodes:
+        spec = NODE_CATALOG[nodes[selected]["kind"]]
+        for output in spec["outputs"]:
+            handle = output["id"]
+            choices, _ = next_blocks(graph, selected, handle, include_existing=False)
+            outgoing = [edge for edge in graph["edges"]
+                        if edge["source"] == selected and edge.get("sourceHandle", "out") == handle]
+            socket = f"after/{handle}"
+            label = "Add a branch" if outgoing else "Snap in the next block"
+            if len(spec["outputs"]) > 1:
+                label = f'{output["label"]} · {label}'
+            if choices:
+                slots[socket] = {"label": label, "action": "after", "source": selected, "output": handle}
+                for kind, port in choices:
+                    offer(socket, kind, port)
+            for edge in outgoing:
+                socket = f"between/{edge['id']}"
+                destination = nodes[edge["target"]]
+                for kind, port in choices:
+                    if (destination["kind"], edge.get("targetHandle", "in")) not in _compatible_ports(kind, "out"):
+                        continue
+                    try:
+                        insert_block(graph, edge["id"], kind, port)
+                    except ValueError:
+                        continue
+                    slots[socket] = {"label": f'Insert before {destination["label"]}',
+                                     "action": "insert", "source": selected, "edge": edge["id"]}
+                    offer(socket, kind, port)
+    return slots, cards
+
+
+def drop_block(graph, slots, cards, socket, card_id):
+    """Apply a placement offered by the editor to this graph revision."""
+    card = cards.get(card_id) if isinstance(card_id, str) else None
+    if not card or socket not in card["targets"]:
+        raise ValueError("That block does not fit this socket.")
+    slot = slots[socket]
+    kind, port = card["kind"], card["port"]
+    if slot["action"] == "start":
+        if kind == SCREEN:
+            screen = new_graph(SCREEN)
+            return screen, screen["nodes"][0]["id"]
+        return add_block(graph, kind)
+    if slot["action"] == "insert":
+        return insert_block(graph, slot["edge"], kind, port)
+    return add_block(graph, kind, source=slot["source"], output=slot["output"], target_port=port)

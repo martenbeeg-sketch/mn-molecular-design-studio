@@ -6,6 +6,33 @@
   * { box-sizing: border-box }
   body { margin: 0; font: 14px system-ui, sans-serif; color: var(--text, #253b34) }
   main { display: grid; gap: 13px; padding: 3px 3px 10px }
+  .workspace { display: grid; grid-template-columns: minmax(155px, .55fr) minmax(0, 1fr); align-items: start; gap: 12px }
+  .stack, .branch { display: grid; min-width: 0; gap: 7px }
+  .palette {
+    display: grid; gap: 8px; padding: 10px; min-width: 0; border: 1px solid var(--border, #d7e4dd);
+    border-radius: 10px; background: var(--surface, #f4f8f4);
+  }
+  .palette select, .palette input {
+    width: 100%; min-width: 0; padding: 6px; border: 1px solid var(--border, #d7e4dd);
+    border-radius: 5px; background: var(--block, #fbfdfb); color: inherit; font: inherit; font-size: 12px;
+  }
+  .palette-items { display: grid; gap: 7px; padding: 2px 3px 5px; max-height: 380px; overflow-y: auto; scrollbar-gutter: stable }
+  .piece {
+    position: relative; padding: 7px 8px 9px; width: 100%; text-align: left; color: inherit;
+    box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--accent) 39%, transparent);
+    font: inherit; border-radius: 7px; cursor: grab; touch-action: none; user-select: none;
+    background: color-mix(in srgb, var(--accent) 13%, var(--block, #fbfdfb));
+    border: 1px solid color-mix(in srgb, var(--accent) 54%, var(--border, #d7e4dd));
+  }
+  .piece:active { cursor: grabbing }
+  .piece::after {
+    content: ""; position: absolute; left: 11px; bottom: -4px; width: 16px; height: 5px;
+    background: var(--accent); border-radius: 0 0 4px 4px;
+  }
+  .piece[aria-pressed="true"], .piece:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px }
+  .piece .name { font-size: 12px }
+  .drag-ghost { position: fixed; left: 0; top: 0; z-index: 4; width: 165px; pointer-events: none; opacity: .92 }
+  .hint { margin: 0; font-size: 11px; color: var(--muted, #51665b); line-height: 1.45 }
   .group { display: grid; gap: 8px }
   .label { margin: 0; font-size: 12px; font-weight: 700; color: var(--muted, #51665b) }
   .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 7px }
@@ -16,10 +43,11 @@
     border: 1px solid var(--border, #d7e4dd); border-left: 4px solid var(--accent);
     border-radius: 7px; background: var(--block, #fbfdfb); color: inherit; font: inherit;
   }
-  .block.source { --accent: #508aa0 }
-  .block.analysis { --accent: #6b73a5 }
-  .block.control { --accent: #b98549 }
-  .block.result { --accent: #447a59 }
+  .block, .piece { --accent: #3e866d }
+  .source { --accent: #508aa0 }
+  .analysis { --accent: #6b73a5 }
+  .control { --accent: #b98549 }
+  .result { --accent: #447a59 }
   .block:hover { background: var(--hover, #eef6ef) }
   .block[aria-pressed="true"], .block:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px }
   .verb { font: 700 11px ui-monospace, monospace; color: var(--muted, #51665b); padding-top: 3px }
@@ -30,13 +58,30 @@
   .condition { margin: 0 0 2px; padding-left: 20px; color: var(--muted, #51665b); font-size: 12px }
   .condition li + li { margin-top: 3px }
   .detail { margin: 0 0 2px 12px; color: var(--muted, #51665b); font-size: 12px }
+  .socket {
+    width: 100%; min-height: 34px; padding: 6px 9px; text-align: left; border-radius: 7px;
+    color: var(--muted, #51665b); font: inherit; font-size: 12px; background: transparent;
+    border: 1px dashed var(--border, #d7e4dd); cursor: default;
+  }
+  .socket::before { content: "+"; display: inline-block; min-width: 20px; font-weight: 700 }
+  .socket.ready {
+    background: var(--hover, #eef6ef); border-color: #508a6d; color: var(--text, #253b34); cursor: copy;
+  }
+  .socket.over { outline: 2px solid #508a6d; outline-offset: -1px }
+  .placing .socket:not(.ready) { opacity: .45 }
+  @media (max-width: 480px) {
+    .workspace { grid-template-columns: 1fr }
+    .palette-items { grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); max-height: 180px }
+  }
 </style>
 </head>
 <body>
 <main aria-label="Pipeline program"></main>
 <script>
   const root = document.querySelector("main");
-  let args = {}, selected = "", sequence = 0;
+  let args = {}, selected = "", picked = "", dragging = "", sequence = 0, submitting = false;
+  let pressed = null, ghost = null;
+  let action = "", search = "", reportedHeight = 0;
   function send(type, fields = {}) {
     parent.postMessage({isStreamlitMessage: true, type, ...fields}, "*");
   }
@@ -45,6 +90,142 @@
     if (className) node.className = className;
     if (text) node.textContent = text;
     return node;
+  }
+  function report(value) {
+    send("streamlit:setComponentValue", {dataType: "json", value: {...value, token: Date.now() + "-" + (++sequence)}});
+  }
+  function fits(card, socket) {
+    return !submitting && Boolean(args.cards[card]?.targets.includes(socket));
+  }
+  function updateSockets() {
+    const held = dragging || picked;
+    root.classList.toggle("placing", Boolean(held));
+    for (const socket of root.querySelectorAll(".socket")) {
+      const allowed = fits(held, socket.dataset.socket);
+      socket.classList.toggle("ready", allowed);
+      socket.setAttribute("aria-disabled", String(!allowed));
+      if (!allowed) socket.classList.remove("over");
+    }
+    for (const piece of root.querySelectorAll(".piece")) {
+      piece.setAttribute("aria-pressed", String(piece.dataset.card === picked));
+    }
+    const status = root.querySelector(".placement-status");
+    if (status) status.textContent = submitting ? "Placing block…" : held
+      ? "Place " + (args.cards[held]?.label || "the block") + " in a highlighted socket."
+      : "Drag a block, or pick it and click a socket.";
+  }
+  function place(socket, card) {
+    if (!fits(card, socket)) return;
+    submitting = true;
+    dragging = picked = "";
+    updateSockets();
+    report({action: "drop", socket, card});
+  }
+  function dropSocket(id, descriptor) {
+    const button = element("button", "socket", descriptor.label);
+    button.type = "button";
+    button.dataset.socket = id;
+    button.onclick = () => place(id, picked);
+    return button;
+  }
+  function hoveredSocket(event) {
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest(".socket");
+    return fits(dragging, target?.dataset.socket) ? target : null;
+  }
+  function stopDrag() {
+    pressed = null;
+    dragging = "";
+    ghost?.remove();
+    ghost = null;
+    for (const socket of root.querySelectorAll(".socket.over")) socket.classList.remove("over");
+    updateSockets();
+  }
+  function piece(id, value) {
+    const button = element("button", "piece " + value.role);
+    button.type = "button";
+    button.dataset.card = id;
+    button.append(element("span", "verb", value.action), element("span", "name", value.label));
+    let moved = false;
+    button.onclick = () => {
+      if (moved) {
+        moved = false;
+        return;
+      }
+      picked = picked === id ? "" : id;
+      updateSockets();
+    };
+    button.onpointerdown = event => {
+      if (submitting || !event.isPrimary || event.button !== 0) return;
+      moved = false;
+      pressed = {id: event.pointerId, x: event.clientX, y: event.clientY};
+      button.setPointerCapture(event.pointerId);
+    };
+    button.onpointermove = event => {
+      if (pressed?.id !== event.pointerId) return;
+      if (!moved) {
+        if (Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) < 7) return;
+        moved = true;
+        dragging = id;
+        ghost = element("div", "piece drag-ghost " + value.role);
+        ghost.setAttribute("aria-hidden", "true");
+        ghost.append(element("span", "verb", value.action), element("span", "name", value.label));
+        root.append(ghost);
+        updateSockets();
+      }
+      ghost.style.transform = "translate(" + (event.clientX + 12) + "px," + (event.clientY + 9) + "px)";
+      const target = hoveredSocket(event);
+      for (const socket of root.querySelectorAll(".socket")) socket.classList.toggle("over", socket === target);
+    };
+    button.onpointerup = event => {
+      if (pressed?.id !== event.pointerId) return;
+      const socket = hoveredSocket(event)?.dataset.socket;
+      stopDrag();
+      if (socket) place(socket, id);
+    };
+    button.onlostpointercapture = event => {
+      if (pressed?.id === event.pointerId) stopDrag();
+    };
+    button.onpointercancel = button.onlostpointercapture;
+    return button;
+  }
+  function palette() {
+    const panel = element("aside", "palette");
+    panel.append(element("h2", "label", "Blocks"));
+    const filter = element("select"), query = element("input"), list = element("div", "palette-items");
+    const status = element("p", "hint placement-status");
+    status.setAttribute("aria-live", "polite");
+    filter.setAttribute("aria-label", "Block action");
+    const all = element("option", "", "All actions");
+    all.value = "";
+    filter.append(all);
+    const cards = Object.entries(args.cards).sort(([, a], [, b]) =>
+      Number(b.targets.length > 1 || b.targets[0] !== "start") - Number(a.targets.length > 1 || a.targets[0] !== "start")
+      || a.label.localeCompare(b.label));
+    for (const verb of [...new Set(cards.map(([, value]) => value.action))].sort()) {
+      const option = element("option", "", verb);
+      option.value = verb;
+      filter.append(option);
+    }
+    filter.value = action;
+    query.type = "search";
+    query.placeholder = "Find a block";
+    query.setAttribute("aria-label", "Find a block");
+    query.value = search;
+    function drawCards() {
+      list.replaceChildren();
+      for (const [id, value] of cards) {
+        if (filter.value && value.action !== filter.value) continue;
+        if (!value.label.toLowerCase().includes(query.value.trim().toLowerCase())) continue;
+        list.append(piece(id, value));
+      }
+      if (!list.childElementCount) list.append(element("p", "hint", "No matching blocks."));
+      if (panel.isConnected) updateSockets();
+    }
+    filter.onchange = () => { action = filter.value; drawCards(); };
+    query.oninput = () => { search = query.value; drawCards(); };
+    panel.append(status, filter, query, list);
+    drawCards();
+    return panel;
   }
   function block(id) {
     const value = args.program.blocks[id];
@@ -61,8 +242,9 @@
     button.append(element("span", "verb", value.action), detail);
     button.onclick = () => {
       selected = id;
+      picked = dragging = action = search = "";
       draw();
-      send("streamlit:setComponentValue", {dataType: "json", value: {id, token: Date.now() + "-" + (++sequence)}});
+      report({action: "select", id});
     };
     return button;
   }
@@ -70,9 +252,22 @@
     const section = element("section", "group");
     if (title) section.append(element("h2", "label", title));
     const row = element("div", stacked ? "group" : "row");
-    ids.forEach(id => row.append(block(id)));
+    ids.forEach(id => {
+      const branch = element("div", "branch");
+      branch.append(block(id));
+      for (const [key, socket] of Object.entries(args.sockets)) {
+        if (socket.source === id) branch.append(dropSocket(key, socket));
+      }
+      row.append(branch);
+    });
     section.append(row);
     return section;
+  }
+  function resize() {
+    const height = root.clientHeight + 6;
+    if (height === reportedHeight) return;
+    reportedHeight = height;
+    send("streamlit:setFrameHeight", {height});
   }
   function draw() {
     const focused = document.activeElement?.dataset.id;
@@ -98,15 +293,26 @@
       loop.append(finish, again);
       root.append(loop);
     } else {
-      program.stages.forEach((ids, index) => root.append(group(index === 0 ? "Start with" : "Then", ids)));
+      const workspace = element("div", "workspace");
+      const stack = element("section", "stack");
+      stack.append(element("h2", "label", "Program"), dropSocket("start", args.sockets.start));
+      program.stages.forEach((ids, index) => stack.append(group(index === 0 ? "Start with" : "Then", ids)));
+      workspace.append(palette(), stack);
+      root.append(workspace);
+      updateSockets();
     }
     if (focused) [...root.querySelectorAll(".block")].find(button => button.dataset.id === focused)?.focus();
-    send("streamlit:setFrameHeight", {height: root.scrollHeight + 6});
+    resize();
   }
   window.addEventListener("message", event => {
     if (event.data.type !== "streamlit:render") return;
+    stopDrag();
+    if (selected !== event.data.args.selected) picked = action = search = "";
     args = event.data.args;
     selected = args.selected;
+    picked = args.cards[picked] ? picked : "";
+    dragging = args.cards[dragging] ? dragging : "";
+    submitting = false;
     if (event.data.theme?.base === "dark") {
       for (const [key, value] of Object.entries({
         text: "#e1ece6", muted: "#b0c6b9", border: "#435950",
@@ -115,6 +321,7 @@
     }
     draw();
   });
+  new ResizeObserver(resize).observe(root);
   send("streamlit:componentReady", {apiVersion: 1});
   send("streamlit:setFrameHeight", {height: 180});
 </script>

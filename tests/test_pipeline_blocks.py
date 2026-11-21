@@ -2,7 +2,9 @@ import copy
 
 import pytest
 
-from mn_molecular_design_studio.pipeline_blocks import SCREEN, add_block, blank_program, connect_blocks, next_blocks, program
+from mn_molecular_design_studio.pipeline_blocks import (
+    SCREEN, add_block, blank_program, connect_blocks, drop_block, next_blocks, placements, program,
+)
 from mn_molecular_design_studio.pipeline_graph import new_graph, validate_graph
 
 
@@ -50,6 +52,39 @@ def test_blocks_can_build_a_workflow_with_typed_filter_branches():
     validate_graph(graph, require_inputs=True, require_files=False)
 
 
+def test_drop_inserts_between_two_blocks_and_preserves_other_wires():
+    from mn_molecular_design_studio.scientific_tasks import new_task_graph
+
+    graph = new_task_graph("molecular_structure_prediction", {
+        "inputs": {"target_protein_sequences": "ACDE"},
+    })
+    source, predictor, results = [node["id"] for node in graph["nodes"]]
+    original_first, original_last = graph["edges"]
+    slots, cards = placements(graph, predictor)
+    socket = f"between/{original_last['id']}"
+    assert socket in cards["filter/in"]["targets"]
+    with pytest.raises(ValueError, match="does not fit"):
+        drop_block(graph, slots, cards, socket, "cofold_input/")
+
+    updated, filter_id = drop_block(graph, slots, cards, socket, "filter/in")
+    assert graph["edges"] == [original_first, original_last]
+    assert original_first in updated["edges"]
+    assert [(edge["source"], edge["target"]) for edge in updated["edges"]] == [
+        (source, predictor), (predictor, filter_id), (filter_id, results),
+    ]
+    validate_graph(updated, require_inputs=True, require_files=False)
+
+
+def test_screen_recipe_snaps_into_an_empty_program():
+    empty = blank_program()
+    slots, cards = placements(empty, "")
+    graph, selected = drop_block(empty, slots, cards, "start", f"{SCREEN}/")
+    assert selected in program(graph)["screen"]["setup"]
+    assert placements(graph, selected) == ({}, {})
+    after_input, selected = drop_block(empty, slots, cards, "start", "cofold_input/")
+    assert f"{SCREEN}/" not in placements(after_input, selected)[1]
+
+
 def test_pipeline_builder_opens_screen_and_blocks_unconfigured_run(monkeypatch, tmp_path):
     from streamlit.testing.v1 import AppTest
     from mn_molecular_design_studio import pipeline_graph
@@ -70,6 +105,25 @@ render_pipeline_blocks(owner_id="test", project_selector=lambda _: "project",
     assert app.session_state["pipeline-blocks-project-graph"]["template_id"] == SCREEN
     assert app.button(key="pipeline-blocks-project-run").disabled
     assert any("fingerprint dataset" in message.value for message in app.info)
+
+
+def test_pipeline_builder_receives_a_palette_drop_without_submitting(monkeypatch, tmp_path):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import pipeline_graph, pipeline_blocks_ui
+
+    monkeypatch.setattr(pipeline_graph, "app_home", lambda: tmp_path)
+    monkeypatch.setattr(pipeline_blocks_ui, "_COMPONENT", lambda **props: {
+        "action": "drop", "card": "cofold_input/", "socket": "start", "token": "single-drop",
+    })
+    app = AppTest.from_string("""
+from mn_molecular_design_studio.pipeline_blocks_ui import render_pipeline_blocks
+render_pipeline_blocks(owner_id="test", project_selector=lambda _: "project",
+    submit_api=lambda *args: (_ for _ in ()).throw(AssertionError("Nothing should run")),
+    search_jobs=lambda **kwargs: {"items": []})
+""").run()
+    assert not app.exception
+    nodes = app.session_state["pipeline-blocks-project-graph"]["nodes"]
+    assert [item["data"]["kind"] for item in nodes] == ["cofold_input"]
 
 
 def test_pipeline_builder_submits_the_existing_graph_and_opens_its_results(monkeypatch, tmp_path):

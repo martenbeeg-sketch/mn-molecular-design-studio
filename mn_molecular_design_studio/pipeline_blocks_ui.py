@@ -6,7 +6,7 @@ import streamlit.components.v1 as components
 
 from mn_molecular_design_studio.cluster.ui import _job_details_reference, _navigate_to_job_details
 from mn_molecular_design_studio.pipeline_blocks import (
-    SCREEN, add_block, blank_program, block_action, connect_blocks, next_blocks, program,
+    SCREEN, blank_program, connect_blocks, drop_block, next_blocks, placements, program,
 )
 from mn_molecular_design_studio.pipeline_graph import (
     NODE_CATALOG, PipelineInputError, list_definitions, migrate_template_graph, new_graph, validate_graph,
@@ -20,11 +20,12 @@ from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
 _COMPONENT = components.declare_component(
     "studio_pipeline_program", path=str(Path(__file__).parent / "components/pipeline_blocks"),
 )
+_placement_options = st.cache_data(show_spinner=False, max_entries=40)(placements)
 
 
 def _start_or_open(prefix, owner_id, project_id, graph):
     drafts = list_definitions(owner_id, project_id) if project_id else []
-    with st.expander("Open or start a pipeline", expanded=not graph["nodes"]):
+    with st.expander("Open or start a pipeline"):
         recipes, existing = st.tabs(["Starters", "Saved drafts"])
         with recipes:
             if st.button("Large-library screen", key=prefix + "-screen"):
@@ -52,81 +53,59 @@ def _read_program(prefix, graph, display):
     selection_key = prefix + "-block"
     selected = st.session_state.get(selection_key)
     if selected not in node_ids:
-        selected = display["screen"]["setup"][0] if "screen" in display else display["stages"][0][0]
-    event = _COMPONENT(program=display, selected=selected, key=prefix + "-program-" + graph["id"], default=None)
+        selected = next(iter(node_ids), "")
+        if "screen" in display:
+            selected = display["screen"]["setup"][0]
+    sockets, cards = _placement_options(graph, selected)
+    event = _COMPONENT(program=display, selected=selected, sockets=sockets, cards=cards,
+                       key=prefix + "-program-" + graph["id"], default=None)
     event_key = prefix + "-block-event"
     if event and event.get("token") != st.session_state.get(event_key):
         st.session_state[event_key] = event.get("token")
-        if event.get("id") in node_ids and event["id"] != selected:
+        if event.get("action") == "drop":
+            try:
+                updated, target = drop_block(graph, sockets, cards, event.get("socket"), event.get("card"))
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                if updated["id"] != graph["id"]:
+                    _activate_graph(prefix, updated)
+                else:
+                    st.session_state[prefix + "-graph"] = updated
+                st.session_state[selection_key] = target
+                st.rerun()
+        elif event.get("id") in node_ids and event["id"] != selected:
             st.session_state[selection_key] = event["id"]
             st.rerun()
     st.session_state[selection_key] = selected
     return selected
 
 
-def _add_input(prefix, graph):
-    choices = [kind for kind, spec in NODE_CATALOG.items() if spec["outputs"] and spec["category"] != "Active learning"
-               and all(port.get("optional") for port in spec["inputs"])]
-    choices.sort(key=lambda kind: (kind != "cofold_input", NODE_CATALOG[kind]["label"]))
-    kind = st.selectbox("Input or standalone step", choices, format_func=lambda item: NODE_CATALOG[item]["label"],
-                        key=prefix + "-input-kind")
-    if st.button("Add block", icon=":material/add:", key=prefix + "-add-input"):
-        updated, node_id = add_block(graph, kind)
-        st.session_state[prefix + "-graph"] = updated
-        st.session_state[prefix + "-block"] = node_id
-        st.rerun()
-
-
-def _next_block(prefix, graph, node):
+def _link_existing(prefix, graph, node):
     node_id = node["id"]
     outputs = NODE_CATALOG[node["data"]["kind"]]["outputs"]
-    if not outputs:
-        st.caption("This block collects the workflow output.")
+    choices = []
+    for output in outputs:
+        _, existing = next_blocks(graph, node_id, output["id"], include_new=False)
+        choices.extend((output["id"], target, port) for target, port in existing)
+    if not choices:
         return
-    names = {port["id"]: port["label"] for port in outputs}
-    st.subheader("What comes next")
-    output = (st.radio("Output branch", list(names), format_func=names.get, horizontal=True,
-                       key=prefix + "-output-" + node_id) if len(outputs) > 1 else outputs[0]["id"])
-    options, existing = next_blocks(graph, node_id, output)
-    key = f"{prefix}-next-{node_id}-{output}"
-    if options:
-        actions = sorted({block_action(item[0])[0] for item in options})
-        action = (st.selectbox("Next action", actions, key=key + "-action", index=None,
-                               placeholder="All compatible actions") if len(actions) > 1 else None)
-        options = sorted((item for item in options if action is None or block_action(item[0])[0] == action),
-                         key=lambda item: (item[0] != "results", NODE_CATALOG[item[0]]["label"], item[1]))
+    nodes = {item["id"]: item["data"] for item in graph["nodes"]}
+    names = {output["id"]: output["label"] for output in outputs}
 
-        def option_label(option):
-            kind, port = option
-            spec = NODE_CATALOG[kind]
-            name = spec["label"]
-            if len(spec["inputs"]) > 1:
-                name += " · " + next(item["label"] for item in spec["inputs"] if item["id"] == port)
-            return name
+    def label(choice):
+        output, target, port = choice
+        data = nodes[target]
+        inlet = next(item["label"] for item in NODE_CATALOG[data["kind"]]["inputs"] if item["id"] == port)
+        return f"{names[output]} → {data['label']} · {inlet}"
 
-        kind, target_port = st.selectbox("Compatible new block", options, format_func=option_label, key=key)
-        if st.button("Add and connect", icon=":material/add:", key=key + "-add"):
-            updated, target_id = add_block(graph, kind, source=node_id, output=output, target_port=target_port)
-            st.session_state[prefix + "-graph"] = updated
+    with st.expander("Connect to an existing block"):
+        output, target_id, port = st.selectbox("Compatible connection", choices, format_func=label,
+                                              key=f"{prefix}-link-{node_id}")
+        if st.button("Connect blocks", key=prefix + "-connect"):
+            st.session_state[prefix + "-graph"] = connect_blocks(graph, node_id, output, target_id, port)
             st.session_state[prefix + "-block"] = target_id
             st.rerun()
-    else:
-        st.caption("There are no compatible new blocks for this output.")
-    if existing:
-        with st.expander("Connect to a block already in this pipeline"):
-            lookup = {item["id"]: item["data"] for item in graph["nodes"]}
-            def destination_label(item):
-                target, port = item
-                data = lookup[target]
-                label = next(entry["label"] for entry in NODE_CATALOG[data["kind"]]["inputs"] if entry["id"] == port)
-                return f"{data['label']} · {label}"
-
-            target_id, port = st.selectbox("Compatible destination", existing, key=key + "-existing",
-                                          format_func=destination_label)
-            if st.button("Connect blocks", key=key + "-connect"):
-                st.session_state[prefix + "-graph"] = connect_blocks(graph, node_id, output, target_id, port)
-                st.session_state[prefix + "-block"] = target_id
-                st.rerun()
 
 
 def _inspect_block(prefix, graph, selected):
@@ -156,7 +135,7 @@ def _inspect_block(prefix, graph, selected):
             st.write(f"{lead} · {label}")
         return
 
-    _next_block(prefix, graph, node)
+    _link_existing(prefix, graph, node)
     with st.expander("Edit connections or remove block"):
         adjacent = [edge for edge in graph["edges"] if selected in (edge["source"], edge["target"])]
         if adjacent:
@@ -240,16 +219,9 @@ def render_pipeline_blocks(*, owner_id, project_selector, submit_api, search_job
             selected = st.selectbox("Block to inspect", list(labels), format_func=labels.get, key=prefix + "-repair")
             _inspect_block(prefix, graph, selected)
     else:
-        workflow, inspector = st.columns([1.7, 1], gap="large")
+        workflow, inspector = st.columns([2.7, 1], gap="large")
         with workflow:
-            if graph.get("template_id") != SCREEN:
-                with st.expander("Add an input or standalone step", expanded=not graph["nodes"]):
-                    try:
-                        _add_input(prefix, graph)
-                    except ValueError as exc:
-                        st.error(str(exc))
-            if graph["nodes"]:
-                selected = _read_program(prefix, graph, display)
+            selected = _read_program(prefix, graph, display)
         if graph["nodes"]:
             with inspector:
                 try:
