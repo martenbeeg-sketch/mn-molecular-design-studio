@@ -6724,8 +6724,8 @@ def _render_cofolding_prediction_results(
             return None
 
         top_cards: list[tuple[str, object, bool]] = [
-            ("Structure mean Cα pLDDT", metrics.get("plddt_mean"), True),
-            ("Confidence score", confidence_metric("confidence_score", "ranking_score"), False),
+            ("Mean pLDDT", metrics.get("plddt_mean"), True),
+            ("Ranking score", confidence_metric("ranking_score", "confidence_score"), False),
             ("pTM", confidence_metric("ptm"), False),
             ("ipTM", confidence_metric("iptm"), False),
         ]
@@ -6869,7 +6869,7 @@ def _render_cofolding_prediction_results(
                 row["Sequence"] = sequence or input_sequence
             row.update({
                 "Model": labels[index],
-                "Structure mean Cα pLDDT": _af3_metric_label(item_metrics.get("plddt_mean"), percent=True),
+                "Mean pLDDT": _af3_metric_label(item_metrics.get("plddt_mean"), percent=True),
             })
             sources = ({str(key).casefold(): value for key, value in item_metrics.items()},
                        {str(key).casefold(): value for key, value in item_confidence.items()})
