@@ -1135,7 +1135,7 @@ def test_prediction_indexes_only_the_best_structure_per_input(database):
     assert row["structures"][0]["context"]["database_structure_policy"] == "best_prediction"
     assert row["structures"][0]["context"]["portable"] is True
     assert Path(row["structures"][0]["path"]).is_relative_to(database.root / "molecular_files")
-    assert len(row["observations"]) == 2
+    assert len(row["observations"]) == 1
 
     # Reindexing after a changed ranking replaces the old attached representative.
     candidate_file = run / "artifacts/normalized_candidates/candidates.jsonl"
@@ -1185,9 +1185,7 @@ def test_standalone_cofolding_saves_a_representative_with_its_exact_score(databa
     assert structure["context"]["portable"]
     assert file_digest(Path(structure["path"])) == file_digest(run / candidates[1]["complex_pdb"])
     measurements = {obs["context"]["candidate_id"]: obs["metrics"].get("iptm") for obs in record["observations"]}
-    assert measurements["model-0"] == .25
-    assert measurements["model-1"] == .8
-    assert measurements.get("model-2") is None
+    assert measurements == {"model-1": .8}
     assert ingest_run(run, database=database) == 0
 
 
@@ -1204,6 +1202,61 @@ def test_standalone_prediction_can_save_coordinates_without_confidence(database)
     structure, = record["structures"]
     assert structure["label"] == "OpenFold3 saved model"
     assert structure["context"]["workflow_role"] == "independent_prediction"
+
+
+def test_legacy_cofolding_repair_keeps_observation_id_and_backed_up_structure(database, tmp_path):
+    from mn_molecular_design_studio.data_browser import ReadOnlyLibrary
+    from mn_molecular_design_studio.evaluations import file_digest
+    from scripts.reconcile_legacy_cofolding import apply_corrections, plan_corrections
+    import sqlite3
+
+    run_id = "mnligand-1234567890abcdef"
+    compound = database.import_records(A, [{"name": "Input", "components": [
+        {"type": "protein", "chain": "A", "sequence": "ACD"},
+    ]}], project_id="project-1", import_method="tool_output")
+    group, molecule = compound["group_id"], compound["molecule_ids"][0]
+    run = _make_run(database, "refolding", run_id, tool="AlphaFold 3", candidates=[{
+        "candidate_id": "input", "stage": "complex_refolding", "source_tool": "AlphaFold 3",
+        "complex_pdb": "output/input/seed-42_sample-0/input_seed-42_sample-0_model.cif",
+        "metrics": {"ptm": .65, "model_count": 2},
+        "raw_metadata": {"source_compound_id": "input", "model_count": 2},
+    }])
+    (run / "mn_ligand_aggregate.json").write_text('{"tool":"AlphaFold 3"}')
+    output = run / "output/input"
+    files = []
+    for index, score in enumerate((.8, .5)):
+        parent = output / f"seed-42_sample-{index}"
+        parent.mkdir(parents=True)
+        structure = parent / f"input_seed-42_sample-{index}_model.cif"
+        structure.write_text(f"data_model_{index}\n")
+        (parent / f"input_seed-42_sample-{index}_summary_confidences.json").write_text(
+            json.dumps({"ranking_score": .92, "ptm": score}),
+        )
+        files.append(structure)
+    (output / "input_ranking_scores.csv").write_text("seed,sample,ranking_score\n42,0,0.916\n42,1,0.923\n")
+    representation = database.attach_structure(group, molecule, {"path": str(files[0])},
+                                               context={"task_group": "refolding", "run_id": run_id})
+    observation = database.add_observation(group, molecule, "AlphaFold 3", run_id, {"ptm": .65}, context={
+        "task_group": "refolding", "candidate_id": "input", "representation_id": representation,
+        "candidate": {"complex_pdb": str(files[0])}, "structure_digest": file_digest(files[0]),
+    }, source_key="test:original")
+    plan = plan_corrections(ReadOnlyLibrary(database.root), run.parent.parent, [run_id])
+    assert len(plan["changes"]) == 1 and not plan["unresolved"]
+    backup = tmp_path / "legacy-cofolding-recovery.sqlite3"
+    apply_corrections(database, plan, backup)
+    with database.connection() as connection:
+        row = connection.execute("SELECT metrics,context FROM molecule_observations WHERE id=?", (observation,)).fetchone()
+        assert json.loads(row["metrics"])["ptm"] == .5
+        context = json.loads(row["context"])
+        assert context["structure_digest"] == file_digest(files[1])
+        assert context["representation_id"] != representation
+        saved_path = connection.execute("SELECT path FROM molecule_structures WHERE id=?",
+                                       (context["representation_id"],)).fetchone()[0]
+        assert Path(saved_path).read_bytes() == files[1].read_bytes()
+    with sqlite3.connect(backup) as connection:
+        assert connection.execute("SELECT 1 FROM molecule_structures WHERE id=?", (representation,)).fetchone()
+    assert not plan_corrections(ReadOnlyLibrary(database.root), run.parent.parent, [run_id])["changes"]
+    assert files[0].is_file() and files[1].is_file()
 
 
 def test_docking_indexes_only_the_top_pose_for_each_compound(database):

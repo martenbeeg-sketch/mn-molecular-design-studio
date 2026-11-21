@@ -175,6 +175,41 @@ def test_model_picker_separates_inputs_and_disambiguates_repeated_model_indices(
     assert results.model_scores({"raw_metadata": {"confidence_available": False}, "metrics": {"ptm": .9}}) == {}
 
 
+def test_native_af3_csv_breaks_tied_summary_scores_and_keeps_selected_models_metrics(tmp_path):
+    output = tmp_path / "input"
+    paths = []
+    for index, ptm in enumerate((.65, .6)):
+        directory = output / f"seed-42_sample-{index}"
+        directory.mkdir(parents=True)
+        path = directory / f"input_seed-42_sample-{index}_model.cif"
+        path.touch()
+        path.with_name(path.stem.removesuffix("_model") + "_summary_confidences.json").write_text(
+            json.dumps({"ranking_score": .81, "ptm": ptm}),
+        )
+        paths.append(path)
+    ranking = output / "input_ranking_scores.csv"
+    ranking.write_text("seed,sample,ranking_score\n42,0,0.812345111\n42,1,0.812345222\n99,0,0.99\n")
+    modern = [
+        results.enrich_candidate(tmp_path, {"candidate_id": str(index), "complex_pdb": str(path)})
+        for index, path in enumerate(paths)
+    ]
+    assert results.ranked_candidates(modern)[0]["candidate_id"] == "1"
+    assert _confidence_sidecar(paths[1])["ranking_score"] == .812345222
+
+    legacy = {"candidate_id": "input", "source_tool": "AlphaFold 3", "complex_pdb": str(paths[0]),
+              "metrics": {"ptm": .625, "model_count": 2},
+              "raw_metadata": {"model_count": 2, "source_compound_id": "input"}}
+    restored = results.legacy_ranked_prediction(tmp_path, legacy)
+    assert restored["complex_pdb"] == str(paths[1])
+    assert restored["metrics"]["ptm"] == .6  # pTM belongs to the rank-1 model.
+    assert restored["raw_metadata"]["legacy_model_selection"]["rank_status"] == "native"
+    ranking.unlink()
+    uncertain = results.legacy_ranked_prediction(tmp_path, legacy)
+    assert uncertain["complex_pdb"] == str(paths[0])
+    assert uncertain["metrics"]["ptm"] == .65
+    assert uncertain["raw_metadata"]["legacy_model_selection"]["rank_status"] == "rounded_tie"
+
+
 def test_peer_confidence_manifest_pairs_only_files_for_the_selected_model(tmp_path):
     for index in range(2):
         (tmp_path / f"job_sample_{index}.cif").touch()

@@ -6,11 +6,13 @@ must never be substituted when a confidence file is absent.
 """
 from __future__ import annotations
 
+import csv
 import gzip
 import json
 import math
 import re
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,47 @@ import numpy as np
 
 from mn_molecular_design_studio.engine.workflow_engine.core import portable_paths
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+
+
+_AF3_SAMPLE = re.compile(r"(?P<input>.+)_seed-(?P<seed>\d+)_sample-(?P<sample>\d+)_model")
+_BOLTZ_SAMPLE = re.compile(r"(?P<input>.+)_model_(?P<sample>\d+)")
+
+
+@lru_cache(maxsize=1024)
+def _af3_rank_rows(path: Path, mtime_ns: int, size: int) -> dict[tuple[int, int], float]:
+    del mtime_ns, size
+    rows = {}
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                key = (int(row["seed"]), int(row["sample"]))
+                value = float(row["ranking_score"])
+                if not math.isfinite(value) or key in rows:
+                    return {}
+                rows[key] = value
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError, csv.Error):
+        return {}
+    return rows
+
+
+def _af3_table(structure: Path, run_dir: Path | None = None):
+    sample = _AF3_SAMPLE.fullmatch(structure.stem)
+    if not sample or structure.parent.name != f"seed-{sample['seed']}_sample-{sample['sample']}":
+        return None, {}
+    path = structure.parent.parent / f"{sample['input']}_ranking_scores.csv"
+    if run_dir is not None and local_artifact(run_dir, path) is None:
+        return sample, {}
+    try:
+        stat = path.stat()
+    except OSError:
+        return sample, {}
+    return sample, _af3_rank_rows(path, stat.st_mtime_ns, stat.st_size)
+
+
+def af3_native_score(structure: Path, *, run_dir: Path | None = None) -> float | None:
+    """Read the engine's full-precision rank score for one exact seed and sample."""
+    sample, rows = _af3_table(structure, run_dir)
+    return rows.get((int(sample["seed"]), int(sample["sample"]))) if sample else None
 
 
 def is_prediction_run(*records: dict) -> bool:
@@ -186,6 +229,109 @@ def read_payload(path: Path) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}
     except (OSError, UnicodeError, ValueError, EOFError):
         return {}
+
+
+def legacy_ranked_prediction(run_dir: Path, candidate: dict) -> dict | None:
+    """Recover the representative and its measurements from one imported replicate."""
+    tool = candidate.get("source_tool")
+    raw = candidate.get("raw_metadata") or {}
+    expected_count = number(raw.get("model_count"))
+    if tool not in {"AlphaFold 3", "Boltz-2"} or not raw.get("source_compound_id") or not expected_count:
+        return None
+    root = run_dir.resolve()
+    structure = structure_for(root, candidate)
+    if structure is None or not structure.is_relative_to(root):
+        return None
+    chosen = structure
+    scores = {}
+    selected_rank_score = None
+    rank_status = "unverified"
+    if tool == "AlphaFold 3":
+        sample, table = _af3_table(structure, root)
+        if sample is None:
+            return None
+        seed = int(sample["seed"])
+        samples = {}
+        for path in structure.parent.parent.glob(f"seed-{sample['seed']}_sample-*/*_model.cif"):
+            match = _AF3_SAMPLE.fullmatch(path.stem)
+            if match and match["input"] == sample["input"] and match["seed"] == sample["seed"]:
+                if local_artifact(root, path) and path.resolve().is_relative_to(root):
+                    samples[int(match["sample"])] = path
+        native = {index: value for (row_seed, index), value in table.items() if row_seed == seed}
+        if len(samples) == expected_count and samples.keys() == native.keys():
+            winner = max(native, key=native.__getitem__)
+            old_index = int(sample["sample"])
+            if native.get(old_index) == native[winner]:
+                winner = old_index
+            chosen = samples[winner]
+            selected_rank_score = native[winner]
+            rank_status = "native"
+        elif len(samples) == expected_count:
+            rounded = {}
+            for index, path in samples.items():
+                file = local_artifact(root, path.with_name(path.stem.removesuffix("_model") + "_summary_confidences.json"))
+                if file and file.is_relative_to(root):
+                    rounded[index] = number(read_payload(file).get("ranking_score"))
+            if len(rounded) == expected_count and all(value is not None for value in rounded.values()):
+                best = max(rounded.values())
+                best_indices = [index for index, value in rounded.items() if value == best]
+                if len(best_indices) == 1:
+                    chosen = samples[best_indices[0]]
+                    rank_status = "rounded_unique"
+                else:
+                    if int(sample["sample"]) not in best_indices:
+                        chosen = samples[min(best_indices)]
+                    rank_status = "rounded_tie"
+        sidecar = chosen.with_name(chosen.stem.removesuffix("_model") + "_summary_confidences.json")
+    else:
+        sample = _BOLTZ_SAMPLE.fullmatch(structure.stem)
+        if sample is None:
+            return None
+        models = {}
+        for path in structure.parent.glob(f"{sample['input']}_model_*{structure.suffix}"):
+            match = _BOLTZ_SAMPLE.fullmatch(path.stem)
+            if not match or match["input"] != sample["input"] or not local_artifact(root, path):
+                continue
+            if not path.resolve().is_relative_to(root):
+                continue
+            score_file = local_artifact(root, path.with_name(f"confidence_{path.stem}.json"))
+            score = number(read_payload(score_file).get("confidence_score")) if score_file else None
+            if score is not None:
+                models[path] = score
+        if len(models) == expected_count:
+            winner = max(models, key=models.__getitem__)
+            chosen = structure if models.get(structure) == models[winner] else winner
+            selected_rank_score = models[chosen]
+            rank_status = "native"
+        sidecar = chosen.with_name(f"confidence_{chosen.stem}.json")
+        affinity = local_artifact(root, chosen.with_name(f"affinity_{sample['input']}.json"))
+        if affinity is not None and affinity.is_relative_to(root):
+            scores.update(summary_metrics(read_payload(affinity)))
+
+    sidecar = local_artifact(root, sidecar)
+    if sidecar is None or not sidecar.is_relative_to(root):
+        return None
+    confidence = summary_metrics(read_payload(sidecar))
+    if not confidence:
+        return None
+    scores.update(confidence)
+    if selected_rank_score is not None:
+        scores["ranking_score"] = selected_rank_score
+    metrics = {key: value for key, value in (candidate.get("metrics") or {}).items()
+               if key in {"replicate", "seed", "model_count", "legacy_attempt_index"}}
+    selection = {"rank_status": rank_status, "model_file": chosen.relative_to(root).as_posix(),
+                 "confidence_file": sidecar.relative_to(root).as_posix()}
+    if rank_status == "native":
+        selection["native_rank"] = 1
+    if tool == "AlphaFold 3":
+        model_id = _AF3_SAMPLE.fullmatch(chosen.stem)["sample"]
+        raw = {**raw, "prediction_id": chosen.parent.name}
+    else:
+        model_id = _BOLTZ_SAMPLE.fullmatch(chosen.stem)["sample"]
+        raw = {**raw, "representative_model_id": chosen.stem}
+    selection["model_index"] = int(model_id)
+    return {**candidate, "complex_pdb": str(chosen), "metrics": {**metrics, **scores},
+            "raw_metadata": {**raw, "confidence_outputs": scores, "legacy_model_selection": selection}}
 
 
 def number(value: object) -> float | None:
@@ -408,6 +554,11 @@ def prediction_row(structure: Path) -> dict:
 def enrich_candidate(run_dir: Path, candidate: dict, *, include_interface_pae: bool = True,
                      same_job_only: bool = False) -> dict:
     """Read exact-model evidence without rewriting saved artifacts."""
+    restored = legacy_ranked_prediction(run_dir, candidate)
+    if restored is not None:
+        from mn_molecular_design_studio.output_vocabulary import candidate_output
+        restored["normalized_output"] = candidate_output(restored)
+        return restored
     if _template_refold(candidate):
         candidate = _template_prediction_evidence(candidate)
     structure, files = prediction_files(run_dir, candidate)
@@ -455,6 +606,12 @@ def _enrich_candidate(candidate: dict, structure: Path | None, files: list[Path]
     # Fill aliases even if the old adapter only saved the engine's native name.
     for key, value in summary_metrics(merged).items():
         merged[key] = value
+    if structure is not None and raw.get('confidence_available') is not False:
+        native_structure = local_artifact(run_dir, raw.get("native_prediction_structure"))
+        if native_structure is None or not native_structure.is_relative_to(run_dir.resolve()):
+            native_structure = structure
+        if (native_score := af3_native_score(native_structure, run_dir=run_dir)) is not None:
+            merged["ranking_score"] = scores["ranking_score"] = native_score
     native_rank = re.search(r'_rank_(\d+)_', structure.stem) if structure else None
     if native_rank:
         merged['native_rank'] = int(native_rank[1])
@@ -682,7 +839,9 @@ def model_labels(candidates: list[dict]) -> list[str]:
     ranked = bool(rank_metric(candidates))
     return [
         label + (f' · entry {index + 1}' if counts[label] > 1 else '')
-        + (' (best)' if index == 0 and ranked else '')
+        + (' (best)' if index == 0 and ranked
+           and ((candidates[index].get("raw_metadata") or {}).get("legacy_model_selection") or {}).get("rank_status")
+           not in {"rounded_tie", "unverified"} else '')
         for index, label in enumerate(labels)
     ]
 
@@ -731,7 +890,8 @@ def confidence_artifacts(run_dir: Path, candidates: list[dict]) -> dict[str, lis
         raw = item.get('raw_metadata') or {}
         if raw.get('confidence_available') is False or not item.get('candidate_id'):
             continue
-        structure, files = prediction_files(root, item)
+        selected = legacy_ranked_prediction(root, item) or item
+        structure, files = prediction_files(root, selected)
         if structure is None or not structure.is_relative_to(root):
             continue
         captured = []

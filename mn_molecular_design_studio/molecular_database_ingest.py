@@ -2035,6 +2035,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     ]
     best_prediction_ids = set()
     ranked_prediction_ids = set()
+    inputs_with_saved_models = set()
     if prediction_run and candidates:
         candidates = _enrich_prediction_candidates(run_dir, candidates)
     candidate_records = []
@@ -2068,9 +2069,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     native_reference = (_run_target_reference(database, user, project, inputs, metadata, path=target_path)
                         if not is_legacy_aggregate and not analysis_only else {})
     if prediction_run and candidate_records:
-        from mn_molecular_design_studio.cofolding_results import best_candidates_by_complex, rank_metric
+        from mn_molecular_design_studio.cofolding_results import best_candidates_by_complex, complex_group_key, rank_metric
         with_structures = [candidate for candidate, record in candidate_records if record.get("files")]
         best_prediction_ids = {id(candidate) for candidate in best_candidates_by_complex(with_structures)}
+        inputs_with_saved_models = {complex_group_key(candidate) for candidate in with_structures}
         ranked_prediction_ids = {id(candidate) for candidate in with_structures
                                  if rank_metric([candidate]) and id(candidate) in best_prediction_ids}
 
@@ -2097,6 +2099,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         ).fetchone()
     removed_ids = set(json.loads(removed_group[0]).get("removed_molecule_ids") or []) if removed_group else set()
     for candidate, record in candidate_records:
+        if (prediction_run and not is_legacy_aggregate and id(candidate) not in best_prediction_ids
+                and complex_group_key(candidate) in inputs_with_saved_models):
+            prediction_candidate_ids.add(str(candidate.get("candidate_id") or ""))
+            continue
         stage = str(candidate.get("stage") or "")
         sequence = candidate.get("binder_sequence") or candidate.get("sequence")
         is_backbone = stage == "generation.backbone" and not sequence
@@ -2441,6 +2447,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 "binder_interface_chemistry",
                 "binderscope",
                 "measurement_provenance", "analysis_parameters",
+                "legacy_model_selection",
             ) if key in raw}
             settings = inputs.get("params") or {}
             from mn_molecular_design_studio.evaluations import file_digest

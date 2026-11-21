@@ -327,7 +327,8 @@ def test_normalize_mn_ligand_run_keeps_replicates_and_original_affinity_table(tm
     candidates = [json.loads(line) for line in (artifacts / "normalized_candidates" / "candidates.jsonl").read_text().splitlines()]
     assert len(candidates) == 2
     assert [row["metrics"]["replicate"] for row in candidates] == [1.0, 2.0]
-    assert round(candidates[0]["metrics"]["confidence_score"], 2) == 0.85
+    assert candidates[0]["metrics"]["confidence_score"] == 0.9
+    assert candidates[0]["metrics"]["iptm"] == 0.9
     assert candidates[0]["complex_pdb"] == "models/r1b.cif"
     with (artifacts / "input" / "compounds.tsv").open(newline="") as handle:
         input_rows = list(csv.DictReader(handle, delimiter="\t"))

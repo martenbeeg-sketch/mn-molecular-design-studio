@@ -28,6 +28,9 @@ def select_models(candidates, *, key, input_labels=None, input_label="Input comp
     selected = st.selectbox(
         "Model", range(len(models)), format_func=model_labels.__getitem__, key=f"{key}-model-{input_index}",
     )
+    selection = (models[selected].get("raw_metadata") or {}).get("legacy_model_selection") or {}
+    if selection.get("rank_status") == "rounded_tie":
+        st.caption("Native ranking is unavailable for this seed. The rounded ranking scores tie at first.")
     return models, model_labels, selected
 
 

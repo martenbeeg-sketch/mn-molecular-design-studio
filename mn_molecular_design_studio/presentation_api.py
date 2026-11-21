@@ -150,14 +150,17 @@ def install(app, current_user, *, resolve_job, call):
                 item["prediction_model"] = {
                     "input_id": cofolding_results.complex_group_key(candidate),
                     "input_name": cofolding_results.complex_label(candidate, input_labels=labels),
-                    "model_index": model_indices[index],
-                    "seed": cofolding_results.model_seed(candidate),
+                    "model_index": cofolding_results.model_index(presented, model_indices[index]),
+                    "seed": cofolding_results.model_seed(presented),
                     "scores": cofolding_results.model_scores(presented),
                     "confidence_artifacts": [
                         {**artifact, "url": artifact_url + urlencode({"path": artifact["path"]})}
                         for artifact in files.get(str(candidate["candidate_id"]), [])
                     ],
                 }
+                selection = (presented.get("raw_metadata") or {}).get("legacy_model_selection")
+                if selection:
+                    item["prediction_model"]["rank_status"] = selection["rank_status"]
         if visible and binder_results(row, visible, inputs):
             from mn_molecular_design_studio.data_browser import ReadOnlyLibrary
             for item, outcome in zip(items, call(binder_outcomes, ReadOnlyLibrary(), user, row, visible)):
@@ -177,7 +180,8 @@ def install(app, current_user, *, resolve_job, call):
         from mn_molecular_design_studio import cofolding_results
         from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
         if cofolding_results.is_prediction_run(job, read_json(root / "input.json")):
-            path = cofolding_results.structure_for(root, candidate)
+            selected = cofolding_results.legacy_ranked_prediction(root, candidate) or candidate
+            path = cofolding_results.structure_for(root, selected)
         else:
             source = candidate.get("complex_pdb") or candidate.get("binder_pdb")
             path = resolve_stored_path(source, run_dir=root, must_exist=True) if source else None

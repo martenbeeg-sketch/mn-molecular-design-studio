@@ -246,6 +246,8 @@ def _mean_plddt_from_cif(path: Path) -> float | None:
 
 
 def _summary_confidence(path: Path) -> dict:
+    from mn_molecular_design_studio.cofolding_results import af3_native_score
+
     stem = path.stem[:-6] if path.stem.endswith("_model") else path.stem
     summary_path = path.with_name(f"{stem}_summary_confidences.json")
     if not summary_path.is_file():
@@ -254,7 +256,10 @@ def _summary_confidence(path: Path) -> dict:
         value = json.loads(summary_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
-    return value if isinstance(value, dict) else {}
+    scores = value if isinstance(value, dict) else {}
+    if (score := af3_native_score(path)) is not None:
+        scores["ranking_score"] = score
+    return scores
 
 
 def _confidence_data(path: Path) -> tuple[dict, Path | None]:

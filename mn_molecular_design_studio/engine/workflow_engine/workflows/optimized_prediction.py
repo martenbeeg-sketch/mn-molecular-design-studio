@@ -1972,7 +1972,7 @@ def _prediction_stage(task: dict[str, Any], validation_mode: str | None) -> str:
 
 
 def _confidence_sidecar(path: Path) -> dict[str, Any]:
-    from mn_molecular_design_studio.cofolding_results import confidence_files, read_payload, summary_metrics, prediction_row, sample_payload
+    from mn_molecular_design_studio.cofolding_results import af3_native_score, confidence_files, read_payload, summary_metrics, prediction_row, sample_payload
 
     scores: dict[str, Any] = prediction_row(path)
     for sidecar in confidence_files(path):
@@ -1981,6 +1981,8 @@ def _confidence_sidecar(path: Path) -> dict[str, Any]:
             "_scores_", "scores.model_idx_", "affinity_",
         )) or 'fold_out_npz' in sidecar.parts:
             scores.update(summary_metrics(sample_payload(path, sidecar, read_payload(sidecar))))
+    if (ranking_score := af3_native_score(path)) is not None:
+        scores["ranking_score"] = scores["af3_native_ranking_score"] = ranking_score
     return scores
 
 
@@ -3175,7 +3177,10 @@ def run_optimized_prediction(
                         _metric_float(confidence.get("plddt_mean", confidence.get("plddt")))
                         if profile["api_engine"] == "mol1" else None
                     ),
-                    "ranking_score": _metric_float(confidence.get("ranking_score", confidence.get("confidence_score"))),
+                    "ranking_score": (
+                        confidence["af3_native_ranking_score"] if "af3_native_ranking_score" in confidence
+                        else _metric_float(confidence.get("ranking_score", confidence.get("confidence_score")))
+                    ),
                     "affinity_pred_value": _metric_float(confidence.get("affinity_pred_value")),
                     "affinity_probability_binary": _metric_float(confidence.get("affinity_probability_binary")),
                     "prediction_sample": sample_index,

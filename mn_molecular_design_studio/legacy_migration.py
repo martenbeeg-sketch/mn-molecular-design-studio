@@ -619,18 +619,6 @@ def _float_or_none(value: Any) -> float | None:
     return number if number == number and abs(number) != float("inf") else None
 
 
-def _metric_means(rows: list[dict[str, str]], excluded: set[str]) -> dict[str, float]:
-    values: dict[str, list[float]] = defaultdict(list)
-    for row in rows:
-        for key, value in row.items():
-            if key in excluded:
-                continue
-            number = _float_or_none(value)
-            if number is not None:
-                values[key].append(number)
-    return {key: sum(numbers) / len(numbers) for key, numbers in values.items() if numbers}
-
-
 def _safe_run_relative_file(run_dir: Path, value: str) -> str:
     if not value:
         return ""
@@ -650,12 +638,12 @@ def _legacy_prediction_candidates(
 ) -> tuple[list[dict[str, Any]], int]:
     """Convert MN-Ligand's Boltz-2/AF3 score tables into Studio candidates.
 
-    One record is emitted per compound and replicate. For engines that return
-    multiple models per replicate, metrics are averaged and the strongest
-    confidence/ranking model supplies the attached complex structure. The
-    original detailed score table remains in place beside this normalized
-    manifest.
+    One record is emitted per compound and replicate. The chosen model
+    supplies both the structure and its scores. All sample rows remain in
+    the original score table.
     """
+    from mn_molecular_design_studio.cofolding_results import legacy_ranked_prediction
+
     _columns, rows = _read_csv_rows(csv_path)
     grouped: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
     unresolved = 0
@@ -694,7 +682,8 @@ def _legacy_prediction_candidates(
             expected = f"output/{compound_id}/{prediction_id}/{compound_id}_{prediction_id}_model.cif" if prediction_id else ""
             relative_structure = _safe_run_relative_file(run_dir, expected)
         compound = compounds[compound_id]
-        metrics = _metric_means(replicate_rows, excluded)
+        metrics = {key: number for key, value in representative.items()
+                   if key not in excluded and (number := _float_or_none(value)) is not None}
         metrics.update({
             "replicate": float(seed_to_replicate[replicate]),
             "seed": _float_or_none(representative.get("seed") or representative.get("model_seed")) or 0.0,
@@ -724,6 +713,10 @@ def _legacy_prediction_candidates(
         }
         if relative_structure:
             candidate["complex_pdb"] = relative_structure
+            selected = legacy_ranked_prediction(run_dir, candidate)
+            if selected:
+                selected["complex_pdb"] = Path(selected["complex_pdb"]).relative_to(run_dir.resolve()).as_posix()
+                candidate = selected
         candidates.append(candidate)
     return candidates, unresolved
 
