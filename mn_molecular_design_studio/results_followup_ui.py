@@ -1,5 +1,8 @@
 """Review follow-up analyses for exact selections made in My Results."""
+import hashlib
+import json
 from pathlib import Path
+from uuid import uuid4
 
 import streamlit as st
 
@@ -96,10 +99,48 @@ def render_followup(user, *, workflow_schema, project_selector, submit):
         st.rerun()
     if not source:
         st.info("Choose a result to analyze from My Results.")
-    elif source["kind"] == "dock":
-        _render_docking(source["job"], source["selection"], user, workflow_schema, submit)
+        return
+
+    def submit_followup(schema, workflow, parameters, project, settings, label):
+        identity = json.dumps([user["id"], project, workflow, parameters, settings], sort_keys=True, default=str)
+        attempt = hashlib.sha256(identity.encode()).hexdigest()
+        attempts = st.session_state.setdefault("results-followup-attempts", {})
+        record = attempts.setdefault(attempt, {"idempotency_key": uuid4().hex})
+        if record.get("reference"):
+            source["receipt"] = {**record, "attempt": attempt}
+            st.info("This analysis was already submitted with these settings.")
+            return
+        execution = settings.get("_execution") or {"placement": "local"}
+        settings = {**settings, "_execution": {**execution, "idempotency_key": record["idempotency_key"]}}
+        try:
+            result = submit(schema, workflow, parameters, project, settings, label)
+        except (OSError, ValueError, RuntimeError):
+            st.caption("If the submission reply timed out, check My Results for the job. Retrying here uses the same request key.")
+            raise
+        job = (result or {}).get("job") or {}
+        if job.get("cluster_job_id"):
+            reference = "cluster:" + str(job["cluster_job_id"])
+        elif job.get("task_group") and job.get("run_id"):
+            reference = f"{job['task_group']}/{job['run_id']}"
+        else:
+            return
+        record.update(reference=reference, label=label, job_code=str(job.get("job_code") or job.get("run_id") or ""))
+        source["receipt"] = {**record, "attempt": attempt}
+
+    if source["kind"] == "dock":
+        _render_docking(source["job"], source["selection"], user, workflow_schema, submit_followup)
     else:
         from mn_molecular_design_studio.md_analysis_ui import render_md_analysis_setup
         st.title("Analyze trajectory")
         render_md_analysis_setup(workflow_schema("ligand.md.analysis"), user=user,
-            project_selector=project_selector, submit=submit, source=source)
+            project_selector=project_selector, submit=submit_followup, source=source)
+    if receipt := source.get("receipt"):
+        if st.button("Open analysis Results", key="followup-open-analysis-job",
+                     help=f"{receipt['label']} · {receipt['job_code']}"):
+            st.session_state["selected-job-reference"] = receipt["reference"]
+            st.session_state["page"] = "Job details"
+            st.rerun()
+        if st.button("Prepare another run", key="followup-repeat-analysis"):
+            st.session_state["results-followup-attempts"].pop(receipt["attempt"], None)
+            source.pop("receipt")
+            st.rerun()

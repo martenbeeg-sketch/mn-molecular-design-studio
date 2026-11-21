@@ -2913,7 +2913,7 @@ def render_job(reference, user, token, submit):
                                         key=f"cluster-candidate-download-{command_id}",
                                     )
                                     if st.button(
-                                        "Open selected structure in Scientific Inspector",
+                                        "Analyze selected structure",
                                         key=f"cluster-candidate-inspector-{jid}-{selected}-{structure_field}",
                                     ):
                                         from mn_molecular_design_studio.complex_analysis_ui import open_remote_result_complex

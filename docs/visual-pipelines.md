@@ -140,9 +140,14 @@ response exceeds its size limit.
 - Choose a completed **Production result** and open **Analyze trajectory**.
   The MD Analysis form opens on that segment and shows the matching
   trajectory and topology. Remote inputs stay on their owning workstation.
+- Open **Analyze selected structure** next to a prediction or cofolding
+  model, or select a binder in **Binder design outcomes**. The binder
+  model picker prefers a verified saved refold. The inspector checks
+  compatible analyses and reports when the selected model lacks PAE.
 
-The review page opens before submission. Use the queue or run button to start
-the analysis.
+The review page opens before submission. After queueing a pose or MD analysis,
+use **Open analysis Results**. A retry from the same review session uses the
+original request key.
 
 ## Verification
 

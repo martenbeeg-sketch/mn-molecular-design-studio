@@ -29,7 +29,7 @@ def test_results_and_mcp_only_link_registered_exact_models(api_data):
     from mcp import Client
     from mn_molecular_design_studio.api_client import StudioClient
     from mn_molecular_design_studio.binder_result_evidence import binder_outcomes
-    from mn_molecular_design_studio.binder_results_ui import _assessment_choices
+    from mn_molecular_design_studio.binder_results_ui import _assessment_choices, analysis_models
     from mn_molecular_design_studio.engine.workflow_engine.core import candidates, jobs
     from mn_molecular_design_studio.mcp_server import create_server
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
@@ -101,6 +101,7 @@ def test_results_and_mcp_only_link_registered_exact_models(api_data):
     assert [a["observation_id"] for a in observed["exact"]["binderscope"]] == [matching]
     assert [a["observation_id"] for a in observed["exact"]["binderscope_derived"]] == [derived]
     assert observed["exact"]["binderscope_derived"][0]["structure_id"] == refold
+    assert analysis_models(observed["exact"])[0]["structure_id"] == refold
     assert observed["exact"]["preferred_binderscope_observation_id"] == derived
     assert [(a["observation_id"], a["relation"]) for a in _assessment_choices(observed["exact"])] == [
         (derived, "Refolded model"), (matching, "Results model")]

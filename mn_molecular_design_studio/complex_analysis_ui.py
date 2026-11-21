@@ -40,7 +40,8 @@ def _structure_suffix(path: Path) -> str:
     return path.suffix.casefold()
 
 
-def open_database_complex(molecule_id: str, *, evaluation_id: str = "", structure_id: str = "") -> None:
+def open_database_complex(molecule_id: str, *, evaluation_id: str = "", structure_id: str = "",
+                          exact_model: bool = False) -> None:
     """Navigate by stable Database, evaluation, and structure identifiers."""
     st.session_state["complex-analysis-molecule-id"] = str(molecule_id)
     st.session_state[f"complex-analysis-evaluation-{molecule_id}"] = str(evaluation_id or "")
@@ -49,6 +50,8 @@ def open_database_complex(molecule_id: str, *, evaluation_id: str = "", structur
         "kind": "database", "molecule_id": str(molecule_id),
         "evaluation_id": str(evaluation_id or ""), "structure_id": str(structure_id or ""),
     }
+    if exact_model:
+        st.session_state["complex-analysis-open"]["exact_model"] = True
     st.session_state["complex-analysis-source-kind"] = "Database"
     st.session_state["complex-analysis-workspace-view"] = "inspector"
     st.session_state["page"] = "Complex Analysis"
@@ -4062,6 +4065,9 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
         return
     representation_ids = [str(item["id"]) for item in representations]
     requested_structure = str(opened.get("structure_id") or st.session_state.get(f"complex-analysis-structure-id-{molecule_id}") or "")
+    if opened.get("exact_model") and molecule_id == opened.get("molecule_id") and requested_structure not in representation_ids:
+        st.warning("The selected Results model is unavailable in this view. Clear the Evaluation filter or reopen the saved result.")
+        return
     if requested_structure not in representation_ids:
         requested_structure = representation_ids[0]
     structure_widget_key = f"complex-analysis-structure-id-{molecule_id}"

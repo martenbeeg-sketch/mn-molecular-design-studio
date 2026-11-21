@@ -6814,7 +6814,7 @@ def _render_cofolding_prediction_results(
 
         structure_path = structure_path_for(candidate)
         if structure_path is not None and st.button(
-            "Open in Complex Analysis",
+            "Analyze selected structure",
             icon=":material/biotech:",
             key=f"cofolding-open-complex-analysis-{run_id}-{candidate.get('candidate_id') or selected_index}-{structure_path.name}",
         ):
@@ -8132,7 +8132,7 @@ def _render_job_details() -> None:
                 with st.expander("Structure and source provenance"):
                     st.json({key: value for key, value in linked_result.items() if key not in {"path", "candidate"}})
             if preview_kind == "structure" and st.button(
-                "Open in Complex Analysis",
+                "Analyze selected structure",
                 icon=":material/biotech:",
                 key=f"job-open-complex-analysis-{run_id}-{structure_index}",
             ):

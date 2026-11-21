@@ -32,6 +32,12 @@ def _assessment_choices(row):
     return choices
 
 
+def analysis_models(row):
+    database = row["database"]
+    choices = {model["structure_id"]: model for model in database["structures"] + database["derived_structures"]}
+    return sorted(choices.values(), key=lambda model: model["representation_role"] != "refolded_validation")
+
+
 def render_binder_outcomes(job, candidates, user, *, inputs=None, digests=None, database=None, key="binder"):
     if not binder_results(job, candidates, inputs):
         return False
@@ -70,6 +76,17 @@ def render_binder_outcomes(job, candidates, user, *, inputs=None, digests=None, 
         reasons += [str(reason) for reason in row["final_acceptance"]["reasons"]]
         if explanation := " · ".join(text for text in reasons if text):
             st.caption(explanation)
+        models = analysis_models(row)
+        if models:
+            model = models[0] if len(models) == 1 else st.selectbox(
+                "Structure for analysis", models, format_func=lambda item: item["label"],
+                key=key + "-analyze-model-" + str(row["candidate_id"]),
+            )
+            if len(models) == 1:
+                st.caption(f"Structure for analysis · {model['label']}")
+            if st.button("Analyze selected structure", key=key + "-analyze-" + str(row["candidate_id"])):
+                from mn_molecular_design_studio.complex_analysis_ui import open_database_complex
+                open_database_complex(model["molecule_id"], structure_id=model["structure_id"], exact_model=True)
         assessments = assessments_by_row[indexes[0]]
         if not assessments:
             return True

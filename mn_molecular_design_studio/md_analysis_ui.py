@@ -837,7 +837,8 @@ def render_md_analysis_setup(
         "Current file segment duration (ns)": duration if duration is not None else "unknown",
         "Trajectory appended in source": segment.get("trajectory_appended") if segment.get("trajectory_appended") is not None else "not recorded",
     }
-    st.dataframe([{"Lineage field": key, "Recorded value": value} for key, value in lineage.items()], hide_index=True, use_container_width=True)
+    st.dataframe([{"Lineage field": key, "Recorded value": str(value)} for key, value in lineage.items()],
+                 hide_index=True, width="stretch")
     if not selected.get("lineage_known"):
         st.info("This native MD job has no study manifest. The selected output is kept as one segment; unrecorded duration and continuation history remain unknown.")
     st.caption(f"Trajectory: {relative_trajectory}")
