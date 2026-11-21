@@ -6,7 +6,8 @@ import streamlit.components.v1 as components
 
 from mn_molecular_design_studio.cluster.ui import _job_details_reference, _navigate_to_job_details
 from mn_molecular_design_studio.pipeline_blocks import (
-    SCREEN, blank_program, connect_blocks, drop_block, next_blocks, placements, program,
+    SCREEN, blank_program, canvas_cards, canvas_program, connect_blocks, drop_block,
+    move_canvas_block, next_blocks, place_canvas_block, placements, port_label, program,
 )
 from mn_molecular_design_studio.pipeline_graph import (
     NODE_CATALOG, PipelineInputError, list_definitions, migrate_template_graph, new_graph, validate_graph,
@@ -48,7 +49,7 @@ def _start_or_open(prefix, owner_id, project_id, graph):
                       args=(prefix, selected["graph"], selected["revision"]))
 
 
-def _read_program(prefix, graph, display):
+def _read_program(prefix, graph, display, view):
     node_ids = display["blocks"]
     selection_key = prefix + "-block"
     selected = st.session_state.get(selection_key)
@@ -56,15 +57,23 @@ def _read_program(prefix, graph, display):
         selected = next(iter(node_ids), "")
         if "screen" in display:
             selected = display["screen"]["setup"][0]
-    sockets, cards = _placement_options(graph, selected)
+    if view == "Canvas":
+        sockets, cards = {}, canvas_cards(graph)
+        display["canvas"] = canvas_program(graph)
+    else:
+        sockets, cards = _placement_options(graph, selected)
     event = _COMPONENT(program=display, selected=selected, sockets=sockets, cards=cards,
-                       key=prefix + "-program-" + graph["id"], default=None)
+                       key=f"{prefix}-program-{graph['id']}-{view}", default=None)
     event_key = prefix + "-block-event"
     if event and event.get("token") != st.session_state.get(event_key):
         st.session_state[event_key] = event.get("token")
-        if event.get("action") == "drop":
+        action = event.get("action")
+        if action == "select" and isinstance(event.get("id"), str) and event["id"] in node_ids and event["id"] != selected:
+            st.session_state[selection_key] = event["id"]
+            st.rerun()
+        if action in ({"place", "move", "wire"} if view == "Canvas" else {"drop"}):
             try:
-                updated, target = drop_block(graph, sockets, cards, event.get("socket"), event.get("card"))
+                updated, target = _edit_program(graph, selected, sockets, cards, event)
             except ValueError as exc:
                 st.error(str(exc))
             else:
@@ -74,11 +83,23 @@ def _read_program(prefix, graph, display):
                     st.session_state[prefix + "-graph"] = updated
                 st.session_state[selection_key] = target
                 st.rerun()
-        elif event.get("id") in node_ids and event["id"] != selected:
-            st.session_state[selection_key] = event["id"]
-            st.rerun()
     st.session_state[selection_key] = selected
     return selected
+
+
+def _edit_program(graph, selected, sockets, cards, event):
+    action = event["action"]
+    if action == "drop":
+        return drop_block(graph, sockets, cards, event.get("socket"), event.get("card"))
+    if action == "place":
+        return place_canvas_block(graph, event.get("card"), event.get("position"),
+                                  source=event.get("source"), output=event.get("output"))
+    if action == "move":
+        return move_canvas_block(graph, event.get("id"), event.get("position")), selected
+    ports = [event.get(name) for name in ("source", "output", "target", "input")]
+    if not all(isinstance(item, str) for item in ports):
+        raise ValueError("Select a valid output and input to connect.")
+    return connect_blocks(graph, *ports), selected
 
 
 def _link_existing(prefix, graph, node):
@@ -118,9 +139,9 @@ def _inspect_block(prefix, graph, selected):
     st.caption("Compare the cumulative ranking with the previous round." if data["kind"] == "active_decision"
                else data.get("description") or spec["description"])
     if spec["inputs"] and not screen:
-        st.write("Receives · " + ", ".join(port["label"] for port in spec["inputs"]))
+        st.write("Receives · " + ", ".join(port_label(port) for port in spec["inputs"]))
     if spec["outputs"] and not screen:
-        st.write("Produces · " + ", ".join(port["label"] for port in spec["outputs"]))
+        st.write("Produces · " + ", ".join(port_label(port) for port in spec["outputs"]))
     st.button("Configure block", key=prefix + "-configure", on_click=_open_node_editor, args=(prefix, selected))
 
     if screen:
@@ -219,15 +240,22 @@ def render_pipeline_blocks(*, owner_id, project_selector, submit_api, search_job
             selected = st.selectbox("Block to inspect", list(labels), format_func=labels.get, key=prefix + "-repair")
             _inspect_block(prefix, graph, selected)
     else:
-        workflow, inspector = st.columns([2.7, 1], gap="large")
-        with workflow:
-            selected = _read_program(prefix, graph, display)
-        if graph["nodes"]:
+        views, settings = st.columns([1, 1], vertical_alignment="center")
+        view = views.segmented_control("Pipeline view", ["Canvas", "Outline"], default="Canvas",
+                                       selection_mode="single", label_visibility="collapsed", key=prefix + "-view") or "Canvas"
+        show_settings = graph["nodes"] and settings.toggle("Block settings", value=view == "Outline",
+                                                           key=f"{prefix}-settings-{view}")
+        if show_settings:
+            workflow, inspector = st.columns([2.7, 1], gap="large")
+            with workflow:
+                selected = _read_program(prefix, graph, display, view)
             with inspector:
                 try:
                     _inspect_block(prefix, graph, selected)
                 except ValueError as exc:
                     st.error(str(exc))
+        else:
+            _read_program(prefix, graph, display, view)
     _show_pipeline_save_as(prefix, project_id, submit_api)
     _show_node_editor(prefix, owner_id=owner_id, project_id=project_id,
                       submit_api=submit_api, search_jobs=search_jobs, stage_edits=True)

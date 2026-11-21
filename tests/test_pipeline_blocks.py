@@ -3,7 +3,8 @@ import copy
 import pytest
 
 from mn_molecular_design_studio.pipeline_blocks import (
-    SCREEN, add_block, blank_program, connect_blocks, drop_block, next_blocks, placements, program,
+    SCREEN, add_block, blank_program, canvas_program, connect_blocks, drop_block, move_canvas_block,
+    next_blocks, place_canvas_block, placements, program,
 )
 from mn_molecular_design_studio.pipeline_graph import new_graph, validate_graph
 
@@ -113,7 +114,7 @@ def test_pipeline_builder_receives_a_palette_drop_without_submitting(monkeypatch
 
     monkeypatch.setattr(pipeline_graph, "app_home", lambda: tmp_path)
     monkeypatch.setattr(pipeline_blocks_ui, "_COMPONENT", lambda **props: {
-        "action": "drop", "card": "cofold_input/", "socket": "start", "token": "single-drop",
+        "action": "place", "card": "cofold_input", "position": {"x": 20, "y": 50}, "token": "single-drop",
     })
     app = AppTest.from_string("""
 from mn_molecular_design_studio.pipeline_blocks_ui import render_pipeline_blocks
@@ -124,6 +125,36 @@ render_pipeline_blocks(owner_id="test", project_selector=lambda _: "project",
     assert not app.exception
     nodes = app.session_state["pipeline-blocks-project-graph"]["nodes"]
     assert [item["data"]["kind"] for item in nodes] == ["cofold_input"]
+    assert nodes[0]["position"] == {"x": 20, "y": 50}
+
+
+def test_canvas_snap_and_move_preserve_typed_edges_and_saved_canvas_positions():
+    from mn_molecular_design_studio.pipeline_graph import clean_graph
+
+    graph, source = place_canvas_block(blank_program(), "cofold_input", {"x": 20, "y": 50})
+    graph, predictor = place_canvas_block(graph, "boltz2", {"x": 260, "y": 50}, source=source, output="out")
+    graph, results = place_canvas_block(graph, "results", {"x": 200, "y": 260})
+    with pytest.raises(ValueError, match="specific input"):
+        place_canvas_block(graph, "cofold_input", {"x": 40, "y": 50}, source=predictor, output="out")
+    updated = connect_blocks(graph, predictor, "out", results, "in")
+    position = {"x": 530, "y": 46}
+    moved = clean_graph(move_canvas_block(updated, results, position))
+    view = canvas_program(moved)
+    assert view["nodes"][results]["position"] == position
+    assert view["edges"] == updated["edges"]
+    assert [(edge["source"], edge["target"]) for edge in view["edges"]] == [(source, predictor), (predictor, results)]
+    assert ("results", "in") in view["compatible"]["boltz2"]["out"]
+    with pytest.raises(ValueError, match="valid position"):
+        move_canvas_block(updated, results, {"x": True, "y": 0})
+
+
+def test_canvas_displays_the_native_screen_feedback_edge():
+    graph, _ = place_canvas_block(blank_program(), SCREEN, {"x": 20, "y": 50})
+    view = canvas_program(graph)
+    assert view["managed"] and not view["compatible"]
+    loop, = [edge for edge in view["edges"] if edge.get("loop_back")]
+    assert view["nodes"][loop["source"]]["kind"] == "active_select"
+    assert view["nodes"][loop["target"]]["kind"] == "active_docking"
 
 
 def test_pipeline_builder_submits_the_existing_graph_and_opens_its_results(monkeypatch, tmp_path):

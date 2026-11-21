@@ -1,0 +1,71 @@
+.canvas-workspace {
+  --wire: #578c78;
+  --active-wire: #24734c;
+}
+.workspace.canvas-workspace { grid-template-columns: clamp(155px, 26%, 230px) minmax(0, 1fr) }
+.flow { min-width: 0 }
+.flow-head {
+  min-height: 28px; display: flex; justify-content: space-between; align-items: start; gap: 8px;
+}
+.flow-head .hint { text-align: right }
+.flow-viewport {
+  position: relative; height: 485px; overflow: auto; isolation: isolate;
+  background-color: var(--surface, #f4f8f4);
+  background-image: radial-gradient(var(--border, #c9d9cf) 1px, transparent 1px);
+  background-size: 16px 16px;
+  border: 1px solid var(--border, #d7e4dd); border-radius: 10px;
+}
+.flow-plane { position: relative; min-width: 100%; min-height: 100% }
+.flow-wires { position: sticky; top: 0; left: 0; display: block; pointer-events: none }
+.flow-node {
+  --accent: #3e866d;
+  position: absolute; width: 212px; max-width: calc(100vw - 24px); border-radius: 10px;
+  background: var(--block, #fbfdfb);
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border, #d7e4dd));
+  box-shadow: 0 2px 4px #10251c14, inset 0 4px var(--accent);
+}
+.flow-node:focus-within, .flow-node.selected { z-index: 1 }
+.flow-node.selected { outline: 2px solid var(--accent); outline-offset: 1px }
+.flow-step {
+  width: 100%; padding: 7px 9px; border: 0; background: transparent; color: inherit;
+  font: inherit; text-align: left; cursor: grab; touch-action: none; user-select: none;
+}
+.flow-step:active { cursor: grabbing }
+.flow-step:focus-visible, .flow-port:focus-visible { outline: 2px solid var(--active-wire); outline-offset: -1px }
+.managed .flow-step { cursor: pointer }
+.flow-step .verb { display: block; text-transform: uppercase; letter-spacing: .06em }
+.flow-step .name { font-size: 13px }
+.flow-node .hint { margin-inline: 0 }
+.flow-ports {
+  display: flex; flex-wrap: wrap; gap: 4px; padding: 5px; min-height: 3px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--block, #fbfdfb));
+}
+.flow-ports.inputs { padding-top: 7px; border-radius: 10px 10px 0 0; border-bottom: 1px solid var(--border, #d7e4dd) }
+.flow-ports.outputs { border-radius: 0 0 10px 10px; border-top: 1px solid var(--border, #d7e4dd) }
+.flow-port {
+  display: inline-flex; align-items: center; gap: 4px; padding: 4px 5px; border-radius: 4px;
+  color: inherit; font: 600 10px/1.2 system-ui, sans-serif; text-align: left;
+  border: 1px solid var(--border, #d7e4dd); background: var(--block, #fbfdfb);
+}
+button.flow-port { touch-action: none; cursor: crosshair }
+.flow-port::before { content: ""; width: 6px; height: 6px; border: 1px solid; border-radius: 50% }
+.flow-port[data-direction="out"]::before { background: var(--accent); border-color: var(--accent) }
+.flow-port[data-direction="in"].wired::before { background: var(--wire); border-color: var(--wire) }
+.flow-port.available, .flow-port[aria-pressed="true"] {
+  color: var(--text, #253b34); background: var(--hover, #e4f4e9); border-color: var(--active-wire);
+}
+.flow-port.over { outline: 2px solid var(--active-wire); outline-offset: 1px }
+.flow-port.mismatch { opacity: .48 }
+.flow-place {
+  align-self: start; white-space: nowrap; padding: 3px 7px; color: inherit; font: inherit; font-size: 11px;
+  background: var(--hover, #e4f4e9); border: 1px solid var(--active-wire); border-radius: 5px; cursor: pointer;
+}
+.flow-empty {
+  pointer-events: none; margin: 0; position: absolute; left: 30px; top: 32px;
+  color: var(--muted, #51665b); font-size: 13px;
+}
+.canvas-workspace .palette-items { max-height: 390px }
+@media (max-width: 480px) {
+  .workspace.canvas-workspace { grid-template-columns: 1fr }
+  .canvas-workspace .palette-items { max-height: 165px }
+}

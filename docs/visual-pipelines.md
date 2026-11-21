@@ -1,13 +1,17 @@
 # Visual pipelines
 
-**Pipeline Builder** opens a block view of the same project drafts. Drag a
-block from the palette into a highlighted socket, or pick a block and click
-the socket. Insert a step in an existing connection or start a new branch.
-Select a block to configure it or see what fits next. A filter exposes separate
-Pass, Fail and Unresolved branches. For the large-library screen, the block view
-shows the controller's repeat loop, stop conditions, and final Results branch.
-Edit that loop through its existing step settings. Both editors use the same
-graph, validation and scheduler.
+**Pipeline Builder** opens a canvas for the same project drafts. Drag a block
+from the palette onto the workspace, or drop it directly on a compatible output
+to connect it. Drag an output to an input on an existing block. You can also
+click the two ports in order. Open **Block settings** to configure the selected
+step. Moving a block preserves its connections, and saving a draft keeps the
+layout. A filter has separate Pass, Fail and Unresolved outputs.
+
+Switch to **Outline** for a reading order and sockets that insert steps into
+existing connections. The large-library screen shows its native return wire on
+the canvas and the repeat settings, stop conditions, and final Results branch in
+the outline. Edit that loop through its existing step settings. Both views use
+the same graph, validation and scheduler.
 
 Open **Pipelines** and select a project. In the **Pipeline browser**, expand **Starter pipelines** and choose
 binder design, peptide/IDR design, structure prediction and cofolding, docking

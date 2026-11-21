@@ -91,6 +91,8 @@ include = ["mn_molecular_design_studio*"]
   "components/pipeline_editor/build/assets/*.js",
   "components/pipeline_editor/build/assets/*.css",
   "components/pipeline_blocks/*.html",
+  "components/pipeline_blocks/*.css",
+  "components/pipeline_blocks/*.js",
   "components/molecule_sketcher/**/*",
   "components/molecule_sketcher/*",
   "components/molecule_table/*",

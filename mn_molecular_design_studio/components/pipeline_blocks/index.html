@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<link rel="stylesheet" href="canvas.css">
 <style>
   * { box-sizing: border-box }
   body { margin: 0; font: 14px system-ui, sans-serif; color: var(--text, #253b34) }
@@ -77,6 +78,7 @@
 </head>
 <body>
 <main aria-label="Pipeline program"></main>
+<script src="canvas.js"></script>
 <script>
   const root = document.querySelector("main");
   let args = {}, selected = "", picked = "", dragging = "", sequence = 0, submitting = false;
@@ -111,8 +113,9 @@
     }
     const status = root.querySelector(".placement-status");
     if (status) status.textContent = submitting ? "Placing block…" : held
-      ? "Place " + (args.cards[held]?.label || "the block") + " in a highlighted socket."
-      : "Drag a block, or pick it and click a socket.";
+      ? "Place " + args.cards[held].label + (flow ? " on the canvas or a highlighted output." : " in a highlighted socket.")
+      : flow ? "Drag blocks onto the canvas." : "Drag a block, or pick it and click a socket.";
+    refreshFlow();
   }
   function place(socket, card) {
     if (!fits(card, socket)) return;
@@ -152,6 +155,7 @@
         return;
       }
       picked = picked === id ? "" : id;
+      pendingOutput = null;
       updateSockets();
     };
     button.onpointerdown = event => {
@@ -166,6 +170,7 @@
         if (Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) < 7) return;
         moved = true;
         dragging = id;
+        pendingOutput = null;
         ghost = element("div", "piece drag-ghost " + value.role);
         ghost.setAttribute("aria-hidden", "true");
         ghost.append(element("span", "verb", value.action), element("span", "name", value.label));
@@ -174,13 +179,16 @@
       }
       ghost.style.transform = "translate(" + (event.clientX + 12) + "px," + (event.clientY + 9) + "px)";
       const target = hoveredSocket(event);
+      highlightPaletteDrop(event);
       for (const socket of root.querySelectorAll(".socket")) socket.classList.toggle("over", socket === target);
     };
     button.onpointerup = event => {
       if (pressed?.id !== event.pointerId) return;
       const socket = hoveredSocket(event)?.dataset.socket;
+      const position = dragging && flowPlacement(event, id);
       stopDrag();
       if (socket) place(socket, id);
+      if (position) commitFlow(position);
     };
     button.onlostpointercapture = event => {
       if (pressed?.id === event.pointerId) stopDrag();
@@ -199,7 +207,7 @@
     all.value = "";
     filter.append(all);
     const cards = Object.entries(args.cards).sort(([, a], [, b]) =>
-      Number(b.targets.length > 1 || b.targets[0] !== "start") - Number(a.targets.length > 1 || a.targets[0] !== "start")
+      Number(b.targets.some(target => target !== "start")) - Number(a.targets.some(target => target !== "start"))
       || a.label.localeCompare(b.label));
     for (const verb of [...new Set(cards.map(([, value]) => value.action))].sort()) {
       const option = element("option", "", verb);
@@ -240,13 +248,18 @@
     if (value.sources.length) states.push("From " + value.sources.join(", "));
     if (states.length) detail.append(element("span", "origin", states.join(" · ")));
     button.append(element("span", "verb", value.action), detail);
-    button.onclick = () => {
-      selected = id;
-      picked = dragging = action = search = "";
-      draw();
-      report({action: "select", id});
-    };
+    button.onclick = () => selectBlock(id);
     return button;
+  }
+  function selectBlock(id) {
+    if (id === selected || submitting) return;
+    selected = id;
+    pendingOutput = null;
+    picked = dragging = "";
+    if (!flow) action = search = "";
+    if (flow) refreshFlow();
+    else draw();
+    report({action: "select", id});
   }
   function group(title, ids, stacked = false) {
     const section = element("section", "group");
@@ -271,9 +284,19 @@
   }
   function draw() {
     const focused = document.activeElement?.dataset.id;
+    const scroll = flow ? [flow.viewport.scrollLeft, flow.viewport.scrollTop] : [0, 0];
+    flow = null;
     root.replaceChildren();
     const program = args.program;
-    if (program.screen) {
+    if (program.canvas) {
+      const workspace = element("div", program.canvas.managed ? "canvas-workspace" : "workspace canvas-workspace");
+      if (!program.canvas.managed) workspace.append(palette());
+      workspace.append(renderFlow(program));
+      root.append(workspace);
+      flow.viewport.scrollTo(...scroll);
+      updateSockets();
+      drawWires();
+    } else if (program.screen) {
       const screen = program.screen;
       root.append(group("Start with", screen.setup));
       const loop = group("Repeat docking rounds", screen.rounds, true);
@@ -301,18 +324,22 @@
       root.append(workspace);
       updateSockets();
     }
-    if (focused) [...root.querySelectorAll(".block")].find(button => button.dataset.id === focused)?.focus();
+    if (focused) [...root.querySelectorAll(".block, .flow-step")].find(button => button.dataset.id === focused)?.focus({preventScroll: true});
     resize();
   }
   window.addEventListener("message", event => {
     if (event.data.type !== "streamlit:render") return;
     stopDrag();
-    if (selected !== event.data.args.selected) picked = action = search = "";
+    if (selected !== event.data.args.selected) {
+      picked = "";
+      if (!event.data.args.program.canvas) action = search = "";
+    }
     args = event.data.args;
     selected = args.selected;
     picked = args.cards[picked] ? picked : "";
     dragging = args.cards[dragging] ? dragging : "";
     submitting = false;
+    pendingOutput = null;
     if (event.data.theme?.base === "dark") {
       for (const [key, value] of Object.entries({
         text: "#e1ece6", muted: "#b0c6b9", border: "#435950",

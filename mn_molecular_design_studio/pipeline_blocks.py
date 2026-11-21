@@ -1,5 +1,6 @@
 """Readable blocks backed by the existing Studio graph and port contracts."""
 from functools import lru_cache
+import math
 import uuid
 
 from mn_molecular_design_studio.pipeline_graph import (
@@ -94,6 +95,83 @@ def program(graph):
             stop_conditions=conditions, retention=accumulation["retained_pose_count"],
         )
     return result
+
+
+def port_label(port):
+    label = port["label"]
+    if label == "molecule_task":
+        return "Prediction task"
+    return label.replace("_", " ").capitalize() if "_" in label else label
+
+
+def canvas_program(graph):
+    """Expose editable layout, named sockets and actual wires without tool parameters."""
+    nodes = {}
+    compatibility = {}
+    managed = graph.get("template_id") == SCREEN
+    for node in graph["nodes"]:
+        kind = node["data"]["kind"]
+        spec = NODE_CATALOG[kind]
+        nodes[node["id"]] = {
+            "kind": kind, "position": node.get("position") or {"x": 0, "y": 0},
+            **{direction: [{"id": port["id"], "label": port_label(port), "multiple": bool(port.get("multiple"))}
+                           for port in spec[direction]] for direction in ("inputs", "outputs")},
+        }
+        if not managed and kind not in compatibility:
+            compatibility[kind] = {port["id"]: _compatible_ports(kind, port["id"])
+                                   for port in spec["outputs"]}
+    return {"nodes": nodes, "edges": graph["edges"], "compatible": compatibility, "managed": managed}
+
+
+def canvas_cards(graph):
+    if graph.get("template_id") == SCREEN:
+        return {}
+    cards = {}
+    for kind, spec in NODE_CATALOG.items():
+        if spec["category"] == "Active learning" or kind == "active_results":
+            continue
+        action, role = block_action(kind)
+        cards[kind] = {"label": spec["label"], "action": action, "role": role, "targets": []}
+    if not graph["nodes"]:
+        cards[SCREEN] = {"label": "Large-library screen", "action": "Repeat", "role": "control", "targets": []}
+    return cards
+
+
+def _position(value):
+    if not isinstance(value, dict) or any(type(value.get(axis)) not in (int, float)
+            or not -1e7 < value[axis] < 1e7 or not math.isfinite(value[axis]) for axis in ("x", "y")):
+        raise ValueError("Choose a valid position on the canvas.")
+    return {axis: value[axis] for axis in ("x", "y")}
+
+
+def move_canvas_block(graph, node_id, position):
+    position = _position(position)
+    if graph.get("template_id") == SCREEN:
+        raise ValueError("The screening controller manages this layout.")
+    if not any(node["id"] == node_id for node in graph["nodes"]):
+        raise ValueError("This block is no longer on the canvas.")
+    return {**graph, "nodes": [dict(node, position=position) if node["id"] == node_id else node
+                               for node in graph["nodes"]]}
+
+
+def place_canvas_block(graph, kind, position, *, source=None, output=None):
+    if not isinstance(kind, str) or kind not in canvas_cards(graph):
+        raise ValueError("This block is no longer available in the palette.")
+    if kind == SCREEN:
+        screen = new_graph(SCREEN)
+        return screen, screen["nodes"][0]["id"]
+    position = _position(position)
+    target_port = "in"
+    if source is not None:
+        parent = next((item for item in graph["nodes"] if item["id"] == source), None)
+        if not parent or not isinstance(output, str):
+            raise ValueError("This output is no longer on the canvas.")
+        choices = [port for target, port in _compatible_ports(parent["data"]["kind"], output) if target == kind]
+        if len(choices) != 1:
+            raise ValueError("Place this block on the canvas and connect to a specific input.")
+        target_port = choices[0]
+    updated, node_id = add_block(graph, kind, source=source, output=output, target_port=target_port)
+    return move_canvas_block(updated, node_id, position), node_id
 
 
 def _new_block(graph, kind, source):
