@@ -10,6 +10,7 @@ import gzip
 import json
 import math
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,22 @@ import numpy as np
 
 from mn_molecular_design_studio.engine.workflow_engine.core import portable_paths
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+
+
+def is_prediction_run(*records: dict) -> bool:
+    """Classify standalone prediction jobs, including runs saved before workflow IDs."""
+    workflows = {str(row.get("workflow") or "").casefold() for row in records}
+    tools = {str(row.get("tool") or "").casefold() for row in records}
+    if any(value.startswith("refolding.") for value in workflows | tools):
+        return True
+    if any(value.startswith(("design.", "pipeline.", "analysis.")) for value in workflows | tools):
+        return False
+    if any(tool.startswith("optimized_prediction_") for tool in tools):
+        return True
+    if tools & {"optimized_prediction", "af3_jax_cofolding", "esmfold2_cofolding"}:
+        return True
+    job_types = {str(row.get("job_type") or "").casefold() for row in records}
+    return bool(job_types & {"complex_refolding", "monomer_refolding", "rfd4_structure_prediction"})
 
 
 def local_artifact(run_dir: Path, value: object) -> Path | None:
@@ -107,6 +124,33 @@ def candidate_files(run_dir: Path, candidate: dict) -> tuple[Path | None, list[P
     return structure, [path for path in files if local_artifact(run_dir, path)]
 
 
+def _external_refold(candidate: dict) -> bool:
+    raw = candidate.get('raw_metadata') or {}
+    return bool(raw.get('original_prediction') and isinstance(raw.get('source_candidate'), dict)
+                and (candidate.get('metrics') or {}).get('complex_refolding_backend'))
+
+
+def prediction_files(run_dir: Path, candidate: dict) -> tuple[Path | None, list[Path]]:
+    """Resolve confidence for the original output behind a role-normalized structure."""
+    if not _external_refold(candidate):
+        return candidate_files(run_dir, candidate)
+    structure = structure_for(run_dir, candidate)
+    raw = candidate['raw_metadata']
+    root = run_dir.resolve()
+    native = local_artifact(root, raw.get('original_prediction'))
+    normalized = local_artifact(root, raw.get('role_normalized_prediction'))
+    if structure is None or native is None or not native.is_relative_to(root) or structure not in (native, normalized):
+        return structure, []
+    files = [path for path in confidence_files(native) if path.resolve().is_relative_to(root)]
+    source = local_artifact(root, raw.get('pae_source_path'))
+    converted = local_artifact(root, raw.get('pae_path'))
+    if source in files and source.suffix != '.npz' and converted is not None and converted.is_relative_to(root):
+        # The stored export uses the same native array only when its source
+        # is an exact sidecar of this prediction.
+        files.append(converted)
+    return structure, list(dict.fromkeys(files))
+
+
 def read_payload(path: Path) -> dict[str, Any]:
     try:
         if path.suffix == '.npz':
@@ -169,7 +213,7 @@ def read_confidence(structure: Path, files: tuple[Path, ...]) -> dict:
             if key in payload:
                 value = payload[key]
                 details[key] = value.tolist() if isinstance(value, np.ndarray) else value
-        for key in ('atom_plddts', 'atom_plddt', 'plddt', 'predicted_lddt'):
+        for key in ('atom_plddts', 'atom_plddt', 'plddt', 'token_plddt', 'predicted_lddt'):
             value = payload.get(key)
             if value is None:
                 continue
@@ -198,11 +242,23 @@ def read_confidence(structure: Path, files: tuple[Path, ...]) -> dict:
     # Preserve the established Boltz viewer/plot convention: its structure
     # carries per-atom confidence, while its separate pLDDT NPZ is per token.
     use_structure_plddt = any(path.name == f'confidence_{structure.stem}.json' for path in files)
-    if plddt.size == 0 or use_structure_plddt:
-        from Bio.PDB import MMCIFParser, PDBParser
-        parser = PDBParser(QUIET=True) if structure.suffix.lower() in {'.pdb', '.ent'} else MMCIFParser(QUIET=True)
-        model = parser.get_structure('prediction', str(structure))
-        plddt = np.array([float(atom.bfactor) for atom in model.get_atoms() if float(atom.bfactor) >= 0])
+
+    # Some archived mmCIF predictions omit the occupancy field. Gemmi reads
+    # B-factors from the atom table without requiring a parsed coordinate model.
+    import gemmi
+
+    if structure.suffix.lower() in {'.pdb', '.ent'}:
+        model = gemmi.read_pdb(str(structure))
+        factors = np.array([atom.b_iso for chain in model[0] for residue in chain for atom in residue]
+                           if len(model) else [])
+    else:
+        document = gemmi.cif.read_file(str(structure))
+        column = next((values for block in document if (values := block.find_values('_atom_site.B_iso_or_equiv'))), ())
+        factors = np.array([gemmi.cif.as_number(value) for value in column])
+    structure_plddt = bool(factors.size and np.all(np.isfinite(factors) & (factors >= 0) & (factors <= 100))
+                            and np.any(factors > 0))
+    if structure_plddt and (plddt.size == 0 or use_structure_plddt):
+        plddt = factors
         plddt_kind = 'Atom'
     if plddt.size and plddt.max() <= 1:
         plddt = plddt * 100
@@ -216,7 +272,8 @@ def read_confidence(structure: Path, files: tuple[Path, ...]) -> dict:
         preview = pae[np.ix_(indices, indices)]
     else:
         preview = pae
-    return {'plddt': plddt, 'plddt_kind': plddt_kind, 'pae': pae, 'pae_preview': preview, 'pae_sampled': sampled, 'metrics': summary, 'details': details}
+    return {'plddt': plddt, 'plddt_kind': plddt_kind, 'structure_plddt': structure_plddt,
+            'pae': pae, 'pae_preview': preview, 'pae_sampled': sampled, 'metrics': summary, 'details': details}
 
 
 def sample_payload(structure: Path, path: Path, payload: dict) -> dict:
@@ -330,9 +387,14 @@ def prediction_row(structure: Path) -> dict:
     return {}
 
 
-def enrich_candidate(run_dir: Path, candidate: dict) -> dict:
+def enrich_candidate(run_dir: Path, candidate: dict, *, include_interface_pae: bool = True) -> dict:
     """Read small score summaries for older runs without rewriting their outputs."""
     structure, files = candidate_files(run_dir, candidate)
+    return _enrich_candidate(candidate, structure, files, run_dir, include_interface_pae=include_interface_pae)
+
+
+def _enrich_candidate(candidate: dict, structure: Path | None, files: list[Path], run_dir: Path,
+                      *, include_interface_pae: bool) -> dict:
     raw = dict(candidate.get('raw_metadata') or {})
     metrics = dict(candidate.get('metrics') or {})
     scores = {**(prediction_row(structure) if structure else {}), **dict(raw.get('confidence_outputs') or {})}
@@ -353,7 +415,8 @@ def enrich_candidate(run_dir: Path, candidate: dict) -> dict:
     if native_rank:
         merged['native_rank'] = int(native_rank[1])
     raw['confidence_outputs'] = scores
-    if raw.get('confidence_available') is not False and structure is not None and candidate.get("binder_chains") and candidate.get("target_chains"):
+    if (include_interface_pae and raw.get('confidence_available') is not False and structure is not None
+            and candidate.get('binder_chains') and candidate.get('target_chains')):
         pae_result = _saved_interface_pae(Path(run_dir), candidate, structure, files)
         if pae_result:
             pae_metrics, pae_provenance = pae_result
@@ -363,6 +426,50 @@ def enrich_candidate(run_dir: Path, candidate: dict) -> dict:
     return {**candidate, 'metrics': merged, 'raw_metadata': raw}
 
 
+def presentation_candidate(run_dir: Path, candidate: dict, *, same_job_only: bool = False) -> dict:
+    """Prepare a read-only Results row with scores from the displayed model."""
+    structure, files = prediction_files(run_dir, candidate)
+    if same_job_only:
+        root = run_dir.resolve()
+        files = [path for path in files if path.resolve().is_relative_to(root)]
+        if structure is not None and not structure.is_relative_to(root):
+            structure = None
+            files = []
+    if not _external_refold(candidate):
+        return _enrich_candidate(candidate, structure, files, run_dir, include_interface_pae=False)
+
+    raw = dict(candidate['raw_metadata'])
+    source = raw['source_candidate']
+    inherited = source.get('metrics') or {}
+    prefix = str(candidate['metrics']['complex_refolding_backend']) + '_'
+    metrics = {name: value for name, value in candidate['metrics'].items()
+               if name not in inherited and not name.startswith(prefix)}
+    for field in ('confidence_outputs', 'confidence_available', 'seed', 'confidence_file',
+                  'confidence_arrays', 'confidence_json', 'native_prediction_structure',
+                  'api_engine', 'engine', 'prediction_pae_measurement', 'validation_acceptance',
+                  'validation_reference', 'aligned_structure_path'):
+        raw.pop(field, None)
+    if local_artifact(run_dir, raw.get('pae_path')) not in files:
+        raw.pop('pae_path', None)
+        source_path = local_artifact(run_dir, raw.get('pae_source_path'))
+        if source_path in files:
+            raw['pae_path'] = raw['pae_source_path']
+        else:
+            raw.pop('pae_source_path', None)
+    scores = {}
+    for path in files:
+        if 'summary_confidence' in path.name or 'confidences_aggregated' in path.name:
+            scores.update(summary_metrics(read_payload(path)))
+        elif path.suffix == '.npz' and path.stem == Path(str(raw['original_prediction'])).stem:
+            scores.update(summary_metrics(read_payload(path)))
+    return {**candidate, 'metrics': {**metrics, **scores}, 'raw_metadata': {**raw, 'confidence_outputs': scores}}
+
+
+def rank_metric(group: list[dict]) -> str:
+    return next((name for name in ('native_rank', 'ranking_score', 'confidence_score', 'iptm', 'ptm', 'plddt_mean')
+                 if any(number((item.get('metrics') or {}).get(name)) is not None for item in group)), '')
+
+
 def ranked_candidates(candidates: list[dict]) -> list[dict]:
     # Sort within each complex; unrelated complexes must not compete for "best".
     groups: dict[str, list[dict]] = {}
@@ -370,8 +477,7 @@ def ranked_candidates(candidates: list[dict]) -> list[dict]:
         groups.setdefault(complex_group_key(candidate), []).append(candidate)
     result = []
     for group in groups.values():
-        key = next((name for name in ('native_rank', 'ranking_score', 'confidence_score', 'iptm', 'ptm', 'plddt_mean')
-                    if any(number((item.get('metrics') or {}).get(name)) is not None for item in group)), '')
+        key = rank_metric(group)
         def rank(candidate: dict) -> tuple:
             value = number((candidate.get('metrics') or {}).get(key))
             return (1, 0) if value is None else (0, value if key == 'native_rank' else -value)
@@ -449,7 +555,10 @@ def compound_identity(candidate: dict, input_labels: dict[str, str] | None = Non
 
 def complex_group_key(candidate: dict) -> str:
     raw = candidate.get('raw_metadata') if isinstance(candidate.get('raw_metadata'), dict) else {}
-    complex_key = str(raw.get('batch_item_id') or raw.get('source_compound_id') or raw.get('input_name') or '__single_complex__')
+    reference = raw.get('validation_reference') if isinstance(raw.get('validation_reference'), dict) else {}
+    source = raw.get('source_candidate') if _external_refold(candidate) else {}
+    complex_key = str(source.get('candidate_id') or raw.get('batch_item_id') or reference.get('candidate_id') or raw.get('source_compound_id')
+                      or raw.get('compound_id') or raw.get('input_name') or '__single_complex__')
     source_run_id = str(raw.get('legacy_run_id') or '').strip()
     return f"{source_run_id}::{complex_key}" if source_run_id else complex_key
 
@@ -464,7 +573,8 @@ def best_candidates_by_complex(candidates: list[dict]) -> list[dict]:
 
 
 def model_index(candidate: dict, fallback: int) -> int:
-    stem = Path(str(candidate.get('complex_pdb') or '')).stem
+    raw = candidate.get('raw_metadata') or {}
+    stem = Path(str(raw.get('original_prediction') or candidate.get('complex_pdb') or raw.get('structure_file') or '')).stem
     boltzgen_sample = re.search(r'_sample(\d+)$', stem)
     if boltzgen_sample:
         return max(0, int(boltzgen_sample[1]) - 1)
@@ -472,7 +582,87 @@ def model_index(candidate: dict, fallback: int) -> int:
     if matches:
         return int(matches[-1])
     metrics = candidate.get('metrics') or {}
-    return max(0, int(metrics.get('prediction_sample') or metrics.get('prediction_index') or fallback + 1) - 1)
+    sample = number(metrics.get('prediction_sample'))
+    if sample is None:
+        sample = number(metrics.get('prediction_index'))
+    return max(0, int(sample) - 1) if sample is not None else fallback
+
+
+def model_labels(candidates: list[dict]) -> list[str]:
+    labels = []
+    for index, item in enumerate(candidates):
+        seed = model_seed(item)
+        label = f'Model {model_index(item, index)}'
+        if seed is not None and seed != '':
+            label += f' · seed {seed}'
+        labels.append(label)
+    counts = Counter(labels)
+    ranked = bool(rank_metric(candidates))
+    return [
+        label + (f' · entry {index + 1}' if counts[label] > 1 else '')
+        + (' (best)' if index == 0 and ranked else '')
+        for index, label in enumerate(labels)
+    ]
+
+
+def model_seed(candidate: dict) -> int | str | None:
+    if _external_refold(candidate):
+        match = re.search(r'(?:^|[/_])seed[-_](\d+)', str(candidate['raw_metadata']['original_prediction']))
+        return int(match[1]) if match else None
+    seed = (candidate.get('metrics') or {}).get('seed')
+    return seed if seed is not None else (candidate.get('raw_metadata') or {}).get('seed')
+
+
+def has_interchain_interface(candidate: dict) -> bool | None:
+    raw = candidate.get('raw_metadata') or {}
+    protein_chains = raw.get('protein_chains') or raw.get('chain_sequences') or []
+    count = len(protein_chains) if isinstance(protein_chains, (list, dict)) else 0
+    for key in ('dna_chains', 'rna_chains'):
+        values = raw.get(key) or []
+        count += len(values) if isinstance(values, (list, dict)) else 0
+    ligands = raw.get('ligand_ccd_codes') or raw.get('ligand_smiles') or []
+    count += len(ligands) if isinstance(ligands, (list, dict)) else bool(ligands)
+    if raw.get('has_target_structure'):
+        count += 1
+    return count > 1 if count else None
+
+
+def model_scores(candidate: dict) -> dict[str, float | None]:
+    raw = candidate.get('raw_metadata') or {}
+    if raw.get('confidence_available') is False:
+        return {}
+    scores = {**summary_metrics(raw.get('confidence_outputs') or {}),
+              **summary_metrics(candidate.get('metrics') or {})}
+    return {
+        'Mean pLDDT (%)': scores.get('plddt_mean'),
+        'Ranking score': scores.get('ranking_score'),
+        'pTM': scores.get('ptm'),
+        'ipTM': scores.get('iptm') if has_interchain_interface(candidate) is not False else None,
+    }
+
+
+def confidence_artifacts(run_dir: Path, candidates: list[dict]) -> dict[str, list[dict]]:
+    """Publish only same-job confidence files for the existing peer artifact action."""
+    root = run_dir.resolve()
+    result = {}
+    for item in candidates:
+        raw = item.get('raw_metadata') or {}
+        if raw.get('confidence_available') is False or not item.get('candidate_id'):
+            continue
+        structure, files = prediction_files(root, item)
+        if structure is None or not structure.is_relative_to(root):
+            continue
+        captured = []
+        for path in files:
+            # Sample-based formats use the native relative file layout.
+            path = path.resolve()
+            if path != structure and path.is_relative_to(root):
+                try:
+                    captured.append({"path": path.relative_to(root).as_posix(), "size_bytes": path.stat().st_size})
+                except OSError:
+                    continue
+        result[str(item['candidate_id'])] = captured
+    return result
 
 
 def alignment_files(run_dir: Path, candidate: dict) -> list[tuple[str, Path]]:

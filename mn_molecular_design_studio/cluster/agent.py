@@ -713,6 +713,15 @@ class Agent:
                 if binder_results(response["job"], candidates, response.get("input")):
                     actor = {"id": command["owner_id"], "role": "student"}
                     response["candidate_structure_digests"] = structure_digests(response["job"], candidates, actor)
+                from mn_molecular_design_studio import cofolding_results
+                if cofolding_results.is_prediction_run(response["job"], response["metadata"], response["input"], response["result"]):
+                    run_dir = Path(response["job"]["run_dir"])
+                    response["prediction_confidence_artifacts"] = cofolding_results.confidence_artifacts(run_dir, candidates)
+                    response["prediction_input_labels"] = cofolding_results.prediction_input_labels(run_dir)
+                    response["results"]["candidates"] = [
+                        cofolding_results.presentation_candidate(run_dir, item, same_job_only=True)
+                        for item in candidates
+                    ]
             elif command["kind"] == "md_source_options":
                 from mn_molecular_design_studio.auth import list_users
                 from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import resolve_job

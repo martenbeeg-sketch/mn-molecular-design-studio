@@ -300,7 +300,7 @@ def create_server(client=None):
 
     @server.tool(annotations=read)
     async def result_presentation(reference: str, ctx: Context, offset: int = 0, limit: int = 100) -> dict[str, Any]:
-        """Page local candidates and saved assessments. Follow next_offset since large responses use smaller pages."""
+        """Page local candidates, saved assessments, and per-model prediction evidence. Follow next_offset."""
         path = f"/api/v1/jobs/{job_segment(reference)}/presentation"
         result = await call(ctx, "GET", path, query={"offset": offset, "limit": limit})
         while limit > 1 and result.get("response_too_large") and result.get("status_code") == 200:

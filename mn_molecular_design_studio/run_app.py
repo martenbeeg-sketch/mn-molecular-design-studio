@@ -6430,104 +6430,22 @@ def _a3m_preview_html(records: list[tuple[str, str]]) -> str:
     )
 
 
-def _plot_plddt_confidence_points(axis: Any, positions: Any, values: Any) -> None:
-    """Plot pLDDT points using the same four confidence bands as Mol*."""
-    import numpy as np
-
-    scores = np.asarray(values, dtype=float)
-    x_values = np.asarray(positions)
-    valid = np.isfinite(scores)
-    bands = (
-        ("≤50", valid & (scores <= 50), "#ff7d45"),
-        (">50–70", valid & (scores > 50) & (scores <= 70), "#ffdb13"),
-        (">70–90", valid & (scores > 70) & (scores <= 90), "#65cbf3"),
-        (">90", valid & (scores > 90), "#0053d6"),
-    )
-    for label, mask, color in bands:
-        axis.scatter(x_values[mask], scores[mask], s=9, color=color, label=label, linewidths=0)
-    axis.legend(
-        title="pLDDT", loc="lower center", bbox_to_anchor=(0.5, 0.01), ncol=4,
-        fontsize=8, title_fontsize=8, frameon=False,
-    )
-
-
-_PY2DMOL_PAE_GREEN_COLORS = ("#246b3c", "#78b889", "#c6e3cd", "#f4faf5")
-
-
-def _pyplot_pae_green_colormap() -> Any:
-    from matplotlib.colors import LinearSegmentedColormap
-
-    return LinearSegmentedColormap.from_list("studio_pae_green", _PY2DMOL_PAE_GREEN_COLORS)
-
-
-
-
-
-
-
-
-
-
-
-
 @st.cache_data(show_spinner="Reading prediction confidence outputs…", ttl=3600, max_entries=16)
 def _cached_cofolding_confidence_data(
-    structure_file: str,
-    structure_mtime_ns: int,
-    structure_size: int,
-    pae_file: str,
-    pae_mtime_ns: int,
-    pae_size: int,
+    structure: tuple[str, int, int], sidecars: tuple[tuple[str, int, int], ...],
 ) -> dict:
-    """Read per-model confidence, selecting BoltzGen's exported refolding sample."""
-    del structure_mtime_ns, structure_size, pae_mtime_ns, pae_size
-    structure = Path(structure_file)
-    files = cofolding_results.confidence_files(structure)
-    if pae_file and Path(pae_file) not in files:
-        files.insert(0, Path(pae_file))
-    return cofolding_results.read_confidence(structure, tuple(files))
+    return cofolding_results.read_confidence(Path(structure[0]), tuple(Path(path) for path, _, _ in sidecars))
 
 
 @st.cache_data(show_spinner="Preparing structure viewer…", ttl=3600, max_entries=12)
 def _cached_cofolding_py2dmol_html(
-    structure_file: str,
-    structure_mtime_ns: int,
-    structure_size: int,
-    pae_file: str,
-    pae_mtime_ns: int,
-    pae_size: int,
+    structure: tuple[str, int, int], sidecars: tuple[tuple[str, int, int], ...], has_confidence: bool,
 ) -> str:
-    """Build the shared py2Dmol viewer with the saved PAE map when available."""
-    from py2Dmol import view
+    """Build the viewer for the selected structure and its exact confidence files."""
+    from mn_molecular_design_studio.cofolding_results_ui import prediction_viewer_html
 
-    confidence = _cached_cofolding_confidence_data(
-        structure_file, structure_mtime_ns, structure_size, pae_file, pae_mtime_ns, pae_size,
-    )
-    pae_preview = confidence["pae_preview"]
-    viewer = view(
-        size=(560, 560), controls=True, box=True, color="deepmind",
-        style="richardson", bg="white", heatmap=pae_preview is not None, heatmap_size=560,
-    )
-    pae_maps = (
-        {"pae": {
-            "data": pae_preview.tolist(), "vmin": 0.0, "vmax": 30.0,
-            "colors": _PY2DMOL_PAE_GREEN_COLORS,
-        }}
-        if pae_preview is not None else None
-    )
-    with tempfile.TemporaryDirectory(prefix="studio-prediction-viewer-") as scratch:
-        display_path = cofolding_results.viewer_structure(Path(structure_file), Path(scratch))
-        viewer.add_pdb(str(display_path), name="prediction", maps=pae_maps)
-        return viewer.to_html(title="Cofolding prediction viewer")
-
-
-def _cofolding_candidate_pae_path(run_dir: Path, candidate: dict, structure_path: Path | None) -> Path | None:
-    _, files = cofolding_results.candidate_files(run_dir, candidate)
-    for path in files:
-        name = path.name.casefold()
-        if any(token in name for token in ("pae", "full_data_sample", "_confidences.json", "_confidence.npz", "scores.model_idx_", "_scores_rank_")):
-            return path
-    return next((path for path in files if path.suffix == ".npz"), None)
+    confidence = _cached_cofolding_confidence_data(structure, sidecars) if has_confidence else None
+    return prediction_viewer_html(Path(structure[0]), confidence)
 
 
 def _boltz2_msa_files(run_dir: Path, raw_metadata: dict) -> list[tuple[str, Path]]:
@@ -6664,9 +6582,13 @@ def _render_cofolding_prediction_results(
     candidates: list[dict],
     input_payload: dict,
     result: dict,
+    *,
+    engine_label: str,
 ) -> None:
     """Shared Boltz-style results, with native artifact adapters for each engine."""
     import numpy as np
+
+    from mn_molecular_design_studio.cofolding_results_ui import render_confidence_plots, select_models
 
     params = input_payload.get("params") or input_payload.get("parameters") or {}
     run_metrics = result.get("metrics") or {}
@@ -6680,13 +6602,13 @@ def _render_cofolding_prediction_results(
             model_label = "AlphaFold2 Initial Guess"
     if not model_label:
         profile = optimized_prediction.ENGINE_PROFILES.get(engine, {})
-        model_label = str(profile.get("label") or ("ESMFold2" if "model_variant" in params else "ColabFold 2.0 preview")).removesuffix(" optimized")
+        model_label = str(profile.get("label") or engine_label).removesuffix(" optimized")
     if engine == "localfold":
         from mn_molecular_design_studio import localfold
         selected_model = str((params.get("engine_options") or {}).get("model") or "alphafold3")
         model_label = f"LocalFold · {localfold.MODELS.get(selected_model, {}).get('label', selected_model)}"
     candidates = cofolding_results.ranked_candidates([
-        cofolding_results.enrich_candidate(run_dir, candidate) for candidate in candidates if isinstance(candidate, dict)
+        cofolding_results.presentation_candidate(run_dir, candidate) for candidate in candidates if isinstance(candidate, dict)
     ])
     all_candidates = candidates
     input_labels = cofolding_results.prediction_input_labels(run_dir)
@@ -6712,7 +6634,6 @@ def _render_cofolding_prediction_results(
     if not candidates:
         st.info("No predictions have been saved yet. Refresh after the job finishes, or check Logs for progress.")
     else:
-        complex_ids = list(dict.fromkeys(cofolding_results.complex_group_key(item) for item in candidates))
         best_candidates = cofolding_results.best_candidates_by_complex(all_candidates)
         has_compound_names = any(
             isinstance(item.get("raw_metadata"), dict)
@@ -6726,35 +6647,25 @@ def _render_cofolding_prediction_results(
         if len(best_candidates) > 1 or has_compound_names:
             batch_summary_rows = []
             for index, item in enumerate(best_candidates):
-                item_metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
-                item_raw = item.get("raw_metadata") if isinstance(item.get("raw_metadata"), dict) else {}
                 identity = cofolding_results.compound_identity(item, input_labels)
-                item_confidence = item_raw.get("confidence_outputs") if isinstance(item_raw.get("confidence_outputs"), dict) else {}
-                metric_sources = (
-                    {str(key).casefold(): value for key, value in item_metrics.items()},
-                    {str(key).casefold(): value for key, value in item_confidence.items()},
-                )
-
-                def best_metric(*keys: str) -> float | None:
-                    for key in keys:
-                        for source in metric_sources:
-                            value = _af3_optional_metric(source.get(key.casefold()))
-                            if value is not None:
-                                return value
-                    return None
+                scores = cofolding_results.model_scores(item)
+                item_scores = cofolding_results.summary_metrics({
+                    **((item.get("raw_metadata") or {}).get("confidence_outputs") or {}),
+                    **(item.get("metrics") or {}),
+                })
 
                 structure = cofolding_results.structure_for(run_dir, item)
                 batch_summary_rows.append({
                     "Compound ID": identity["compound_id"] or "—",
                     "Compound name": identity["compound_name"] or cofolding_results.complex_label(item, f"Complex {index + 1}", input_labels),
                     "SMILES": identity["smiles"] or "—",
-                    "Best model": f"Model {cofolding_results.model_index(item, index)}",
-                    "Ranking score": best_metric("ranking_score", "confidence_score"),
-                    "Mean pLDDT (%)": best_metric("plddt_mean"),
-                    "pTM": best_metric("ptm"),
-                    "ipTM": best_metric("iptm"),
-                    "Affinity prediction": best_metric("affinity_pred_value", "affinity_prediction", "pic50_binding_affinity"),
-                    "Binding probability": best_metric("affinity_probability_binary", "binding_probability"),
+                    "Best model": f"Model {cofolding_results.model_index(item, 0)}",
+                    "Ranking score": scores.get("Ranking score"),
+                    "Mean pLDDT (%)": scores.get("Mean pLDDT (%)"),
+                    "pTM": scores.get("pTM"),
+                    "ipTM": scores.get("ipTM"),
+                    "Affinity prediction": next((item_scores[k] for k in ("affinity_pred_value", "affinity_prediction", "pic50_binding_affinity") if k in item_scores), None),
+                    "Binding probability": item_scores.get("affinity_probability_binary", item_scores.get("binding_probability")),
                     "Best structure": structure.name if structure else "—",
                 })
             batch_summary = pd.DataFrame(batch_summary_rows)
@@ -6769,50 +6680,15 @@ def _render_cofolding_prediction_results(
                 key=f"cofolding-batch-summary-{run_id}",
             )
             st.caption("One top-ranked structure per input compound or sequence. The best model follows the saved engine rank or confidence score; interface confidence, pTM, then pLDDT are used when a rank is unavailable.")
-        if len(complex_ids) > 1:
-            complex_labels = []
-            for index, complex_id in enumerate(complex_ids):
-                item = next(c for c in candidates if cofolding_results.complex_group_key(c) == complex_id)
-                complex_labels.append(cofolding_results.complex_label(item, f"Complex {index + 1}", input_labels))
-            complex_index = st.selectbox("Design" if comparison_report else "Compound / complex", range(len(complex_ids)), format_func=lambda index: complex_labels[index], key=f"cofolding-complex-{run_id}")
-            candidates = [item for item in candidates if cofolding_results.complex_group_key(item) == complex_ids[complex_index]]
-
-        def structure_path_for(candidate: dict) -> Path | None:
-            return cofolding_results.structure_for(run_dir, candidate)
-
-        def prediction_label(index: int) -> str:
-            candidate = candidates[index]
-            item_metrics = candidate.get("metrics") or {}
-            raw = candidate.get("raw_metadata") or {}
-            label = f"Model {cofolding_results.model_index(candidate, index)}"
-            seeds = {str((item.get("metrics") or {}).get("seed") or (item.get("raw_metadata") or {}).get("seed") or "") for item in candidates}
-            if len(seeds) > 1:
-                label += f" · seed {item_metrics.get('seed') or raw.get('seed')}"
-            if index == 0 and any(cofolding_results.number(item_metrics.get(key)) is not None for key in ("ranking_score", "confidence_score", "iptm", "ptm", "plddt_mean")):
-                label += " (best)"
-            return label
-
-        selected_index = st.selectbox(
-            "Model", range(len(candidates)), format_func=prediction_label,
-            key=f"cofolding-prediction-{run_id}",
+        candidates, labels, selected_index = select_models(
+            candidates, key=f"cofolding-{run_id}", input_labels=input_labels,
+            input_label="Design" if comparison_report else "Input complex",
         )
         candidate = candidates[selected_index]
-        metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
-        raw_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
-        confidence = raw_metadata.get("confidence_outputs") if isinstance(raw_metadata.get("confidence_outputs"), dict) else {}
-
-        def candidate_has_interchain_interface(item: dict) -> bool | None:
-            item_raw = item.get("raw_metadata") if isinstance(item.get("raw_metadata"), dict) else {}
-            protein_chains = item_raw.get("protein_chains") or item_raw.get("chain_sequences") or []
-            count = len(protein_chains) if isinstance(protein_chains, (list, dict)) else 0
-            for key in ("dna_chains", "rna_chains", "ligand_ccd_codes", "ligand_smiles"):
-                values = item_raw.get(key) or []
-                count += len(values) if isinstance(values, (list, dict)) else 0
-            if item_raw.get("has_target_structure"):
-                count += 1
-            return count > 1 if count else None
-
-        structure_path = structure_path_for(candidate)
+        metrics = candidate.get("metrics") or {}
+        raw_metadata = candidate.get("raw_metadata") or {}
+        confidence = raw_metadata.get("confidence_outputs") or {}
+        structure_path, sidecars = cofolding_results.prediction_files(run_dir, candidate)
         if structure_path is not None and st.button(
             "Analyze selected structure",
             icon=":material/biotech:",
@@ -6821,9 +6697,8 @@ def _render_cofolding_prediction_results(
             from mn_molecular_design_studio.complex_analysis_ui import open_result_complex
             try:
                 open_result_complex(run_dir, structure_path, candidate, user=CURRENT_USER)
-            except ValueError as exc:
+            except (OSError, ValueError) as exc:
                 st.warning(str(exc))
-        pae_path = _cofolding_candidate_pae_path(run_dir, candidate, structure_path)
         if raw_metadata.get("api_engine") == "localfold" and raw_metadata.get("model_name") == "bioemu2":
             st.caption("BioEmu2 has no confidence head. pLDDT, PAE, pTM and ipTM are unavailable.")
             if structure_path is not None:
@@ -6835,7 +6710,7 @@ def _render_cofolding_prediction_results(
         def confidence_metric(*names: str) -> object:
             if raw_metadata.get("confidence_available") is False:
                 return None
-            if "iptm" in {name.casefold() for name in names} and candidate_has_interchain_interface(candidate) is False:
+            if "iptm" in {name.casefold() for name in names} and cofolding_results.has_interchain_interface(candidate) is False:
                 return None
             normalized = {str(key).casefold(): value for key, value in confidence.items()}
             normalized_metrics = {str(key).casefold(): value for key, value in metrics.items()}
@@ -6889,56 +6764,48 @@ def _render_cofolding_prediction_results(
             with st.expander("Additional affinity outputs", expanded=False):
                 st.dataframe(pd.DataFrame(affinity_rows), hide_index=True, use_container_width=True)
 
-        def confidence_data_for(item: dict) -> tuple[Path | None, Path | None, dict | None, str | None]:
-            item_structure = structure_path_for(item)
-            item_pae = _cofolding_candidate_pae_path(run_dir, item, item_structure)
-            if (item.get("raw_metadata") or {}).get("confidence_available") is False:
-                return item_structure, None, None, "This model has no confidence head."
-            if item_structure is None:
-                return item_structure, item_pae, None, "The structure file is unavailable."
-            try:
-                item_structure_stat = item_structure.stat()
-                item_pae_stat = item_pae.stat() if item_pae is not None else None
-                data = _cached_cofolding_confidence_data(
-                    str(item_structure), item_structure_stat.st_mtime_ns, item_structure_stat.st_size,
-                    str(item_pae) if item_pae else "", item_pae_stat.st_mtime_ns if item_pae_stat else 0,
-                    item_pae_stat.st_size if item_pae_stat else 0,
-                )
-                return item_structure, item_pae, data, None
-            except (ImportError, OSError, ValueError, KeyError) as exc:
-                return item_structure, item_pae, None, str(exc)
-
         confidence_data = None
-        confidence_error = None
-        selected_confidence = confidence_data_for(candidate)
-        if selected_confidence[0] == structure_path and selected_confidence[1] == pae_path:
-            confidence_data = selected_confidence[2]
-            confidence_error = selected_confidence[3]
-
+        confidence_error = ""
         render_comparison(run_dir, candidate, key=f"validation-{run_id}-{candidate.get('candidate_id')}")
-        st.subheader("Display structures")
+        st.subheader("Predicted structure")
         if structure_path is None:
             st.info("The selected prediction has no available PDB or mmCIF structure file.")
+            confidence_error = "The structure file is unavailable."
         elif structure_path.stat().st_size > 50 * 1024 * 1024:
-            st.info("This structure is over 50 MB; download it from the Files tab to inspect it locally.")
+            st.info("This structure is over 50 MB. Download it from the Files tab.")
+            confidence_error = "The selected structure is too large for the inline plots."
         else:
+            def file_version(path: Path) -> tuple[str, int, int]:
+                stat = path.stat()
+                return str(path), stat.st_mtime_ns, stat.st_size
+
+            has_confidence = raw_metadata.get("confidence_available") is not False
             try:
-                structure_stat = structure_path.stat()
-                pae_stat = pae_path.stat() if pae_path is not None else None
-                viewer_html = _cached_cofolding_py2dmol_html(
-                    str(structure_path), structure_stat.st_mtime_ns, structure_stat.st_size,
-                    str(pae_path) if pae_path else "", pae_stat.st_mtime_ns if pae_stat else 0,
-                    pae_stat.st_size if pae_stat else 0,
-                )
+                structure_version = file_version(structure_path)
+                sidecar_versions = tuple(file_version(path) for path in sidecars) if has_confidence else ()
+                if has_confidence:
+                    try:
+                        confidence_data = _cached_cofolding_confidence_data(structure_version, sidecar_versions)
+                    except (ImportError, OSError, ValueError, RuntimeError) as exc:
+                        confidence_error = str(exc)
+                else:
+                    confidence_error = "This model has no confidence head."
+
                 import streamlit.components.v1 as components
 
-                components.html(viewer_html, height=660, scrolling=False)
-                st.caption(
-                    "Interactive py2Dmol viewer with per-residue pLDDT coloring. "
-                    + ("The PAE map is available in the viewer and confidence plots." if confidence_data is not None and confidence_data.get("pae") is not None else "No PAE array was saved for this prediction.")
+                viewer_html = _cached_cofolding_py2dmol_html(
+                    structure_version, sidecar_versions, confidence_data is not None,
                 )
+                components.html(viewer_html, height=660, scrolling=False)
             except Exception as exc:
                 st.error(f"Could not build the interactive structure viewer: {exc}")
+            st.download_button(
+                "Download predicted structure", data=structure_path.read_bytes,
+                file_name=structure_path.name,
+                mime="chemical/x-pdb" if structure_path.suffix.casefold() in {".pdb", ".ent"} else "chemical/x-mmcif",
+                key=f"cofolding-structure-download-{run_id}-{candidate.get('candidate_id') or selected_index}",
+                on_click="ignore",
+            )
 
         candidate_keys = {
             str(key).casefold()
@@ -6984,7 +6851,7 @@ def _render_cofolding_prediction_results(
         )
         boltz_params = input_payload.get("params") if isinstance(input_payload.get("params"), dict) else {}
         boltz_tasks = boltz_params.get("tasks") if isinstance(boltz_params.get("tasks"), list) else []
-        first_task = boltz_tasks[0] if boltz_tasks and isinstance(boltz_tasks[0], dict) else {}
+        first_task = boltz_tasks[0] if len(boltz_tasks) == 1 and isinstance(boltz_tasks[0], dict) else {}
         input_sequence = str(first_task.get("protein_sequences") or "").strip()
         table_rows = []
         for index, item in enumerate(candidates):
@@ -7001,7 +6868,7 @@ def _render_cofolding_prediction_results(
             if sequence or input_sequence:
                 row["Sequence"] = sequence or input_sequence
             row.update({
-                "Model": prediction_label(index),
+                "Model": labels[index],
                 "Structure mean Cα pLDDT": _af3_metric_label(item_metrics.get("plddt_mean"), percent=True),
             })
             sources = ({str(key).casefold(): value for key, value in item_metrics.items()},
@@ -7010,7 +6877,7 @@ def _render_cofolding_prediction_results(
                 if key not in candidate_keys or (key == "confidence_score" and "ranking_score" in candidate_keys):
                     continue
                 value = next((source[key] for source in sources if key in source and source[key] is not None), None)
-                if key == "iptm" and candidate_has_interchain_interface(item) is False:
+                if key == "iptm" and cofolding_results.has_interchain_interface(item) is False:
                     value = None
                 if key == "mol1_model_plddt_mean" and value is None:
                     value = item_confidence.get("plddt_mean", item_confidence.get("plddt"))
@@ -7028,7 +6895,8 @@ def _render_cofolding_prediction_results(
                     label = key.replace("_", " ").title()
                 value = next((source[key] for source in sources if key in source and source[key] is not None), None)
                 row[label] = _af3_metric_label(value, percent="probability" in key)
-            row["Structure"] = str(item.get("complex_pdb") or "—")
+            structure_name = item.get("complex_pdb") or item_raw.get("structure_file")
+            row["Structure"] = Path(str(structure_name)).name if structure_name else "—"
             table_rows.append(row)
         selected_input_label = cofolding_results.complex_label(candidate, "Complex", input_labels)
         st.subheader(f"Model metrics · {selected_input_label}" if affinity_table_keys else f"Model quality · {selected_input_label}")
@@ -7088,180 +6956,117 @@ def _render_cofolding_prediction_results(
                             pass
                     st.json(value, expanded=False)
 
-        st.subheader("Confidence plots · all models")
-        any_confidence_plot = False
-        try:
-            import matplotlib
+        render_confidence_plots(confidence_data, unavailable=confidence_error)
 
-            matplotlib.use("Agg", force=True)
-            import matplotlib.pyplot as plt
-
-            with st.container(height=760, border=False):
-                for index, item in enumerate(candidates):
-                    item_structure, _item_pae, item_confidence, item_error = (
-                        selected_confidence if index == selected_index else confidence_data_for(item)
-                    )
-                    st.markdown(f"**{prediction_label(index)}**")
-                    if item_structure is None or item_confidence is None:
-                        st.caption(f"Confidence figures unavailable: {item_error or 'prediction files are missing.'}")
-                        continue
-                    plddt = item_confidence["plddt"]
-                    pae_matrix = item_confidence["pae"]
-                    figure = plt.figure(figsize=(16, 4.5), constrained_layout=True)
-                    grid = figure.add_gridspec(1, 2, width_ratios=(1, 1))
-                    plddt_axis = figure.add_subplot(grid[0, 0])
-                    pae_axis = figure.add_subplot(grid[0, 1])
-                    if plddt.size:
-                        stride = max(1, int(np.ceil(plddt.size / 5000)))
-                        positions = np.arange(0, plddt.size, stride)
-                        _plot_plddt_confidence_points(plddt_axis, positions, plddt[::stride])
-                        plddt_axis.set(xlabel=item_confidence.get("plddt_kind", "Atom"), ylabel="pLDDT", ylim=(0, 100), title="Predicted pLDDT")
-                        for threshold in (50, 70, 90):
-                            plddt_axis.axhline(threshold, linestyle="--", linewidth=0.7, color="#94a39a", alpha=0.7)
-                        any_confidence_plot = True
-                    else:
-                        plddt_axis.axis("off")
-                        plddt_axis.text(0.5, 0.5, "Per-atom pLDDT values were not found.", ha="center", va="center")
-
-                    if pae_matrix is not None:
-                        display_matrix = item_confidence["pae_preview"]
-                        heatmap = pae_axis.imshow(
-                            display_matrix, cmap=_pyplot_pae_green_colormap(), vmin=0, vmax=30,
-                            interpolation="nearest", aspect="auto",
-                        )
-                        pae_axis.set_box_aspect(1)
-                        colorbar = figure.colorbar(heatmap, ax=pae_axis, fraction=0.046, pad=0.04)
-                        colorbar.set_label("PAE (Å)", fontsize=8)
-                        sampled = item_confidence["pae_sampled"]
-                        pae_axis.set_xlabel("Scored residue" + (" (sampled)" if sampled else ""))
-                        pae_axis.set_ylabel("Aligned residue" + (" (sampled)" if sampled else ""))
-                        pae_axis.set_title("Predicted Aligned Error (PAE)" + (" · sampled preview" if sampled else ""))
-                        any_confidence_plot = True
-                    else:
-                        pae_axis.axis("off")
-                        pae_axis.text(0.5, 0.5, "No PAE matrix was saved for this prediction.", ha="center", va="center")
-                    st.pyplot(figure, clear_figure=True)
-                    plt.close(figure)
-                    st.caption("PAE matrices are square and height-matched to pLDDT; darker green indicates lower error on the fixed 0–30 Å scale.")
-        except (ImportError, OSError, ValueError, TypeError) as exc:
-            st.warning(f"Could not render confidence plots: {exc}")
-        if not any_confidence_plot and not confidence_error:
-            st.info("No pLDDT or PAE figures were available for the saved predictions.")
-
-        msa_files = cofolding_results.manifest_alignment_files(run_dir, candidate) or (_boltz2_msa_files(run_dir, raw_metadata) if engine == "boltz2" else cofolding_results.alignment_files(run_dir, candidate))
-        with st.expander("A3M Sequence Alignment Viewer", expanded=False):
-            if not msa_files:
-                if engine == "esmfold":
-                    st.info("ESMFold predicts from the submitted protein sequences and does not use an MSA.")
-                else:
-                    st.info(cofolding_results.alignment_status(run_dir, candidate))
-            else:
-                if len(msa_files) == 1:
-                    selected_msa = 0
-                    st.caption(msa_files[0][0])
-                else:
-                    selected_msa = st.selectbox(
-                        "Alignment", range(len(msa_files)),
-                        format_func=lambda index: msa_files[index][0],
-                        key=f"boltz2-msa-chain-{run_id}-{selected_index}",
-                    )
-                alignment_label, msa_path = msa_files[selected_msa]
-                if " · generated · " in alignment_label:
-                    if " · saved for reuse" in alignment_label:
-                        st.caption("Generated during prediction and saved in the shared reference MSA cache for later jobs.")
-                    else:
-                        st.caption("Showing one A3M preview from the MSA server. Boltz also uses environmental search results and, for multichain inputs, paired results internally; these remain in the job outputs.")
-                elif " · reference folder" in alignment_label:
-                    st.caption("Loaded from the shared reference folder; a copy is saved with this job's inputs.")
-                try:
-                    alignment_rows = _read_a3m_preview(msa_path, max_records=20)
-                    if alignment_rows:
-                        import streamlit.components.v1 as components
-
-                        components.html(_a3m_preview_html(alignment_rows), height=400, scrolling=False)
-                        st.caption(f"{alignment_label} · showing up to {len(alignment_rows)} alignment rows.")
-                        frequency_rows = _read_a3m_preview(msa_path, max_records=8192)
-                        aligned_sequences = [sequence for _, sequence in frequency_rows if sequence]
-                        if aligned_sequences:
-                            import matplotlib
-
-                            matplotlib.use("Agg", force=True)
-                            import matplotlib.pyplot as plt
-                            from matplotlib.patches import Patch
-                            from collections import Counter
-
-                            alignment_length = min(map(len, aligned_sequences))
-                            residue_colors = {
-                                **{residue: "#315fba" for residue in "AVLIMFWY"},
-                                **{residue: "#24834a" for residue in "STNQ"},
-                                **{residue: "#bd4141" for residue in "DE"},
-                                **{residue: "#8b51ad" for residue in "KRH"},
-                                "C": "#be8a00", "G": "#606b66", "P": "#cc6b2c",
-                                "-": "#a0a8a3",
-                            }
-                            residue_order = list("ACDEFGHIKLMNPQRSTVWY-")
-                            residue_frequencies = {residue: np.zeros(alignment_length) for residue in residue_order}
-                            for position in range(alignment_length):
-                                counts = Counter(sequence[position].upper() for sequence in aligned_sequences)
-                                for residue, count in counts.items():
-                                    if residue not in residue_frequencies:
-                                        residue_frequencies[residue] = np.zeros(alignment_length)
-                                        residue_order.append(residue)
-                                        residue_colors.setdefault(residue, "#4d5b54")
-                                    residue_frequencies[residue][position] = count / len(aligned_sequences)
-                            figure, axis = plt.subplots(figsize=(10, 2.8), constrained_layout=True)
-                            positions = np.arange(alignment_length)
-                            bottom = np.zeros(alignment_length)
-                            for residue in residue_order:
-                                values = residue_frequencies[residue]
-                                if not np.any(values):
-                                    continue
-                                axis.bar(
-                                    positions, values, bottom=bottom,
-                                    color=residue_colors[residue], width=0.95, linewidth=0,
-                                )
-                                bottom += values
-                            axis.set(
-                                xlim=(-0.5, max(0.5, alignment_length - 0.5)), ylim=(0, 1),
-                                xlabel="Sequence position", ylabel="Fraction of rows",
-                                title="Residue frequencies by position",
-                            )
-                            axis.set_xticks(np.arange(0, alignment_length, max(1, alignment_length // 20)))
-                            axis.set_yticks((0, 0.25, 0.5, 0.75, 1), labels=("0%", "25%", "50%", "75%", "100%"))
-                            axis.grid(axis="y", alpha=0.18)
-                            axis.set_axisbelow(True)
-                            legend_items = [
-                                ("Hydrophobic", "#315fba"), ("Polar", "#24834a"),
-                                ("Acidic", "#bd4141"), ("Basic", "#8b51ad"),
-                                ("Cys", "#be8a00"), ("Gly", "#606b66"),
-                                ("Pro", "#cc6b2c"), ("Gap", "#a0a8a3"),
-                            ]
-                            axis.legend(
-                                handles=[Patch(facecolor=color, label=label) for label, color in legend_items],
-                                loc="upper center", bbox_to_anchor=(0.5, 1.28), ncol=4,
-                                frameon=False, fontsize=7,
-                            )
-                            st.pyplot(figure, clear_figure=True)
-                            plt.close(figure)
-                            st.caption(
-                                f"Each stacked column shows residue frequencies across {len(aligned_sequences)} A3M rows "
-                                "(query included, capped at 8,192); gray is a gap. Colors group amino-acid types."
-                            )
-                    else:
-                        st.info("The staged A3M file contains no alignment rows.")
-                except (OSError, UnicodeError, ValueError) as exc:
-                    st.warning(f"Could not read this chain's A3M alignment: {exc}")
-
-        if structure_path is not None:
-            try:
-                st.download_button(
-                    "Download predicted structure", data=structure_path.read_bytes(),
-                    file_name=structure_path.name,
-                    mime="chemical/x-pdb" if structure_path.suffix.casefold() in {".pdb", ".ent"} else "chemical/x-mmcif",
-                    key=f"boltz2-structure-download-{run_id}-{selected_index}",
+        msa = st.expander("A3M sequence alignment", key=f"cofolding-msa-{run_id}", on_change="rerun")
+        if msa.open:
+            with msa:
+                msa_files = cofolding_results.manifest_alignment_files(run_dir, candidate) or (
+                    _boltz2_msa_files(run_dir, raw_metadata) if engine == "boltz2"
+                    else cofolding_results.alignment_files(run_dir, candidate)
                 )
-            except OSError as exc:
-                st.caption(f"Could not prepare the structure download: {exc}")
+                if not msa_files:
+                    if engine == "esmfold":
+                        st.info("ESMFold predicts from the submitted protein sequences and does not use an MSA.")
+                    else:
+                        st.info(cofolding_results.alignment_status(run_dir, candidate))
+                else:
+                    if len(msa_files) == 1:
+                        selected_msa = 0
+                        st.caption(msa_files[0][0])
+                    else:
+                        selected_msa = st.selectbox(
+                            "Alignment", range(len(msa_files)),
+                            format_func=lambda index: msa_files[index][0],
+                            key=f"boltz2-msa-chain-{run_id}-{selected_index}",
+                        )
+                    alignment_label, msa_path = msa_files[selected_msa]
+                    if " · generated · " in alignment_label:
+                        if " · saved for reuse" in alignment_label:
+                            st.caption("Generated during prediction and saved in the shared reference MSA cache for later jobs.")
+                        else:
+                            st.caption("Showing one A3M preview from the MSA server. Boltz also uses environmental search results and, for multichain inputs, paired results internally; these remain in the job outputs.")
+                    elif " · reference folder" in alignment_label:
+                        st.caption("Loaded from the shared reference folder; a copy is saved with this job's inputs.")
+                    try:
+                        alignment_rows = _read_a3m_preview(msa_path, max_records=20)
+                        if alignment_rows:
+                            import streamlit.components.v1 as components
+
+                            components.html(_a3m_preview_html(alignment_rows), height=400, scrolling=False)
+                            st.caption(f"{alignment_label} · showing up to {len(alignment_rows)} alignment rows.")
+                            frequency_rows = _read_a3m_preview(msa_path, max_records=8192)
+                            aligned_sequences = [sequence for _, sequence in frequency_rows if sequence]
+                            if aligned_sequences:
+                                import matplotlib
+
+                                matplotlib.use("Agg", force=True)
+                                import matplotlib.pyplot as plt
+                                from matplotlib.patches import Patch
+                                from collections import Counter
+
+                                alignment_length = min(map(len, aligned_sequences))
+                                residue_colors = {
+                                    **{residue: "#315fba" for residue in "AVLIMFWY"},
+                                    **{residue: "#24834a" for residue in "STNQ"},
+                                    **{residue: "#bd4141" for residue in "DE"},
+                                    **{residue: "#8b51ad" for residue in "KRH"},
+                                    "C": "#be8a00", "G": "#606b66", "P": "#cc6b2c",
+                                    "-": "#a0a8a3",
+                                }
+                                residue_order = list("ACDEFGHIKLMNPQRSTVWY-")
+                                residue_frequencies = {residue: np.zeros(alignment_length) for residue in residue_order}
+                                for position in range(alignment_length):
+                                    counts = Counter(sequence[position].upper() for sequence in aligned_sequences)
+                                    for residue, count in counts.items():
+                                        if residue not in residue_frequencies:
+                                            residue_frequencies[residue] = np.zeros(alignment_length)
+                                            residue_order.append(residue)
+                                            residue_colors.setdefault(residue, "#4d5b54")
+                                        residue_frequencies[residue][position] = count / len(aligned_sequences)
+                                figure, axis = plt.subplots(figsize=(10, 2.8), constrained_layout=True)
+                                positions = np.arange(alignment_length)
+                                bottom = np.zeros(alignment_length)
+                                for residue in residue_order:
+                                    values = residue_frequencies[residue]
+                                    if not np.any(values):
+                                        continue
+                                    axis.bar(
+                                        positions, values, bottom=bottom,
+                                        color=residue_colors[residue], width=0.95, linewidth=0,
+                                    )
+                                    bottom += values
+                                axis.set(
+                                    xlim=(-0.5, max(0.5, alignment_length - 0.5)), ylim=(0, 1),
+                                    xlabel="Sequence position", ylabel="Fraction of rows",
+                                    title="Residue frequencies by position",
+                                )
+                                axis.set_xticks(np.arange(0, alignment_length, max(1, alignment_length // 20)))
+                                axis.set_yticks((0, 0.25, 0.5, 0.75, 1), labels=("0%", "25%", "50%", "75%", "100%"))
+                                axis.grid(axis="y", alpha=0.18)
+                                axis.set_axisbelow(True)
+                                legend_items = [
+                                    ("Hydrophobic", "#315fba"), ("Polar", "#24834a"),
+                                    ("Acidic", "#bd4141"), ("Basic", "#8b51ad"),
+                                    ("Cys", "#be8a00"), ("Gly", "#606b66"),
+                                    ("Pro", "#cc6b2c"), ("Gap", "#a0a8a3"),
+                                ]
+                                axis.legend(
+                                    handles=[Patch(facecolor=color, label=label) for label, color in legend_items],
+                                    loc="upper center", bbox_to_anchor=(0.5, 1.28), ncol=4,
+                                    frameon=False, fontsize=7,
+                                )
+                                st.pyplot(figure, clear_figure=True)
+                                plt.close(figure)
+                                st.caption(
+                                    f"Each stacked column shows residue frequencies across {len(aligned_sequences)} A3M rows "
+                                    "(query included, capped at 8,192); gray is a gap. Colors group amino-acid types."
+                                )
+                        else:
+                            st.info("The staged A3M file contains no alignment rows.")
+                    except (OSError, UnicodeError, ValueError) as exc:
+                        st.warning(f"Could not read this chain's A3M alignment: {exc}")
+
         if confidence_data is not None and confidence_data.get("pae") is not None:
             pae_matrix = confidence_data["pae"]
             if max(pae_matrix.shape) <= 2048:
@@ -7536,32 +7341,17 @@ def _render_job_details() -> None:
     )
     raw_result_candidates = result_payload.get("candidates")
     result_candidates = raw_result_candidates if isinstance(raw_result_candidates, list) else []
-    is_af3_jax_cofolding = "af3_jax_cofolding" in workflow_identity or any(
-        isinstance(candidate, dict)
-        and str(candidate.get("source_tool") or candidate.get("tool") or "").casefold() == "af3_jax_cofolding"
-        for candidate in result_candidates
-    )
-    is_esmfold2_cofolding = "esmfold2_cofolding" in workflow_identity or any(
-        isinstance(candidate, dict)
-        and str(candidate.get("source_tool") or candidate.get("tool") or "").casefold() == "esmfold2_cofolding"
-        for candidate in result_candidates
-    )
     input_params = input_payload.get("params") if isinstance(input_payload.get("params"), dict) else {}
     result_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
-    is_optimized_prediction = (
-        "optimized_prediction" in workflow_identity
-        or str(input_params.get("engine") or result_metrics.get("engine") or "") in optimized_prediction.ENGINE_PROFILES
-        or any(isinstance(item, dict) and str(item.get("source_tool") or "").startswith("optimized_prediction_") for item in result_candidates)
-    )
-    is_design_validation = any(isinstance(item, dict) and (item.get("raw_metadata") or {}).get("validation_reference") for item in result_candidates)
+    is_prediction = cofolding_results.is_prediction_run(job, metadata, input_payload, result)
     is_rfdiffusion3 = analysis_tool == "rfdiffusion3"
-    is_rfd4_proteina = analysis_tool == "rfd4_proteina" or "rfd4_proteina" in workflow_identity
+    is_rfd4_proteina = not is_prediction and (analysis_tool == "rfd4_proteina" or "rfd4_proteina" in workflow_identity)
     is_beta_pairing = analysis_tool == "rfdiffusion_beta_pairing" or "rfdiffusion_beta_pairing" in workflow_identity
     is_kejia_idr = analysis_tool == "kejia_idr" or "design.kejia_idr" in workflow_identity
     is_peptide_trap = analysis_tool == "peptide_trap" or "design.peptide_trap" in workflow_identity
     is_rfantibody = analysis_tool == "rfantibody" or "rfantibody" in workflow_identity
     is_rfpeptides = analysis_tool == "rfpeptides" or "rfpeptides" in workflow_identity
-    has_dedicated_prediction_results = is_rfantibody or is_rfpeptides or is_rfdiffusion3 or is_rfd4_proteina or is_af3_jax_cofolding or is_esmfold2_cofolding or is_optimized_prediction or is_design_validation
+    has_dedicated_prediction_results = is_prediction or is_rfantibody or is_rfpeptides or is_rfdiffusion3 or is_rfd4_proteina
     pipeline_execution = {}
     surface_nodes = []
     if str(job.get("tool")) == "visual_pipeline":
@@ -7764,7 +7554,10 @@ def _render_job_details() -> None:
             engine=next(k for k,v in generator_input.TOOLS.items() if v==str(job.get('tool')))
             render_results(run_id,run_dir,result_candidates,{**input_params,'generator_engine':engine},result)
         elif has_dedicated_prediction_results:
-            _render_cofolding_prediction_results(run_id, run_dir, result_candidates, input_payload, result)
+            _render_cofolding_prediction_results(
+                run_id, run_dir, result_candidates, input_payload, result,
+                engine_label=display_tool_label(job).removesuffix(" optimized"),
+            )
 
         structure_artifacts = (
             []

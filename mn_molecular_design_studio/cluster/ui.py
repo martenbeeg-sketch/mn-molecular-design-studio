@@ -9,6 +9,7 @@ import uuid
 import csv
 import io
 import time
+import tempfile
 import zipfile
 import re
 from datetime import datetime, timezone
@@ -1215,7 +1216,7 @@ def _render_bindcraft2_progress(row, job_id, token):
     live_progress()
 
 
-def _candidate_structure_path(candidate, data):
+def _candidate_structure_path(candidate, data, *, prediction=False):
     """Return a run-relative candidate structure path safe for the artifact API."""
     if not isinstance(candidate, dict) or not isinstance(data, dict):
         return None
@@ -1223,8 +1224,12 @@ def _candidate_structure_path(candidate, data):
     if not isinstance(run_dir, str) or not run_dir:
         return None
     root = PurePosixPath(run_dir)
-    for key in ("complex_pdb", "binder_pdb"):
-        value = candidate.get(key)
+    fields = ("complex_pdb", "raw_metadata.structure_file") if prediction else ("complex_pdb", "binder_pdb")
+    for key in fields:
+        value = ((candidate.get("raw_metadata") or {}).get("structure_file")
+                 if key == "raw_metadata.structure_file" else candidate.get(key))
+        if prediction and key == "raw_metadata.structure_file" and candidate.get("complex_pdb"):
+            break
         if not isinstance(value, str) or not value.strip():
             continue
         path = PurePosixPath(value.strip())
@@ -1233,7 +1238,7 @@ def _candidate_structure_path(candidate, data):
                 path = path.relative_to(root)
             except ValueError:
                 continue
-        if not path.parts or any(part in {".", ".."} for part in path.parts):
+        if not path.parts or "://" in value or any(part in {".", ".."} for part in path.parts):
             continue
         return str(path), key
     return None
@@ -1453,7 +1458,7 @@ def _bindcraft2_monomer_path(refolded_csv, candidate):
     )
 
 
-def _fetch_remote_artifact_bytes(jid, path, token, state_key, label="saved structure"):
+def _fetch_remote_artifact_bytes(jid, path, token, state_key, label="saved structure", *, max_bytes=None):
     relative = _safe_run_artifact_path(path)
     if not relative:
         st.warning("The saved structure path is invalid.")
@@ -1481,6 +1486,10 @@ def _fetch_remote_artifact_bytes(jid, path, token, state_key, label="saved struc
         if status["status"] != "completed":
             st.info(f"Loading the {label} from the owning workstation…")
             return None
+        size = (status.get("response") or {}).get("size_bytes")
+        if max_bytes is not None and (not isinstance(size, int) or not 0 <= size <= max_bytes):
+            st.info(f"The {label} exceeds the preview limit or its size is unavailable. Use the saved-file controls to download it.")
+            return None
         content_key = "cluster-artifact-bytes-" + command_id
         if content_key not in st.session_state:
             st.session_state[content_key] = _request(
@@ -1495,6 +1504,116 @@ def _fetch_remote_artifact_bytes(jid, path, token, state_key, label="saved struc
 def _fetch_remote_artifact_text(jid, path, token, state_key, label="saved structure"):
     content = _fetch_remote_artifact_bytes(jid, path, token, state_key, label)
     return content.decode("utf-8", errors="replace") if content is not None else None
+
+
+@st.cache_data(show_spinner=False, ttl=900, max_entries=6)
+def _remote_prediction_preview(structure_path, content, sidecars, has_confidence):
+    """Render the same model with the selected owner's delivered artifact bytes."""
+    from mn_molecular_design_studio.cofolding_results import read_confidence
+    from mn_molecular_design_studio.cofolding_results_ui import prediction_viewer_html
+
+    with tempfile.TemporaryDirectory(prefix="studio-peer-prediction-") as scratch:
+        root = Path(scratch)
+        structure = root / structure_path
+        structure.parent.mkdir(parents=True, exist_ok=True)
+        structure.write_bytes(content)
+        files = []
+        for relative, blob in sidecars:
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(blob)
+            files.append(path)
+        confidence = read_confidence(structure, tuple(files)) if has_confidence else None
+        return prediction_viewer_html(structure, confidence), confidence
+
+
+def _render_remote_prediction_results(jid, row, data, candidates, user, token):
+    import streamlit.components.v1 as components
+    from mn_molecular_design_studio import cofolding_results as prediction
+    from mn_molecular_design_studio.cofolding_results_ui import render_confidence_plots, select_models
+
+    st.subheader(f"{display_tool_label(data.get('job') or row).removesuffix(' optimized')} predictions")
+    if not candidates:
+        st.info("No predictions have been saved yet.")
+        return
+
+    manifest_available = "prediction_confidence_artifacts" in data
+    if not manifest_available:
+        st.caption("Reload full results from the owning workstation to refresh model-specific scores and confidence files.")
+    labels = data.get("prediction_input_labels") or {}
+    if manifest_available:
+        candidates = prediction.ranked_candidates(candidates)
+    else:
+        candidates = [{**item, "metrics": {}} for item in candidates]
+    models, model_labels, selected = select_models(
+        candidates, key=f"cluster-cofolding-{jid}", input_labels=labels,
+    )
+    candidate = models[selected]
+    st.subheader("Predicted structure")
+    structure = _candidate_structure_path(candidate, data, prediction=True)
+    if structure is None:
+        st.info("The selected prediction has no available PDB or mmCIF structure file.")
+    elif row.get("availability") != "online":
+        st.info("The structure will load when the owning workstation reconnects.")
+    else:
+        relative, field = structure
+        artifact_key = hashlib.sha256(relative.encode()).hexdigest()[:16]
+        model_key = f"cluster-cofolding-{jid}-{artifact_key}"
+        content = _fetch_remote_artifact_bytes(jid, relative, token, model_key, "predicted structure",
+                                               max_bytes=50 * 1024 * 1024)
+        if content is not None:
+            candidate_id = str(candidate.get("candidate_id") or "")
+            if manifest_available and st.button("Analyze selected structure", icon=":material/biotech:", key=f"{model_key}-analyze"):
+                from mn_molecular_design_studio.complex_analysis_ui import open_remote_result_complex
+
+                try:
+                    open_remote_result_complex(
+                        row, candidate, relative, user=user, structure_content=content,
+                        source_run_dir=data["job"]["run_dir"], structure_field=field,
+                        structure_sha256=hashlib.sha256(content).hexdigest(),
+                    )
+                except (OSError, ValueError, transport.ClusterUnavailable) as exc:
+                    st.warning(str(exc))
+            st.download_button("Download predicted structure", content, file_name=Path(relative).name,
+                               key=f"{model_key}-download", on_click="ignore")
+            has_confidence = (candidate.get("raw_metadata") or {}).get("confidence_available") is not False
+            sidecars = []
+            files_by_candidate = data.get("prediction_confidence_artifacts") or {}
+            load_confidence = manifest_available and has_confidence and st.toggle(
+                "Load confidence plots", key=f"{model_key}-confidence",
+            )
+            remaining = 24 * 1024 * 1024
+            if load_confidence:
+                for descriptor in files_by_candidate.get(candidate_id, []):
+                    path = _safe_run_artifact_path(descriptor.get("path"))
+                    size = descriptor.get("size_bytes")
+                    if not path or path == relative or not isinstance(size, int) or size <= 0:
+                        continue
+                    if size > remaining:
+                        st.caption(f"{Path(path).name} exceeds the confidence preview limit.")
+                        continue
+                    remaining -= size
+                    identity = hashlib.sha256(path.encode()).hexdigest()[:16]
+                    blob = _fetch_remote_artifact_bytes(jid, path, token, f"{model_key}-{identity}",
+                                                        "model confidence file", max_bytes=size)
+                    if blob is not None:
+                        sidecars.append((path, blob))
+            try:
+                html, confidence = _remote_prediction_preview(relative, content, tuple(sidecars), load_confidence)
+                components.html(html, height=660, scrolling=False)
+                if load_confidence:
+                    render_confidence_plots(confidence)
+            except (ImportError, OSError, ValueError, RuntimeError) as exc:
+                st.warning(f"Could not build the prediction preview: {exc}")
+            if not has_confidence:
+                st.caption("This model has no confidence head.")
+
+    st.subheader(f"Model quality · {prediction.complex_label(candidate, input_labels=labels)}")
+    table = pd.DataFrame([{"Model": label, **(prediction.model_scores(item) if manifest_available else {})}
+                          for label, item in zip(model_labels, models)])
+    st.dataframe(table, hide_index=True, use_container_width=True)
+    st.download_button("Download metrics CSV", table.to_csv(index=False), file_name=f"{jid}_prediction_metrics.csv",
+                       mime="text/csv", key=f"cluster-cofolding-metrics-{jid}", on_click="ignore")
 
 
 def _render_remote_docking_preview(jid, row, data, token):
@@ -2748,7 +2867,13 @@ def render_job(reference, user, token, submit):
             render_binder_outcomes(job_identity, candidates, user,
                 inputs=data.get("input"), digests=data.get("candidate_structure_digests", {}),
                 key=f"cluster-binder-outcomes-{jid}")
-            if candidates:
+            from mn_molecular_design_studio.cofolding_results import is_prediction_run
+            prediction_job = is_prediction_run(
+                row, data.get("job") or {}, data.get("metadata") or {}, data.get("input") or {}, data.get("result") or {},
+            )
+            if prediction_job:
+                _render_remote_prediction_results(jid, row, data, candidates, user, token)
+            elif candidates:
                 tool = " ".join(
                     str(row.get(key) or "")
                     for key in ("tool", "job_type", "workflow", "pipeline_name", "campaign_name")
@@ -2950,7 +3075,7 @@ def render_job(reference, user, token, submit):
                 st.json(data.get("input", {}))
             with st.expander("Run summary"):
                 st.json(data.get("result", {}))
-            if candidates and "rfantibody" in tool:
+            if candidates and not prediction_job and "rfantibody" in tool:
                 from mn_molecular_design_studio.rfantibody_ui import render_confidence_guide
                 render_confidence_guide()
         inspect_operation()

@@ -425,6 +425,43 @@ def test_remote_candidate_structure_path_is_run_relative_and_confined():
     }, data) is None
 
 
+def test_remote_prediction_switch_keeps_coordinates_and_confidence_on_the_same_model(monkeypatch):
+    candidates = [
+        {"candidate_id": f"model-{index}", "complex_pdb": f"complex_model_{index}.pdb",
+         "metrics": {"ranking_score": .9 - .1 * index}}
+        for index in range(2)
+    ]
+    data = {"job": {"run_dir": "/data/run", "tool": "openfold3"},
+            "prediction_confidence_artifacts": {
+                f"model-{index}": [{"path": f"model_{index}_pae.json", "size_bytes": 2}]
+                for index in range(2)
+            }}
+    fetched = []
+
+    def fetch(_job, path, _token, _key, _label, *, max_bytes):
+        fetched.append(path)
+        return b"{}"
+
+    monkeypatch.setattr(ui, "_fetch_remote_artifact_bytes", fetch)
+    monkeypatch.setattr(ui, "_remote_prediction_preview", lambda *args: ("<p>Preview</p>", None))
+    monkeypatch.setattr(ui, "_test_prediction_fixture", (data, candidates), raising=False)
+    app = AppTest.from_string("""
+from mn_molecular_design_studio.cluster import ui
+data, candidates = ui._test_prediction_fixture
+ui._render_remote_prediction_results("job", {"availability": "online"}, data, candidates, {}, "token")
+""").run()
+    assert fetched == ["complex_model_0.pdb"]
+    assert not app.exception
+    assert any(button.label == "Analyze selected structure" for button in app.button)
+    fetched.clear()
+    next(widget for widget in app.selectbox if widget.label == "Model").set_value(1).run()
+    assert fetched == ["complex_model_1.pdb"]
+    fetched.clear()
+    next(widget for widget in app.toggle if widget.label == "Load confidence plots").set_value(True).run()
+    assert not app.exception
+    assert fetched == ["complex_model_1.pdb", "model_1_pae.json"]
+
+
 def test_remote_job_displays_sequence_and_loads_a_representative_structure(isolated, monkeypatch):
     import importlib
 

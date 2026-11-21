@@ -571,6 +571,29 @@ def test_candidate_presentation_viewer_and_private_metric_exports(api_data):
     assert client.get(base + "/presentation", headers=headers(data, "other")).status_code == 404
 
 
+def test_prediction_presentation_and_viewer_link_the_exact_model(api_data):
+    client = api_data["client"]
+    run = candidate_run(api_data, tool="optimized_prediction_boltz2", task_group="refolding-validation")
+    (run / "model_0_pae.json").write_text('{"pae":[[0,1],[2,0]]}')
+    path = run / "artifacts/normalized_candidates/candidates.jsonl"
+    original = json.loads(path.read_text())
+    original.update(candidate_id="model-0", stage="complex_refolding", complex_pdb="",
+                    raw_metadata={"batch_item_id": "complex-1", "input_name": "Test complex",
+                                  "seed": 0, "structure_file": "complex.pdb", "pae_path": "model_0_pae.json"})
+    path.write_text(json.dumps(original) + "\n")
+    base = f"/api/v1/jobs/local:refolding-validation:{run.name}"
+    response = client.get(base + "/presentation")
+    assert response.status_code == 200, response.text
+    model = response.json()["items"][0]["prediction_model"]
+    assert (model["input_id"], model["input_name"], model["model_index"], model["seed"]) == (
+        "complex-1", "Test complex", 0, 0,
+    )
+    assert client.get(model["confidence_artifacts"][0]["url"]).content == (run / "model_0_pae.json").read_bytes()
+    view = client.get(base + "/candidates/model-0/viewer")
+    assert view.status_code == 200, view.text
+    assert client.get(view.json()["layers"][0]["url"]).content == (run / "complex.pdb").read_bytes()
+
+
 @pytest.mark.parametrize("format", ["CSV", "SVG", "HTML"])
 def test_convergence_reports_use_all_three_saved_top_series_and_engine_units(api_data, format):
     data, client = api_data, api_data["client"]

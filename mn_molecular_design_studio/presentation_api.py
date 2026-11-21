@@ -122,14 +122,43 @@ def install(app, current_user, *, resolve_job, call):
     def job_presentation(reference: str, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000),
                          user=Depends(current_user)):
         row = resolve_job(reference, user)
-        candidates = call(read_candidates, Path(row["run_dir"]))
+        root = Path(row["run_dir"])
+        candidates = call(read_candidates, root)
         visible = candidates[offset:offset + limit]
         items = [{"candidate_id": c["candidate_id"], "stage": c.get("stage"), "metrics": c.get("metrics", {}),
                   "binder_chains": c.get("binder_chains", []), "target_chains": c.get("target_chains", [])}
                  for c in visible]
         from mn_molecular_design_studio.binder_result_evidence import binder_outcomes, binder_results
         from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
-        if visible and binder_results(row, visible, read_json(Path(row["run_dir"]) / "input.json")):
+        from mn_molecular_design_studio import cofolding_results
+        inputs = read_json(root / "input.json")
+        if visible and cofolding_results.is_prediction_run(row, inputs):
+            labels = cofolding_results.prediction_input_labels(root)
+            artifact_url = "/api/v1/jobs/" + quote(reference, safe="") + "/artifact?"
+            files = cofolding_results.confidence_artifacts(root, visible)
+            model_indices = {}
+            group_counts = {}
+            for index, candidate in enumerate(candidates[:offset + limit]):
+                group = cofolding_results.complex_group_key(candidate)
+                group_index = group_counts.get(group, 0)
+                group_counts[group] = group_index + 1
+                if index >= offset:
+                    model_indices[index] = cofolding_results.model_index(candidate, group_index)
+            for index, (item, candidate) in enumerate(zip(items, visible), start=offset):
+                presented = cofolding_results.presentation_candidate(root, candidate, same_job_only=True)
+                item["metrics"] = presented["metrics"]
+                item["prediction_model"] = {
+                    "input_id": cofolding_results.complex_group_key(candidate),
+                    "input_name": cofolding_results.complex_label(candidate, input_labels=labels),
+                    "model_index": model_indices[index],
+                    "seed": cofolding_results.model_seed(candidate),
+                    "scores": cofolding_results.model_scores(presented),
+                    "confidence_artifacts": [
+                        {**artifact, "url": artifact_url + urlencode({"path": artifact["path"]})}
+                        for artifact in files.get(str(candidate["candidate_id"]), [])
+                    ],
+                }
+        if visible and binder_results(row, visible, inputs):
             from mn_molecular_design_studio.data_browser import ReadOnlyLibrary
             for item, outcome in zip(items, call(binder_outcomes, ReadOnlyLibrary(), user, row, visible)):
                 item["binder_outcome"] = outcome
@@ -145,8 +174,13 @@ def install(app, current_user, *, resolve_job, call):
         candidate = next((row for row in call(read_candidates, root) if row["candidate_id"] == candidate_id), None)
         if not candidate:
             raise HTTPException(404, "Candidate not found.")
-        source = candidate.get("complex_pdb") or candidate.get("binder_pdb")
-        path = resolve_stored_path(source, run_dir=root, must_exist=True) if source else None
+        from mn_molecular_design_studio import cofolding_results
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+        if cofolding_results.is_prediction_run(job, read_json(root / "input.json")):
+            path = cofolding_results.structure_for(root, candidate)
+        else:
+            source = candidate.get("complex_pdb") or candidate.get("binder_pdb")
+            path = resolve_stored_path(source, run_dir=root, must_exist=True) if source else None
         if path is None or not path.resolve().is_relative_to(root):
             raise HTTPException(404, "Candidate structure is unavailable in this job's artifacts.")
         url = "/api/v1/jobs/" + quote(reference, safe="") + "/artifact?" + urlencode({"path": str(path.resolve().relative_to(root))})

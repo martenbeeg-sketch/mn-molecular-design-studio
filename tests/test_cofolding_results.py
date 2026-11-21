@@ -152,6 +152,68 @@ def test_model_sidecars_are_exact_and_job_paths_cannot_escape(tmp_path):
     assert results.local_artifact(tmp_path, '/work/job_sample_1.cif') == model
 
 
+@pytest.mark.parametrize("job_type", ["complex_refolding", "monomer_refolding", "rfd4_structure_prediction"])
+def test_legacy_standalone_prediction_routes_without_replacing_design_results(job_type):
+    candidate_job = {"tool": "rfd4_proteina", "job_type": job_type}
+    assert results.is_prediction_run(candidate_job)
+    assert not results.is_prediction_run(candidate_job, {"workflow": "design.rfd4_proteina"})
+    assert not results.is_prediction_run({"tool": "rfd4_proteina", "job_type": "rfd4_proteina_design"})
+
+
+def test_model_picker_separates_inputs_and_disambiguates_repeated_model_indices():
+    def candidate(candidate_id, reference, seed, rank):
+        return {"candidate_id": candidate_id, "complex_pdb": "prediction_model_0.cif",
+                "raw_metadata": {"validation_reference": {"candidate_id": reference}, "seed": seed},
+                "metrics": {"native_rank": rank}}
+
+    rows = results.ranked_candidates([
+        candidate("a-second", "input-a", 0, 2), candidate("b", "input-b", 0, 1),
+        candidate("a-first", "input-a", 0, 1),
+    ])
+    assert [row["candidate_id"] for row in rows] == ["a-first", "a-second", "b"]
+    assert results.model_labels(rows[:2]) == ["Model 0 · seed 0 · entry 1 (best)", "Model 0 · seed 0 · entry 2"]
+    assert results.model_scores({"raw_metadata": {"confidence_available": False}, "metrics": {"ptm": .9}}) == {}
+
+
+def test_peer_confidence_manifest_pairs_only_files_for_the_selected_model(tmp_path):
+    for index in range(2):
+        (tmp_path / f"job_sample_{index}.cif").touch()
+        (tmp_path / f"job_full_data_sample_{index}.json").write_text("{}")
+    rows = [{"candidate_id": f"model-{index}", "complex_pdb": f"job_sample_{index}.cif"} for index in range(2)]
+    assert results.confidence_artifacts(tmp_path, rows) == {
+        "model-0": [{"path": "job_full_data_sample_0.json", "size_bytes": 2}],
+        "model-1": [{"path": "job_full_data_sample_1.json", "size_bytes": 2}],
+    }
+
+
+def test_external_refold_shows_its_own_model_confidence_and_never_inherits_input_scores(tmp_path):
+    native = tmp_path / "job_seed_6_sample_1_model.cif"
+    native.touch()
+    (tmp_path / "role_normalized.pdb").touch()
+    wrong_sidecar = tmp_path / "job_seed_6_sample_0_confidences.json"
+    wrong_sidecar.write_text('{"pae":[[0,30],[30,0]]}')
+    correct_sidecar = tmp_path / "job_seed_6_sample_1_confidences.json"
+    correct_sidecar.write_text('{"pae":[[0,2],[3,0]]}')
+    (tmp_path / "job_seed_6_sample_1_confidences_aggregated.json").write_text('{"iptm":0.41,"avg_plddt":89}')
+    row = {"candidate_id": "refold", "complex_pdb": "role_normalized.pdb",
+           "metrics": {"complex_refolding_backend": "openfold3", "iptm": .95, "ptm": .99, "openfold3_iptm": .1},
+           "raw_metadata": {"source_candidate": {"candidate_id": "parent", "metrics": {"iptm": .95, "ptm": .99}},
+                            "seed": 1, "confidence_outputs": {"iptm": .95},
+                            "original_prediction": native.name, "role_normalized_prediction": "role_normalized.pdb",
+                            "pae_source_path": wrong_sidecar.name, "pae_path": wrong_sidecar.name}}
+
+    presented = results.presentation_candidate(tmp_path, row)
+    assert results.model_seed(presented) == 6
+    assert results.model_index(presented, 0) == 1
+    assert results.complex_group_key(presented) == "parent"
+    assert results.model_scores(presented) == {"Mean pLDDT (%)": 89, "Ranking score": None, "pTM": None, "ipTM": .41}
+    structure, sidecars = results.prediction_files(tmp_path, presented)
+    assert wrong_sidecar not in sidecars
+    assert "pae_path" not in presented["raw_metadata"]
+    assert results.read_confidence(structure, tuple(sidecars))["pae"].tolist() == [[0, 2], [3, 0]]
+    assert row["metrics"]["iptm"] == .95
+
+
 def test_connected_prediction_structure_resolves_from_managed_source_run(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core import portable_paths
 

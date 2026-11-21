@@ -278,9 +278,10 @@ def open_remote_result_complex(job: dict, candidate: dict, artifact_path: str, *
     relative = cluster_ui._safe_run_artifact_path(artifact_path)
     if not job_id or not node_id or not relative:
         raise ValueError("The remote Results job or selected artifact reference is invalid.")
-    if structure_field not in {"complex_pdb", "binder_pdb"}:
+    if structure_field not in {"complex_pdb", "binder_pdb", "raw_metadata.structure_file"}:
         raise ValueError("The selected candidate does not identify a supported structure field.")
-    candidate_structure = candidate.get(structure_field)
+    candidate_structure = ((candidate.get("raw_metadata") or {}).get("structure_file")
+                           if structure_field == "raw_metadata.structure_file" else candidate.get(structure_field))
     if not isinstance(candidate_structure, str) or not candidate_structure.strip():
         raise ValueError("The selected candidate does not identify this structure artifact.")
     from pathlib import PurePosixPath
