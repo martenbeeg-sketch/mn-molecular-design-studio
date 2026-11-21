@@ -1,9 +1,10 @@
 # Visual pipelines
 
-Open **Pipelines**, select a project and expand **New pipeline**. Choose
+Open **Pipelines** and select a project. In the **Pipeline browser**, expand **Starter pipelines** and choose
 binder design, peptide/IDR design, structure prediction and cofolding, docking
 and library screening, molecular dynamics, or analysis of saved results.
 Pick a method and click **Create editable pipeline** to open it on the canvas.
+Under **Saved drafts**, select an existing pipeline to review its steps, then click **Open in canvas**.
 The binder settings offer complete native, comparative and modular workflows.
 Specialist recipes, the blank canvas and legacy templates are under **Advanced**.
 The MCP `pipeline_templates` tool identifies main starters, variants with their

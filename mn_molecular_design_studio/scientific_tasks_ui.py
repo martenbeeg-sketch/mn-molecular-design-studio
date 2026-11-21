@@ -32,49 +32,51 @@ def _prediction_sampling(kind, key, *, seed_default=0):
     return values
 
 
-def render_task_setup(prefix):
-    """Show the main starting points and create a draft on request."""
+def render_task_setup(prefix, *, task=None):
+    """Configure a starter selected in the browser or through the task menu."""
     from mn_molecular_design_studio.workflow_modes import MODES
 
     categories = {value: label for label, value in MAIN_STARTERS.items()}
     categories["advanced"] = "Advanced"
-    with st.expander("New pipeline"):
+    if task is None:
         task = st.selectbox("Start from", list(categories), format_func=categories.get, key=prefix + "-task")
-        if task == "advanced":
-            advanced = {
-                "antibody_cdr_redesign": TASKS["antibody_cdr_redesign"]["label"],
-                "new_protein_fold": TASKS["new_protein_fold"]["label"],
-                "ligand_conditioned_pocket": TASKS["ligand_conditioned_pocket"]["label"] + " · Experimental",
-                "catalytic_motif_scaffolding": TASKS["catalytic_motif_scaffolding"]["label"] + " · Experimental",
-                "multi_generator_binder": "Multi-generator binder design and evaluation",
-                "blank": "Blank canvas",
-                "legacy": "Legacy recipes",
-            }
-            recipe = st.selectbox("Advanced recipe", list(advanced), format_func=advanced.get,
-                                  key=prefix + "-advanced-recipe")
-            if recipe in TASKS:
-                return _render_task_recipe(prefix, recipe)
-            if recipe == "legacy":
-                label = st.selectbox("Legacy recipe", list(LEGACY_STARTER_TEMPLATES), key=prefix + "-legacy")
-                return new_graph(LEGACY_STARTER_TEMPLATES[label]) if st.button(
-                    "Load recipe onto canvas", key=prefix + "-open-legacy"
-                ) else None
-            return new_graph(recipe) if st.button("Create editable pipeline", key=prefix + "-create-task") else None
-        if task == "md_analysis":
-            options = {"md_analysis": "Analyze a saved MD run", "md_simulation": "Prepare a complex and run OpenMM"}
-            recipe = st.selectbox("Molecular dynamics workflow", list(options), format_func=options.get,
-                                  key=prefix + "-md-workflow")
-            return new_graph(recipe) if st.button("Create editable pipeline", key=prefix + "-create-task") else None
-        if task == "accepted_complex_analysis":
-            st.caption("Choose saved designs in the pipeline. For BinderScope, open the design or batch in the Data Browser.")
-            return new_graph(task) if st.button("Create editable pipeline", key=prefix + "-create-task") else None
-        if task == "targeted_protein_binder":
-            modes = {"guided": "Choose a method", **MODES}
-            mode = st.selectbox("Binder workflow", list(modes), format_func=modes.get,
-                                key=prefix + "-workflow-mode")
-            if mode != "guided":
-                return _render_workflow_mode(prefix, mode)
-        return _render_task_recipe(prefix, task)
+    else:
+        st.subheader(categories[task])
+    if task == "advanced":
+        advanced = {
+            "antibody_cdr_redesign": TASKS["antibody_cdr_redesign"]["label"],
+            "new_protein_fold": TASKS["new_protein_fold"]["label"],
+            "ligand_conditioned_pocket": TASKS["ligand_conditioned_pocket"]["label"] + " · Experimental",
+            "catalytic_motif_scaffolding": TASKS["catalytic_motif_scaffolding"]["label"] + " · Experimental",
+            "multi_generator_binder": "Multi-generator binder design and evaluation",
+            "blank": "Blank canvas",
+            "legacy": "Legacy recipes",
+        }
+        recipe = st.selectbox("Advanced recipe", list(advanced), format_func=advanced.get,
+                              key=prefix + "-advanced-recipe")
+        if recipe in TASKS:
+            return _render_task_recipe(prefix, recipe)
+        if recipe == "legacy":
+            label = st.selectbox("Legacy recipe", list(LEGACY_STARTER_TEMPLATES), key=prefix + "-legacy")
+            return new_graph(LEGACY_STARTER_TEMPLATES[label]) if st.button(
+                "Load recipe onto canvas", key=prefix + "-open-legacy"
+            ) else None
+        return new_graph(recipe) if st.button("Create editable pipeline", key=prefix + "-create-task") else None
+    if task == "md_analysis":
+        options = {"md_analysis": "Analyze a saved MD run", "md_simulation": "Prepare a complex and run OpenMM"}
+        recipe = st.selectbox("Molecular dynamics workflow", list(options), format_func=options.get,
+                              key=prefix + "-md-workflow")
+        return new_graph(recipe) if st.button("Create editable pipeline", key=prefix + "-create-task") else None
+    if task == "accepted_complex_analysis":
+        st.caption("Choose saved designs in the pipeline. For BinderScope, open the design or batch in the Data Browser.")
+        return new_graph(task) if st.button("Create editable pipeline", key=prefix + "-create-task") else None
+    if task == "targeted_protein_binder":
+        modes = {"guided": "Choose a method", **MODES}
+        mode = st.selectbox("Binder workflow", list(modes), format_func=modes.get,
+                            key=prefix + "-workflow-mode")
+        if mode != "guided":
+            return _render_workflow_mode(prefix, mode)
+    return _render_task_recipe(prefix, task)
 
 
 def _render_task_recipe(prefix, task):

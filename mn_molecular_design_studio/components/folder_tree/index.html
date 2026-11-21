@@ -45,6 +45,7 @@ function draw(){
 }
 window.addEventListener('message',event=>{
  if(event.data.type!=='streamlit:render')return;args=event.data.args||{};selected=args.selectedId||'';
+ root.setAttribute('aria-label',args.label||'Saved data folders');
  for(const identifier of args.expandedIds||[])expanded.add(identifier);
  const theme=event.data.theme||{};if(theme.textColor)document.documentElement.style.setProperty('--text',theme.textColor);
  if(theme.base==='dark'){document.documentElement.style.setProperty('--hover','#26372d');document.documentElement.style.setProperty('--selected','#304c3b')}

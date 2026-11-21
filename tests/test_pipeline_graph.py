@@ -1482,6 +1482,54 @@ render_pipeline_builder(owner_id="test-user",project_selector=lambda _:"test-pro
     assert app.session_state["visual-pipeline-test-project-graph"]["name"] == "Saved pipeline"
 
 
+def test_pipeline_browser_previews_drafts_and_starters_without_replacing_the_canvas(monkeypatch, tmp_path):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import folder_tree
+
+    monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
+    target = graph.new_graph("md_simulation")
+    target["name"] = "Earlier draft"
+    current = graph.new_graph("targeted_protein_binder")
+    graph.save_definition(target, "test-user", "project", version=True)
+    graph.save_definition(current, "test-user", "project", version=True)
+    selected = {}
+    menu = []
+
+    def choose(nodes, **kwargs):
+        menu[:] = nodes
+        return selected or None
+
+    monkeypatch.setattr(folder_tree, "render_tree", choose)
+    app = AppTest.from_string("""
+from mn_molecular_design_studio.pipeline_graph_ui import render_pipeline_builder
+render_pipeline_builder(owner_id="test-user", project_selector=lambda _: "project",
+    submit_api=lambda *a: (_ for _ in ()).throw(AssertionError("Browsing must not submit a request")),
+    search_jobs=lambda **kwargs: {"items": []})
+""").run()
+    assert not app.exception
+    assert [node["label"] for node in menu[0]["children"]] == [*graph.MAIN_STARTERS, "Advanced"]
+    assert menu[1]["count"] == 2
+    key = "visual-pipeline-project-graph"
+    assert app.session_state[key]["id"] == current["id"]
+
+    selected.update(selectedId=f"draft/{target['id']}", token="draft-selection")
+    app.run()
+    assert not app.exception
+    assert app.session_state[key]["id"] == current["id"]
+    assert any(widget.value == "Earlier draft" for widget in app.subheader)
+    app.button(key="visual-pipeline-project-open").click().run()
+    assert not app.exception
+    assert app.session_state[key]["id"] == target["id"]
+
+    selected.update(selectedId="starter/md_analysis", token="starter-selection")
+    app.run()
+    assert not app.exception
+    assert app.session_state[key]["id"] == target["id"]
+    app.button(key="visual-pipeline-project-create-task").click().run()
+    assert not app.exception
+    assert app.session_state[key]["template_id"] == "md_analysis"
+
+
 def test_canvas_save_as_creates_a_separate_named_draft():
     from streamlit.testing.v1 import AppTest
 

@@ -1027,6 +1027,81 @@ def _change_archive_status(draft, project_id, submit_api, *, archived):
         return False
 
 
+def _pipeline_browser_selection(prefix, definitions, archived):
+    from mn_molecular_design_studio.folder_tree import render_tree
+    from mn_molecular_design_studio.pipeline_graph import MAIN_STARTERS
+
+    categories = {**MAIN_STARTERS, "Advanced": "advanced"}
+    starters = [{"id": f"starter/{key}", "label": label} for label, key in categories.items()]
+    drafts = [{"id": f"draft/{draft['graph']['id']}", "label": draft["graph"]["name"]} for draft in definitions]
+    roots = [
+        {"id": "starters", "label": "Starter pipelines", "children": starters},
+        {"id": "drafts", "label": "Saved drafts", "children": drafts,
+         "count": len(drafts), "countLabel": "saved drafts"},
+    ]
+    options = {node["id"] for node in [*roots, *starters, *drafts]}
+    selection_key = prefix + "-browser-selection"
+    selection = st.session_state.get(selection_key)
+    if selection not in options:
+        selection = "drafts" if definitions or archived else "starters"
+    event = render_tree(roots, selected_id=selection, expanded_ids=["starters", "drafts"],
+                        key=prefix + "-browser-tree", label="Pipeline starters and saved drafts")
+    event_key = prefix + "-browser-event"
+    if event and event.get("token") != st.session_state.get(event_key):
+        st.session_state[event_key] = event.get("token")
+        chosen = event.get("selectedId")
+        if chosen in options and chosen != selection:
+            st.session_state[selection_key] = chosen
+            st.rerun()
+    return selection
+
+
+def _render_saved_pipeline_browser(prefix, owner_id, project_id, graph, definitions, archived, submit_api, selection):
+    if definitions:
+        saved = next((item for item in definitions if selection == f"draft/{item['graph']['id']}"), None)
+        if saved is None:
+            saved = st.selectbox("Saved draft", definitions, format_func=lambda item: item["graph"]["name"], key=prefix + "-saved")
+        else:
+            st.subheader(saved["graph"]["name"])
+        snapshot = saved["graph"]
+        st.caption(f"{len(snapshot['nodes'])} steps · {saved['versions']} saved versions")
+        with st.expander("Pipeline steps"):
+            st.dataframe([{"Step": node["data"]["label"]} for node in snapshot["nodes"]], hide_index=True)
+        try:
+            validate_graph(snapshot, require_inputs=True, require_files=False)
+        except ValueError as exc:
+            st.caption(f"Needs attention · {exc}")
+        else:
+            st.caption("Inputs configured. Studio checks saved files when you run.")
+        open_col, archive_col = st.columns(2)
+        open_col.button("Open in canvas", type="primary", key=prefix + "-open", on_click=_activate_graph,
+                        args=(prefix, snapshot, saved["revision"]))
+        if archive_col.button("Archive draft", key=prefix + "-archive"):
+            if _change_archive_status(saved, project_id, submit_api, archived=True):
+                if saved["graph"]["id"] == graph["id"]:
+                    replacement = next((item for item in definitions if item["graph"]["id"] != graph["id"]), None)
+                    if replacement:
+                        _activate_graph(prefix, replacement["graph"], replacement["revision"])
+                    else:
+                        _activate_graph(prefix, new_graph("targeted_protein_binder"))
+                st.rerun()
+        versions = list_versions(owner_id, project_id, snapshot["id"])
+        if versions:
+            version = st.selectbox("Version history", versions,
+                format_func=lambda item: f"{item['saved_at'][:19].replace('T', ' ')} UTC · {item['revision'][:10]}",
+                key=prefix + "-version-" + snapshot["id"])
+            st.button("Restore version into draft", key=prefix + "-restore", on_click=_activate_graph,
+                      args=(prefix, version["graph"], saved["revision"]))
+    else:
+        st.caption("No active drafts in this project." if project_id else "Choose a project to view its saved drafts.")
+    if archived:
+        with st.expander("Archived drafts"):
+            selected = st.selectbox("Archived draft", archived, format_func=lambda item: item["graph"]["name"],
+                                    key=prefix + "-archived-pipeline")
+            if st.button("Restore draft", key=prefix + "-unarchive"):
+                if _change_archive_status(selected, project_id, submit_api, archived=False):
+                    st.rerun()
+
 def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs, read_only_projects=()):
     st.markdown("<style>.block-container{max-width:1900px;padding-top:1.35rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
     project_id = project_selector("visual-pipeline")
@@ -1068,40 +1143,19 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         _activate_graph(prefix, migrated_graph, _draft_revision(prefix, current_graph))
 
     graph = st.session_state[state_key]
-    with st.expander("Saved pipelines & versions", expanded=True):
-        if definitions:
-            saved = st.selectbox("Saved draft", definitions, format_func=lambda d:f"{d['graph']['name']} · {d['versions']} saved versions", key=prefix+"-saved")
-            open_col, archive_col = st.columns(2)
-            open_col.button("Open saved draft", key=prefix+"-open", on_click=_activate_graph,
-                args=(prefix, saved["graph"], saved["revision"]))
-            if archive_col.button("Archive draft", key=prefix + "-archive"):
-                if _change_archive_status(saved, project_id, submit_api, archived=True):
-                    if saved["graph"]["id"] == graph["id"]:
-                        replacement = next((item for item in definitions if item["graph"]["id"] != graph["id"]), None)
-                        if replacement:
-                            _activate_graph(prefix, replacement["graph"], replacement["revision"])
-                        else:
-                            _activate_graph(prefix, new_graph("targeted_protein_binder"))
-                    st.rerun()
-        if archived:
-            with st.expander("Archived drafts"):
-                selected = st.selectbox("Archived draft", archived, format_func=lambda item: item["graph"]["name"],
-                                        key=prefix + "-archived-pipeline")
-                if st.button("Restore draft", key=prefix + "-unarchive"):
-                    if _change_archive_status(selected, project_id, submit_api, archived=False):
-                        st.rerun()
-        versions = list_versions(owner_id, project_id, graph["id"]) if project_id else []
-        if versions:
-            version = st.selectbox("Version history", versions, format_func=lambda d:f"{d['saved_at'][:19].replace('T',' ')} UTC · {d['revision'][:10]}", key=prefix+"-version-"+graph["id"])
-            st.button("Restore version into draft", key=prefix+"-restore", on_click=_activate_graph,
-                args=(prefix, version["graph"], _draft_revision(prefix, graph)))
-        if not definitions and not versions:
-            st.caption("Canvas edits autosave to the current draft. Use Save as… to create a separate pipeline; Save version keeps immutable history.")
-
     from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
-    created = render_task_setup(prefix)
-    if created is not None:
-        _activate_graph(prefix, created)
+    with st.expander("Pipeline browser", expanded=True):
+        navigation, details = st.columns([1, 2.7], gap="large")
+        with navigation:
+            selection = _pipeline_browser_selection(prefix, definitions, archived)
+        with details:
+            if selection == "drafts" or selection.startswith("draft/"):
+                _render_saved_pipeline_browser(prefix, owner_id, project_id, graph, definitions, archived, submit_api, selection)
+            else:
+                task = selection.removeprefix("starter/") if selection != "starters" else None
+                created = render_task_setup(prefix, task=task)
+                if created is not None:
+                    _activate_graph(prefix, created)
     graph = st.session_state[state_key]
     reuse = bool(st.session_state.get(reuse_key, True))
     if st.session_state.get(prefix + "-draft-conflict") == graph["id"]:
