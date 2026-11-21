@@ -9470,6 +9470,13 @@ elif page == "Complex Analysis":
     )
 elif page == "Pipelines":
     _render_pipelines()
+elif page == "Pipeline Builder":
+    from mn_molecular_design_studio.pipeline_blocks_ui import render_pipeline_blocks
+    from mn_molecular_design_studio.project_lifecycle import project_writable
+    read_only = {project["id"] for project in _studio_projects(include_archived=True) if not project_writable(project)}
+    render_pipeline_blocks(owner_id=str(CURRENT_USER["id"]),
+        project_selector=lambda key: _render_project_selector(key, include_archived=True),
+        submit_api=_post_local_api, search_jobs=search_jobs, read_only_projects=read_only)
 elif page == "Projects":
     _render_projects()
 elif page == "Users & access" and CURRENT_USER.get("role") == "admin":

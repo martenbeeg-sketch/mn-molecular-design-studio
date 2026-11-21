@@ -7,6 +7,7 @@ WORKSPACE_PAGES = (
     ("All tools", ":material/apps:", "All tools"),
     ("Projects", ":material/folder_open:", "Projects"),
     ("Pipelines", ":material/account_tree:", "Pipelines"),
+    ("Pipeline Builder", ":material/extension:", "Pipeline Builder"),
     ("My results", ":material/query_stats:", "My runs"),
     ("Datasets", ":material/library_books:", "Datasets"),
     ("Data browser", ":material/folder_copy:", "Data Browser"),

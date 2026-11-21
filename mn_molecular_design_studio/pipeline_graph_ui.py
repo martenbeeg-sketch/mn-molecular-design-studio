@@ -514,7 +514,7 @@ def _filter_observed_candidates(graph, node_id, run_dir):
         return []
 
 
-def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs):
+def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs, stage_edits=False):
     from mn_molecular_design_studio.pipeline_node_ui import render_node_form
     editor = st.session_state.get(prefix+"-editor")
     if not editor:
@@ -554,8 +554,8 @@ def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs):
                     else:
                         node["data"][name] = copy.deepcopy(value)
                 updated = clean_graph(updated)
-                validate_graph(updated)
-                if project_id:
+                validate_graph(updated, allow_incomplete=stage_edits)
+                if project_id and not stage_edits:
                     _save_draft(prefix, project_id, updated, submit_api)
                 st.session_state[prefix+"-graph"] = updated
                 st.session_state[prefix+"-settings-update"] = {
@@ -585,7 +585,9 @@ def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs):
                     else:
                         node["data"][name] = copy.deepcopy(value)
                 updated = clean_graph(updated)
-                if project_id:
+                if stage_edits:
+                    validate_graph(updated, allow_incomplete=True)
+                if project_id and not stage_edits:
                     _save_draft(prefix, project_id, updated, submit_api)
                 st.session_state[prefix+"-graph"] = updated
                 st.session_state[prefix+"-settings-update"] = {

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box }
+  body { margin: 0; font: 14px system-ui, sans-serif; color: var(--text, #253b34) }
+  main { display: grid; gap: 13px; padding: 3px 3px 10px }
+  .group { display: grid; gap: 8px }
+  .label { margin: 0; font-size: 12px; font-weight: 700; color: var(--muted, #51665b) }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 7px }
+  .block {
+    --accent: #3e866d;
+    min-height: 51px; width: 100%; display: grid; grid-template-columns: 62px minmax(0, 1fr);
+    gap: 9px; align-items: start; padding: 11px; text-align: left; cursor: pointer;
+    border: 1px solid var(--border, #d7e4dd); border-left: 4px solid var(--accent);
+    border-radius: 7px; background: var(--block, #fbfdfb); color: inherit; font: inherit;
+  }
+  .block.source { --accent: #508aa0 }
+  .block.analysis { --accent: #6b73a5 }
+  .block.control { --accent: #b98549 }
+  .block.result { --accent: #447a59 }
+  .block:hover { background: var(--hover, #eef6ef) }
+  .block[aria-pressed="true"], .block:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px }
+  .verb { font: 700 11px ui-monospace, monospace; color: var(--muted, #51665b); padding-top: 3px }
+  .name { display: block; font-weight: 650; overflow-wrap: anywhere }
+  .origin { display: block; color: var(--muted, #51665b); font-size: 11px; margin-top: 4px; overflow-wrap: anywhere }
+  .loop { padding: 11px; background: var(--surface, #f4f8f4); border: 1px solid var(--border, #d7e4dd); border-radius: 12px }
+  .arm { padding-left: 11px; border-left: 2px solid var(--border, #d7e4dd); display: grid; gap: 7px }
+  .condition { margin: 0 0 2px; padding-left: 20px; color: var(--muted, #51665b); font-size: 12px }
+  .condition li + li { margin-top: 3px }
+  .detail { margin: 0 0 2px 12px; color: var(--muted, #51665b); font-size: 12px }
+</style>
+</head>
+<body>
+<main aria-label="Pipeline program"></main>
+<script>
+  const root = document.querySelector("main");
+  let args = {}, selected = "", sequence = 0;
+  function send(type, fields = {}) {
+    parent.postMessage({isStreamlitMessage: true, type, ...fields}, "*");
+  }
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text) node.textContent = text;
+    return node;
+  }
+  function block(id) {
+    const value = args.program.blocks[id];
+    const button = element("button", "block " + value.role);
+    button.type = "button";
+    button.dataset.id = id;
+    button.setAttribute("aria-pressed", String(selected === id));
+    const detail = element("span");
+    detail.append(element("span", "name", value.label));
+    const states = [];
+    if (!value.enabled) states.push("Disabled");
+    if (value.sources.length) states.push("From " + value.sources.join(", "));
+    if (states.length) detail.append(element("span", "origin", states.join(" · ")));
+    button.append(element("span", "verb", value.action), detail);
+    button.onclick = () => {
+      selected = id;
+      draw();
+      send("streamlit:setComponentValue", {dataType: "json", value: {id, token: Date.now() + "-" + (++sequence)}});
+    };
+    return button;
+  }
+  function group(title, ids, stacked = false) {
+    const section = element("section", "group");
+    if (title) section.append(element("h2", "label", title));
+    const row = element("div", stacked ? "group" : "row");
+    ids.forEach(id => row.append(block(id)));
+    section.append(row);
+    return section;
+  }
+  function draw() {
+    const focused = document.activeElement?.dataset.id;
+    root.replaceChildren();
+    const program = args.program;
+    if (program.screen) {
+      const screen = program.screen;
+      root.append(group("Start with", screen.setup));
+      const loop = group("Repeat docking rounds", screen.rounds, true);
+      loop.classList.add("loop");
+      loop.append(element("p", "detail", screen.retention
+        ? "After each round, keep poses for up to " + screen.retention.toLocaleString() + " unique compounds."
+        : "Keep the cumulative scores. No poses are selected for campaign retention."));
+      loop.append(block(screen.decision));
+      const conditions = element("ul", "condition");
+      screen.stop_conditions.forEach(text => conditions.append(element("li", "", text)));
+      loop.append(conditions);
+      const finish = group("If any stop condition is met", screen.finish);
+      finish.classList.add("arm");
+      const again = group("Otherwise", screen.next_round, true);
+      again.classList.add("arm");
+      again.append(element("p", "detail", "Return the next batch to Docking."));
+      loop.append(finish, again);
+      root.append(loop);
+    } else {
+      program.stages.forEach((ids, index) => root.append(group(index === 0 ? "Start with" : "Then", ids)));
+    }
+    if (focused) [...root.querySelectorAll(".block")].find(button => button.dataset.id === focused)?.focus();
+    send("streamlit:setFrameHeight", {height: root.scrollHeight + 6});
+  }
+  window.addEventListener("message", event => {
+    if (event.data.type !== "streamlit:render") return;
+    args = event.data.args;
+    selected = args.selected;
+    if (event.data.theme?.base === "dark") {
+      for (const [key, value] of Object.entries({
+        text: "#e1ece6", muted: "#b0c6b9", border: "#435950",
+        block: "#263a32", surface: "#21352b", hover: "#354f43",
+      })) document.documentElement.style.setProperty("--" + key, value);
+    }
+    draw();
+  });
+  send("streamlit:componentReady", {apiVersion: 1});
+  send("streamlit:setFrameHeight", {height: 180});
+</script>
+</body>
+</html>

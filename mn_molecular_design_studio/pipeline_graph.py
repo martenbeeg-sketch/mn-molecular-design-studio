@@ -2150,12 +2150,13 @@ class PipelineInputError(ValueError):
         self.node_id = node_id
 
 
-def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> dict:
+def validate_graph(graph: dict, *, require_inputs=False, require_files=True, allow_incomplete=False) -> dict:
+    allow_incomplete = allow_incomplete and not require_inputs
     graph = clean_graph(migrate_template_graph(graph))
     nodes = {n["id"]: n for n in graph["nodes"]}
     if len(nodes) != len(graph["nodes"]):
         raise ValueError("Node IDs must be unique.")
-    if not nodes:
+    if not nodes and not allow_incomplete:
         raise ValueError("Add at least one input and a Results node.")
     incoming = {n: [] for n in nodes}
     outgoing = {n: [] for n in nodes}
@@ -2204,6 +2205,8 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> 
         raise ValueError("A pipeline cannot contain a cycle. Connect steps in the order data should flow.")
     for node_id, node in nodes.items():
         if node["data"]["kind"] not in {"shared_filter", "complex_analysis"}:
+            continue
+        if allow_incomplete and not incoming[node_id]:
             continue
         if len(incoming[node_id]) != 1:
             raise ValueError("Scientific filters and Complex Analysis need one connected CandidateSet input.")
@@ -2276,9 +2279,9 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> 
         if node["data"].get("enabled") is False:
             continue
         for input_port in NODE_CATALOG[kind]["inputs"]:
-            if not input_port.get("optional") and not any(edge.get("targetHandle", "in") == input_port.get("id", "in") for edge in incoming_edges[node_id]):
+            if not allow_incomplete and not input_port.get("optional") and not any(edge.get("targetHandle", "in") == input_port.get("id", "in") for edge in incoming_edges[node_id]):
                 raise ValueError(f"Connect {input_port.get('label', 'an input')} to {node['data']['label']}.")
-        if kind not in {"results", "active_results"} and not any(e["source"] == node_id for e in graph["edges"]):
+        if not allow_incomplete and kind not in {"results", "active_results"} and not any(e["source"] == node_id for e in graph["edges"]):
             raise ValueError(f"Connect {node['data']['label']} to a downstream step or Results node.")
         if require_inputs and kind == "target":
             if not node["data"]["params"].get("target_pdb"):
@@ -2370,7 +2373,7 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> 
                     raise ValueError(f"{node['data']['label']} requires an existing target PDB path in Cofolding Inputs.")
                 if kind == 'af2' and Path(path).suffix.lower() != '.pdb':
                     raise ValueError('AlphaFold2 Initial Guess requires a PDB file (mmCIF is not supported by this input mode).')
-        if require_inputs and cofold_task_context.get(node_id) and NODE_CATALOG[kind].get('molecule_tasks'):
+        if (require_inputs or allow_incomplete) and cofold_task_context.get(node_id) and NODE_CATALOG[kind].get('molecule_tasks'):
             requested_task = cofold_task_context[node_id]
             if requested_task not in NODE_CATALOG[kind]['molecule_tasks']:
                 raise ValueError(f"{node['data']['label']} does not support the selected {requested_task.replace('_', ' / ')} prediction task.")
@@ -2416,7 +2419,7 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> 
                 raise ValueError("Load a PDB target in RFdiffusion β-pairing or connect a Target block.")
             if not str(p.get("target_beta_strands") or "").strip():
                 raise ValueError("Select target β-strand residue ranges for RFdiffusion β-pairing.")
-    if not any(n["data"]["kind"] in {"results", "active_results"} for n in nodes.values()):
+    if not allow_incomplete and not any(n["data"]["kind"] in {"results", "active_results"} for n in nodes.values()):
         raise ValueError("Add a Results node to collect the pipeline outputs.")
     if graph.get("template_id") == "unidock_active_learning":
         required = {"active_library", "active_target", "active_seed", "active_docking", "active_accumulate",
@@ -2426,10 +2429,11 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> 
             raise ValueError("The active-learning template needs its complete set of source, docking, learning, decision and Results nodes.")
         if sum(edge.get("loop_back") is True for edge in graph["edges"]) != 1:
             raise ValueError("The active-learning template needs exactly one selection-to-docking feedback connection.")
-    shared_campaign = _validate_shared_campaign(graph, nodes, incoming)
+    shared_campaign = _validate_shared_campaign(graph, nodes, incoming) if not allow_incomplete else None
     if shared_campaign:
         graph["shared_campaign"] = shared_campaign
-    campaign_stops = _compile_campaign_stop(graph, nodes, incoming, allow_unresolved=not require_inputs)
+    campaign_stops = (_compile_campaign_stop(graph, nodes, incoming, allow_unresolved=not require_inputs)
+                      if not allow_incomplete else {})
     return {"graph": graph, "order": order, "incoming": incoming, "outgoing": outgoing,
             "incoming_edges": incoming_edges, "outgoing_edges": outgoing_edges,
             "campaign_stops": campaign_stops}

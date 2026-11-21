@@ -1,5 +1,12 @@
 # Visual pipelines
 
+**Pipeline Builder** opens a block view of the same project drafts. Select a
+block to configure it or see compatible next steps. A filter exposes separate
+Pass, Fail and Unresolved branches. For the large-library screen, the block view
+shows the controller's repeat loop, stop conditions, and final Results branch.
+Edit that loop through its existing step settings. Both editors use the same
+graph, validation and scheduler.
+
 Open **Pipelines** and select a project. In the **Pipeline browser**, expand **Starter pipelines** and choose
 binder design, peptide/IDR design, structure prediction and cofolding, docking
 and library screening, molecular dynamics, or analysis of saved results.
