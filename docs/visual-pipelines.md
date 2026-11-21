@@ -8,10 +8,11 @@ step. Moving a block preserves its connections, and saving a draft keeps the
 layout. A filter has separate Pass, Fail and Unresolved outputs.
 
 Switch to **Outline** for a reading order and sockets that insert steps into
-existing connections. The large-library screen shows its native return wire on
-the canvas and the repeat settings, stop conditions, and final Results branch in
-the outline. Edit that loop through its existing step settings. Both views use
-the same graph, validation and scheduler.
+existing connections. The large-library screen displays its fixed workflow as
+snapped blocks. The Repeat block contains the docking round and its If/Otherwise
+decision, with Final results after the loop. Select a step and open **Block settings**
+to edit the controller's existing settings. Both views use the same graph,
+validation and scheduler.
 
 Open **Pipelines** and select a project. In the **Pipeline browser**, expand **Starter pipelines** and choose
 binder design, peptide/IDR design, structure prediction and cofolding, docking

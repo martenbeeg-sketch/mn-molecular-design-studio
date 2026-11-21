@@ -65,7 +65,65 @@ button.flow-port { touch-action: none; cursor: crosshair }
   color: var(--muted, #51665b); font-size: 13px;
 }
 .canvas-workspace .palette-items { max-height: 390px }
+
+.snapped-workspace {
+  display: grid; grid-template-columns: minmax(0, 475px) minmax(150px, 255px); align-items: start;
+  gap: 26px; padding: clamp(12px, 3vw, 25px); border: 1px solid var(--border, #d7e4dd); border-radius: 12px;
+  background-color: var(--surface, #f4f8f4);
+  background-image: radial-gradient(var(--border, #c9d9cf) 1px, transparent 1px); background-size: 16px 16px;
+}
+.snapped-program, .snap-stack { display: grid; min-width: 0 }
+.snap-step, .snap-bar, .snap-end, .snap-break {
+  --tail: 6px;
+  --notch: 6px;
+  --accent: #44866e;
+  --brick: color-mix(in srgb, var(--accent) 29%, var(--block, #fbfdfb));
+  clip-path: polygon(0 0, 13px 0, 19px var(--notch), 36px var(--notch), 42px 0, 100% 0,
+    100% calc(100% - var(--tail)), 42px calc(100% - var(--tail)), 36px 100%, 19px 100%,
+    13px calc(100% - var(--tail)), 0 calc(100% - var(--tail)));
+  margin: 0 0 calc(-1 * var(--tail)); padding: 11px 13px calc(9px + var(--tail));
+  min-width: 0; border: 0; border-radius: 5px 5px 8px 5px;
+  color: var(--text, #253b34); background: var(--brick); font: inherit; text-align: left;
+  box-shadow: inset 0 -8px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.snap-step, .snap-condition { cursor: pointer }
+.snap-step[aria-pressed="true"], .snap-condition[aria-pressed="true"],
+.snap-step:focus-visible, .snap-condition:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: -4px;
+  background: color-mix(in srgb, var(--accent) 43%, var(--block, #fbfdfb));
+}
+.snap-step:hover, .snap-condition:hover { filter: brightness(.96) }
+.snap-setup .snap-step:first-child { --notch: 0px }
+.snap-step.result, .snap-break { --tail: 0px; box-shadow: inset 0 -2px color-mix(in srgb, var(--accent) 35%, transparent) }
+.snap-action { margin-right: 8px; font-size: 11px; font-weight: 650 }
+.snap-name { font-weight: 720; overflow-wrap: anywhere }
+.snap-control { --rib: 19px; --control: #ba864a; display: grid; min-width: 0 }
+.snap-decision { --control: #ab7666; --rib: 17px }
+.snap-bar, .snap-end { --accent: var(--control); font-weight: 730 }
+.snap-bar { padding-block-start: 12px }
+.snap-body {
+  padding-inline-start: var(--rib); padding-block-start: 6px;
+  background: linear-gradient(to right, color-mix(in srgb, var(--control) 29%, var(--block, #fbfdfb)) var(--rib), transparent var(--rib));
+}
+.snap-body > :last-child { margin-bottom: 0 }
+.snap-predicate {
+  display: inline-block; margin-inline-start: 5px; padding: 3px 9px; border-radius: 7px;
+  background: var(--block, #fbfdfb); font-size: 12px;
+}
+.snap-break { --accent: #a15f50; font-weight: 690; width: fit-content }
+.snap-end { --notch: 0px; min-height: 19px; padding-top: 5px }
+.snap-decision-end { padding-bottom: 8px }
+.snap-repeat-end { padding-top: 6px; font-size: 11px }
+.snap-rules {
+  display: grid; gap: 8px; padding: 14px 13px; border: 1px solid var(--border, #d7e4dd);
+  border-radius: 9px; background: var(--block, #fbfdfb);
+}
+.snap-rules h2:not(:first-child) { border-top: 1px solid var(--border, #d7e4dd); padding-top: 9px; margin-top: 4px }
+.snap-rules .condition { margin: 0; line-height: 1.45; padding-inline-start: 15px }
+.snap-rules .condition li + li { margin-top: 6px }
+.snap-rules .hint { font-size: 12px }
 @media (max-width: 480px) {
   .workspace.canvas-workspace { grid-template-columns: 1fr }
   .canvas-workspace .palette-items { max-height: 165px }
+  .snapped-workspace { grid-template-columns: minmax(0, 1fr); gap: 17px }
 }
