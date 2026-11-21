@@ -21,11 +21,34 @@ def test_screen_reads_as_native_repeat_and_decision():
     assert screen["retention"] == 2000
     assert screen["stop_conditions"][-1] == "The campaign reaches 7 rounds"
     assert screen["decision"] == nodes["active_decision"]["id"]
+    assert screen["selection_id"] == screen["next_round"][-1]
+    assert screen["selection"]["example"] == "Up to 5,000 with 10,000 initial centroids"
+    assert screen["selection"]["predicted_count"] == "4,000"
+    assert screen["selection"]["random_count"] == "1,000"
     assert screen["finish"] == [nodes["active_results"]["id"]]
     assert screen["next_round"][-1] == nodes["active_select"]["id"]
     assert graph == before
     assert next(edge for edge in graph["edges"] if edge.get("loop_back"))["target"] == screen["rounds"][0]
     validate_graph(graph)
+
+
+def test_screen_reports_edited_seed_mix_size_cap_and_cleanup():
+    graph = new_graph(SCREEN)
+    nodes = {node["data"]["kind"]: node for node in graph["nodes"]}
+    nodes["active_seed"]["data"]["params"].update(sample_size=2_000, sampling_seed=67)
+    nodes["active_docking"]["data"]["params"].update(batch_size=500, cleanup_after_round=False)
+    nodes["active_select"]["data"]["params"].update(next_round_seed_fraction_percent=75, predicted_fraction_percent=60)
+    nodes["active_accumulate"]["data"]["params"]["retained_pose_count"] = 0
+    screen = program(graph)["screen"]
+
+    assert screen["selection"] == {
+        "size": "75% of the initial centroid sample, limited by the number of unattempted entries and capped at 500.",
+        "example": "Up to 500 with 2,000 initial centroids",
+        "predicted": "60% highest model probabilities", "predicted_count": "300",
+        "random": "40% uniform random from the rest", "random_count": "200",
+    }
+    assert screen["step_details"][nodes["active_seed"]["id"]] == "Round 1 · 2,000 randomly sampled centroids · seed 67."
+    assert screen["step_details"][nodes["active_accumulate"]["id"]].endswith("No campaign poses retained. Keep worker files.")
 
 
 def test_blocks_can_build_a_workflow_with_typed_filter_branches():

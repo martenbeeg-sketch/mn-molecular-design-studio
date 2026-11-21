@@ -14,6 +14,13 @@ decision, with Final results after the loop. Select a step and open **Block sett
 to edit the controller's existing settings. Both views use the same graph,
 validation and scheduler.
 
+The screening stack shows the selected centroid sample for round one, the
+stopping criteria, and how the next batch is built. The selection block uses the
+controller's sizing and rounding rules. Its counts assume enough unattempted
+entries remain. The model-ranked and uniform random portions exclude previous
+attempts from the screening library, and the random portion also excludes the
+compounds already selected by the model for that round.
+
 Open **Pipelines** and select a project. In the **Pipeline browser**, expand **Starter pipelines** and choose
 binder design, peptide/IDR design, structure prediction and cofolding, docking
 and library screening, molecular dynamics, or analysis of saved results.

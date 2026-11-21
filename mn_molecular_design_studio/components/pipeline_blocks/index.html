@@ -282,13 +282,25 @@
     reportedHeight = height;
     send("streamlit:setFrameHeight", {height});
   }
-  function snappedStep(id) {
+  function snappedStep(id, screen) {
     const value = args.program.blocks[id];
     const step = element("button", "snap-step " + value.role);
     step.type = "button";
     step.dataset.id = id;
     step.setAttribute("aria-pressed", String(selected === id));
     step.append(element("span", "snap-action", value.action + " "), element("span", "snap-name", value.label));
+    if (screen.step_details[id]) step.append(element("span", "snap-detail", screen.step_details[id]));
+    if (id === screen.selection_id) {
+      const selection = screen.selection;
+      step.append(element("span", "snap-detail", selection.size), element("span", "snap-example", selection.example));
+      const mix = element("span", "snap-mix");
+      for (const source of ["predicted", "random"]) {
+        const slot = element("span", "snap-option");
+        slot.append(element("strong", "", selection[source + "_count"]), element("span", "", " " + selection[source]));
+        mix.append(slot);
+      }
+      step.append(mix, element("span", "snap-detail", "Skip previously attempted entries, including failures."));
+    }
     step.onclick = () => selectBlock(id);
     return step;
   }
@@ -298,13 +310,13 @@
     const stack = element("div", "snapped-program");
     const setup = element("section", "snap-stack snap-setup");
     setup.setAttribute("aria-label", "Screening inputs");
-    screen.setup.forEach(id => setup.append(snappedStep(id)));
+    screen.setup.forEach(id => setup.append(snappedStep(id, screen)));
 
     const repeat = element("section", "snap-control snap-repeat");
     repeat.setAttribute("aria-label", "Repeat docking rounds");
     repeat.append(element("h2", "snap-bar", "Repeat docking rounds"));
     const round = element("div", "snap-stack snap-body");
-    screen.rounds.forEach(id => round.append(snappedStep(id)));
+    screen.rounds.forEach(id => round.append(snappedStep(id, screen)));
 
     const decision = element("section", "snap-control snap-decision");
     decision.setAttribute("aria-label", "Screening decision");
@@ -312,13 +324,16 @@
     condition.type = "button";
     condition.dataset.id = screen.decision;
     condition.setAttribute("aria-pressed", String(selected === screen.decision));
-    condition.append(element("span", "", "If"), element("span", "snap-predicate", "stopping criteria are met"));
+    condition.append(element("span", "", "If any stopping criterion is met"));
+    const criteria = element("span", "snap-criteria");
+    screen.stop_conditions.forEach(text => criteria.append(element("span", "", text)));
+    condition.append(criteria);
     condition.onclick = () => selectBlock(screen.decision);
 
     const stop = element("div", "snap-stack snap-body");
     stop.append(element("div", "snap-break", "Exit loop"));
     const advance = element("div", "snap-stack snap-body");
-    screen.next_round.forEach(id => advance.append(snappedStep(id)));
+    screen.next_round.forEach(id => advance.append(snappedStep(id, screen)));
     decision.append(condition, stop, element("h3", "snap-bar snap-else", "Otherwise"), advance,
       element("div", "snap-end snap-decision-end"));
     round.append(decision);
@@ -326,17 +341,9 @@
 
     const finish = element("section", "snap-stack snap-finish");
     finish.setAttribute("aria-label", "Finish screening");
-    screen.finish.forEach(id => finish.append(snappedStep(id)));
+    screen.finish.forEach(id => finish.append(snappedStep(id, screen)));
     stack.append(setup, repeat, finish);
-
-    const rules = element("aside", "snap-rules");
-    rules.append(element("h2", "label", "Stopping criteria"));
-    const conditions = element("ul", "condition");
-    screen.stop_conditions.forEach(text => conditions.append(element("li", "", text)));
-    rules.append(conditions, element("h2", "label", "Pose retention"), element("p", "hint", screen.retention
-      ? "Keep poses for up to " + screen.retention.toLocaleString() + " unique compounds after each round."
-      : "Keep cumulative scores. Campaign pose retention is off."));
-    viewport.append(stack, rules);
+    viewport.append(stack);
     return viewport;
   }
   function draw() {

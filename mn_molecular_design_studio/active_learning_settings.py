@@ -45,3 +45,24 @@ class ActiveLearningSettings:
 
     def to_dict(self):
         return asdict(self)
+
+
+def next_round_selection_counts(*, initial_seed_count: int, remaining_compounds: int,
+                                max_batch_size: int, seed_fraction_percent: float = 50.0,
+                                predicted_fraction_percent: float = 80.0) -> dict[str, int]:
+    """Size a later docking batch relative to the actual initial centroid sample."""
+    if initial_seed_count < 1:
+        raise ValueError("The initial centroid sample must contain at least one compound.")
+    if not 1 <= float(seed_fraction_percent) <= 100:
+        raise ValueError("The next-round fraction of the initial centroid sample must be between 1 and 100 percent.")
+    if not 0 <= float(predicted_fraction_percent) <= 100:
+        raise ValueError("The predicted-compound fraction must be between 0 and 100 percent.")
+    if max_batch_size < 0:
+        raise ValueError("The maximum docking batch size cannot be negative.")
+
+    target_count = max(1, int(math.floor(initial_seed_count * float(seed_fraction_percent) / 100.0 + 0.5)))
+    total = min(target_count, max(0, int(remaining_compounds)))
+    if max_batch_size:
+        total = min(total, int(max_batch_size))
+    predicted = int(math.floor(total * float(predicted_fraction_percent) / 100.0 + 0.5))
+    return {"total": total, "predicted": predicted, "random": total - predicted, "target_total": target_count}

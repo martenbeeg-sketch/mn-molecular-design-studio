@@ -3,6 +3,7 @@ from functools import lru_cache
 import math
 import uuid
 
+from mn_molecular_design_studio.active_learning_settings import next_round_selection_counts
 from mn_molecular_design_studio.pipeline_graph import (
     NODE_CATALOG, connection_compatibility, new_graph, validate_graph,
 )
@@ -78,23 +79,71 @@ def program(graph):
         by_kind = {node["data"]["kind"]: node for node in nodes.values()}
         def ids(kinds):
             return [by_kind[kind]["id"] for kind in kinds]
-        docking = by_kind["active_docking"]["data"]["params"]
-        decision = by_kind["active_decision"]["data"]["params"]
-        accumulation = by_kind["active_accumulate"]["data"]["params"]
-        tolerance = f"{decision['score_tolerance']:g} {docking['score_units']}".strip()
+        params = {kind: node["data"]["params"] for kind, node in by_kind.items()}
+        docking, decision = params["active_docking"], params["active_decision"]
+        retention = int(params["active_accumulate"]["retained_pose_count"])
+        tolerance = f"{decision['score_tolerance']:g} {docking['score_units'] or 'kcal/mol'}"
         conditions = [
-            f"Top {decision['top_n']:,} ranks stay in order and scores change by at most "
-            f"{tolerance} for {decision['stable_rounds']:,} comparisons",
-            "The screening library is exhausted",
+            f"Same top {decision['top_n']:,.0f} compounds in the same order, with scores changing by at most "
+            f"{tolerance}, for {decision['stable_rounds']:,.0f} consecutive comparisons",
+            "No unattempted entries remain in the screening library",
         ]
         if limit := decision["max_iterations"]:
-            conditions.append(f"The campaign reaches {limit:,} rounds")
+            conditions.append(f"The campaign reaches {limit:,.0f} rounds")
         result["screen"] = dict(
             setup=ids(SCREEN_INPUTS), rounds=ids(SCREEN_ROUND), decision=by_kind["active_decision"]["id"],
             finish=ids(("active_results",)), next_round=ids(SCREEN_CONTINUE),
-            stop_conditions=conditions, retention=accumulation["retained_pose_count"],
+            stop_conditions=conditions, retention=retention,
+            selection_id=by_kind["active_select"]["id"],
+            selection=_screen_selection(params),
+            step_details={by_kind[kind]["id"]: detail for kind, detail in _screen_step_details(params, retention).items()},
         )
     return result
+
+
+def _screen_selection(params):
+    selection = params["active_select"]
+    seed_sample = int(params["active_seed"]["sample_size"])
+    batch_cap = int(params["active_docking"]["batch_size"])
+    predicted_percent = selection["predicted_fraction_percent"]
+    seed_percent = selection["next_round_seed_fraction_percent"]
+    # Later rounds are at most the first round's size. This preview assumes enough library entries remain.
+    counts = next_round_selection_counts(initial_seed_count=seed_sample, remaining_compounds=seed_sample,
+                                         max_batch_size=batch_cap, seed_fraction_percent=seed_percent,
+                                         predicted_fraction_percent=predicted_percent)
+    size = f"{seed_percent:g}% of the initial centroid sample, limited by the number of unattempted entries"
+    if batch_cap:
+        size += f" and capped at {batch_cap:,}"
+    return {
+        "size": size + ".",
+        "example": f"Up to {counts['total']:,} with {seed_sample:,} initial centroids",
+        "predicted": f"{predicted_percent:g}% highest model probabilities",
+        "predicted_count": f"{counts['predicted']:,}",
+        "random": f"{100 - predicted_percent:g}% uniform random from the rest",
+        "random_count": f"{counts['random']:,}",
+    }
+
+
+def _screen_step_details(params, retention):
+    seed, target = params["active_seed"], params["active_target"]
+    docking = params["active_docking"]
+    labels, training = params["active_binder_rule"], params["active_train"]
+    start, end, tighten = labels["binder_percent_start"], labels["binder_percent_target"], labels["tightening_rounds"]
+    schedule = f"Top {end:g}%" if tighten == 1 or start == end else f"Top {start:g}% → {end:g}% by round {tighten:.0f}"
+    pose_detail = f"Keep one best pose per unique molecule, up to {retention:,}." if retention else "No campaign poses retained."
+    cleanup = "Prune worker files after saving results." if docking["cleanup_after_round"] else "Keep worker files."
+    return {
+        "active_library": "Fingerprint library for predictions and random exploration in later rounds.",
+        "active_seed": f"Round 1 · {seed['sample_size']:,.0f} randomly sampled centroids · seed {seed['sampling_seed']:.0f}.",
+        "active_target": " · ".join(filter(None, (target["target_name"], "Receptor structure and docking box"))),
+        "active_docking": f"{docking['engine']} · {docking['docking_mode'].replace('_', '-')} mode · "
+                          f"up to {docking['worker_batch_size']:,.0f} compounds per worker batch.",
+        "active_accumulate": "Merge scores from every completed round. " + pose_detail + " " + cleanup,
+        "active_binder_rule": f"{schedule} sets the positive-label cutoff on cumulative docking scores.",
+        "active_train": f"Fit an OpenVS-style model on 1,024-bit Morgan fingerprints · up to {training['epochs']:.0f} epochs.",
+        "active_predict": "Run the model across the screening fingerprint library.",
+        "active_results": "Publish the scores, round history and saved poses. Import a shortlist manually from Results.",
+    }
 
 
 def port_label(port):

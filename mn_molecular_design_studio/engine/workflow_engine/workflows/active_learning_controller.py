@@ -21,7 +21,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
 
-from mn_molecular_design_studio.active_learning_settings import ActiveLearningSettings
+from mn_molecular_design_studio.active_learning_settings import (
+    ActiveLearningSettings, next_round_selection_counts as _next_round_selection_counts,
+)
 from mn_molecular_design_studio.collection_policy import collection_scope, set_run_policy
 from mn_molecular_design_studio.pipeline_jobs import link_pipeline_child
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
@@ -36,28 +38,6 @@ _PACKED_FINGERPRINT_BYTES = 128
 
 def _node_by_kind(graph: dict) -> dict[str, dict]:
     return {str(node["data"]["kind"]): node for node in graph["nodes"]}
-
-
-def _next_round_selection_counts(*, initial_seed_count: int, remaining_compounds: int,
-                                 max_batch_size: int, seed_fraction_percent: float = 50.0,
-                                 predicted_fraction_percent: float = 80.0) -> dict[str, int]:
-    """Size a later docking batch relative to the actual initial centroid sample."""
-    if initial_seed_count < 1:
-        raise ValueError("The initial centroid sample must contain at least one compound.")
-    if not 1 <= float(seed_fraction_percent) <= 100:
-        raise ValueError("The next-round fraction of the initial centroid sample must be between 1 and 100 percent.")
-    if not 0 <= float(predicted_fraction_percent) <= 100:
-        raise ValueError("The predicted-compound fraction must be between 0 and 100 percent.")
-    if max_batch_size < 0:
-        raise ValueError("The maximum docking batch size cannot be negative.")
-
-    target_count = max(1, int(math.floor(initial_seed_count * float(seed_fraction_percent) / 100.0 + 0.5)))
-    total = min(target_count, max(0, int(remaining_compounds)))
-    if max_batch_size:
-        total = min(total, int(max_batch_size))
-    predicted = int(math.floor(total * float(predicted_fraction_percent) / 100.0 + 0.5))
-    return {"total": total, "predicted": predicted, "random": total - predicted,
-            "target_total": target_count}
 
 
 def _compound_batches(rows: list[dict], batch_size: int) -> list[list[dict]]:
@@ -837,7 +817,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
     ssh_user = str(docking.get("ssh_user") or "compute")
     selection_node = params["active_select"]
     seed_fraction_percent = float(selection_node.get("next_round_seed_fraction_percent", 50.0))
-    predicted_fraction = float(selection_node.get("predicted_fraction_percent", 80.0)) / 100.0
+    predicted_fraction_percent = float(selection_node.get("predicted_fraction_percent", 80.0))
     training_settings = params["active_train"]
     prediction_settings = params["active_predict"]
     rounds_dir = campaign / "artifacts" / "active_learning" / "rounds"
@@ -1058,7 +1038,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                 remaining_compounds=screening_count - tested_screening_count,
                 max_batch_size=batch_size,
                 seed_fraction_percent=seed_fraction_percent,
-                predicted_fraction_percent=predicted_fraction * 100.0,
+                predicted_fraction_percent=predicted_fraction_percent,
             )
             remaining = selection_counts["total"]
             if remaining <= 0:
