@@ -22,8 +22,8 @@ from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths impor
 
 def is_prediction_run(*records: dict) -> bool:
     """Classify standalone prediction jobs, including runs saved before workflow IDs."""
-    workflows = {str(row.get("workflow") or "").casefold() for row in records}
-    tools = {str(row.get("tool") or "").casefold() for row in records}
+    workflows = {str(row.get("workflow") or row.get("workflow_id") or "").casefold() for row in records}
+    tools = {str(row.get("tool") or "").casefold().replace("-", "_") for row in records}
     if any(value.startswith("refolding.") for value in workflows | tools):
         return True
     if any(value.startswith(("design.", "pipeline.", "analysis.")) for value in workflows | tools):
@@ -124,22 +124,40 @@ def candidate_files(run_dir: Path, candidate: dict) -> tuple[Path | None, list[P
     return structure, [path for path in files if local_artifact(run_dir, path)]
 
 
-def _external_refold(candidate: dict) -> bool:
+def is_external_refold(candidate: dict) -> bool:
     raw = candidate.get('raw_metadata') or {}
     return bool(raw.get('original_prediction') and isinstance(raw.get('source_candidate'), dict)
                 and (candidate.get('metrics') or {}).get('complex_refolding_backend'))
 
 
+def _template_refold(candidate: dict) -> bool:
+    return ((candidate.get("metrics") or {}).get("complex_refolding_backend") in {"af2_initial_guess", "boltz2_initial_guess"}
+            and isinstance((candidate.get("raw_metadata") or {}).get("source_candidate"), dict))
+
+
+def uses_refold_evidence(candidate: dict) -> bool:
+    return is_external_refold(candidate) or _template_refold(candidate)
+
+
 def prediction_files(run_dir: Path, candidate: dict) -> tuple[Path | None, list[Path]]:
     """Resolve confidence for the original output behind a role-normalized structure."""
-    if not _external_refold(candidate):
+    if not is_external_refold(candidate):
         return candidate_files(run_dir, candidate)
     structure = structure_for(run_dir, candidate)
+    if structure is None:
+        return None, []
     raw = candidate['raw_metadata']
     root = run_dir.resolve()
+    runs = portable_paths.runs_root().resolve()
+    if not structure.is_relative_to(root) and structure.is_relative_to(runs):
+        # Pipeline collections may retain the selected model from a child job.
+        parts = structure.relative_to(runs).parts
+        if len(parts) < 3:
+            return structure, []
+        root = runs.joinpath(*parts[:2])
     native = local_artifact(root, raw.get('original_prediction'))
     normalized = local_artifact(root, raw.get('role_normalized_prediction'))
-    if structure is None or native is None or not native.is_relative_to(root) or structure not in (native, normalized):
+    if native is None or not native.is_relative_to(root) or structure not in (native, normalized):
         return structure, []
     files = [path for path in confidence_files(native) if path.resolve().is_relative_to(root)]
     source = local_artifact(root, raw.get('pae_source_path'))
@@ -387,10 +405,36 @@ def prediction_row(structure: Path) -> dict:
     return {}
 
 
-def enrich_candidate(run_dir: Path, candidate: dict, *, include_interface_pae: bool = True) -> dict:
-    """Read small score summaries for older runs without rewriting their outputs."""
-    structure, files = candidate_files(run_dir, candidate)
-    return _enrich_candidate(candidate, structure, files, run_dir, include_interface_pae=include_interface_pae)
+def enrich_candidate(run_dir: Path, candidate: dict, *, include_interface_pae: bool = True,
+                     same_job_only: bool = False) -> dict:
+    """Read exact-model evidence without rewriting saved artifacts."""
+    if _template_refold(candidate):
+        candidate = _template_prediction_evidence(candidate)
+    structure, files = prediction_files(run_dir, candidate)
+    if same_job_only:
+        root = run_dir.resolve()
+        files = [path for path in files if path.resolve().is_relative_to(root)]
+        if structure is not None and not structure.is_relative_to(root):
+            structure = None
+            files = []
+    if is_external_refold(candidate):
+        candidate = _external_prediction_evidence(run_dir, candidate, files)
+        # The original native output is the scoring reference behind the
+        # role-normalized copy. Only its vetted files may supply PAE.
+        if include_interface_pae and structure is not None:
+            measured = _saved_interface_pae(run_dir, candidate, structure, files)
+            if measured:
+                metrics, provenance = measured
+                candidate["metrics"].update(metrics)
+                candidate["raw_metadata"]["prediction_pae_measurement"] = provenance
+        from mn_molecular_design_studio.output_vocabulary import candidate_output
+        candidate["normalized_output"] = candidate_output(candidate)
+        return candidate
+    enriched = _enrich_candidate(candidate, structure, files, run_dir, include_interface_pae=include_interface_pae)
+    if _template_refold(candidate):
+        from mn_molecular_design_studio.output_vocabulary import candidate_output
+        enriched["normalized_output"] = candidate_output(enriched)
+    return enriched
 
 
 def _enrich_candidate(candidate: dict, structure: Path | None, files: list[Path], run_dir: Path,
@@ -427,28 +471,62 @@ def _enrich_candidate(candidate: dict, structure: Path | None, files: list[Path]
 
 
 def presentation_candidate(run_dir: Path, candidate: dict, *, same_job_only: bool = False) -> dict:
-    """Prepare a read-only Results row with scores from the displayed model."""
-    structure, files = prediction_files(run_dir, candidate)
-    if same_job_only:
-        root = run_dir.resolve()
-        files = [path for path in files if path.resolve().is_relative_to(root)]
-        if structure is not None and not structure.is_relative_to(root):
-            structure = None
-            files = []
-    if not _external_refold(candidate):
-        return _enrich_candidate(candidate, structure, files, run_dir, include_interface_pae=False)
+    return enrich_candidate(run_dir, candidate, include_interface_pae=False, same_job_only=same_job_only)
 
+
+def _template_prediction_evidence(candidate: dict) -> dict:
+    """Recover the template adapters' own measurements from legacy mixed rows."""
+    raw = dict(candidate["raw_metadata"])
+    source = raw["source_candidate"]
+    parent_metrics = source.get("metrics") or {}
+    current = candidate["metrics"]
+    backend = current["complex_refolding_backend"]
+    metrics = {
+        name: value for name, value in current.items()
+        if name not in parent_metrics or value != parent_metrics[name]
+    }
+    metrics["complex_refolding_backend"] = backend
+    if backend == "af2_initial_guess":
+        for key in ("ptm", "iptm"):
+            if number(current.get("average_" + key)) is not None:
+                if current.get("average_" + key) != parent_metrics.get("average_" + key):
+                    metrics[key] = current["average_" + key]
+    else:
+        # The legacy Boltz wrapper used the first confidence file in the
+        # directory. Canonical confidence is recovered from the selected model.
+        metrics = {name: value for name, value in metrics.items() if not name.startswith("boltz2_")}
+    parent_raw = source.get("raw_metadata") or {}
+    for field in ("confidence_outputs", "confidence_available", "confidence_file", "confidence_arrays",
+                  "confidence_json", "pae_path", "seed", "native_prediction_structure", "api_engine",
+                  "prediction_protocol", "prediction_pae_measurement", "validation_acceptance"):
+        if field in parent_raw and raw.get(field) == parent_raw[field]:
+            raw.pop(field, None)
+    raw["engine"] = backend
+    return {**candidate, "metrics": metrics, "raw_metadata": raw}
+
+
+def _external_prediction_evidence(run_dir: Path, candidate: dict, files: list[Path]) -> dict:
     raw = dict(candidate['raw_metadata'])
     source = raw['source_candidate']
     inherited = source.get('metrics') or {}
-    prefix = str(candidate['metrics']['complex_refolding_backend']) + '_'
+    backend = str(candidate['metrics']['complex_refolding_backend'])
+    prefix = backend + '_'
     metrics = {name: value for name, value in candidate['metrics'].items()
                if name not in inherited and not name.startswith(prefix)}
+    metrics['complex_refolding_backend'] = backend
+    if 'chain_role_normalized' in candidate['metrics']:
+        metrics['chain_role_normalized'] = candidate['metrics']['chain_role_normalized']
     for field in ('confidence_outputs', 'confidence_available', 'seed', 'confidence_file',
                   'confidence_arrays', 'confidence_json', 'native_prediction_structure',
-                  'api_engine', 'engine', 'prediction_pae_measurement', 'validation_acceptance',
-                  'validation_reference', 'aligned_structure_path'):
+                  'api_engine', 'prediction_pae_measurement'):
         raw.pop(field, None)
+    parent_raw = source.get('raw_metadata') or {}
+    for field in ('prediction_protocol', 'effective_settings', 'model_label', 'model_name',
+                  'image', 'image_digest', 'engine_version', 'native_execution', 'checkpoint_provenance',
+                  'validation_acceptance', 'validation_reference', 'aligned_structure_path'):
+        if field in parent_raw and raw.get(field) == parent_raw[field]:
+            raw.pop(field, None)
+    raw['engine'] = backend
     if local_artifact(run_dir, raw.get('pae_path')) not in files:
         raw.pop('pae_path', None)
         source_path = local_artifact(run_dir, raw.get('pae_source_path'))
@@ -457,12 +535,16 @@ def presentation_candidate(run_dir: Path, candidate: dict, *, same_job_only: boo
         else:
             raw.pop('pae_source_path', None)
     scores = {}
+    native_stem = Path(str(raw['original_prediction'])).stem
     for path in files:
         if 'summary_confidence' in path.name or 'confidences_aggregated' in path.name:
             scores.update(summary_metrics(read_payload(path)))
-        elif path.suffix == '.npz' and path.stem == Path(str(raw['original_prediction'])).stem:
+        elif path.suffix == '.npz' and path.stem == native_stem:
             scores.update(summary_metrics(read_payload(path)))
-    return {**candidate, 'metrics': {**metrics, **scores}, 'raw_metadata': {**raw, 'confidence_outputs': scores}}
+    metrics[prefix + 'has_full_pae'] = bool(raw.get('pae_path'))
+    # Keep native selectors usable only when the field came from this model.
+    candidate_metrics = {**metrics, **{prefix + name: value for name, value in scores.items()}, **scores}
+    return {**candidate, 'metrics': candidate_metrics, 'raw_metadata': {**raw, 'confidence_outputs': scores}}
 
 
 def rank_metric(group: list[dict]) -> str:
@@ -556,7 +638,7 @@ def compound_identity(candidate: dict, input_labels: dict[str, str] | None = Non
 def complex_group_key(candidate: dict) -> str:
     raw = candidate.get('raw_metadata') if isinstance(candidate.get('raw_metadata'), dict) else {}
     reference = raw.get('validation_reference') if isinstance(raw.get('validation_reference'), dict) else {}
-    source = raw.get('source_candidate') if _external_refold(candidate) else {}
+    source = raw.get('source_candidate') if is_external_refold(candidate) else {}
     complex_key = str(source.get('candidate_id') or raw.get('batch_item_id') or reference.get('candidate_id') or raw.get('source_compound_id')
                       or raw.get('compound_id') or raw.get('input_name') or '__single_complex__')
     source_run_id = str(raw.get('legacy_run_id') or '').strip()
@@ -606,7 +688,7 @@ def model_labels(candidates: list[dict]) -> list[str]:
 
 
 def model_seed(candidate: dict) -> int | str | None:
-    if _external_refold(candidate):
+    if is_external_refold(candidate):
         match = re.search(r'(?:^|[/_])seed[-_](\d+)', str(candidate['raw_metadata']['original_prediction']))
         return int(match[1]) if match else None
     seed = (candidate.get('metrics') or {}).get('seed')

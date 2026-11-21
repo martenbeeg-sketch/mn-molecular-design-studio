@@ -476,3 +476,17 @@ def test_analysis_does_not_hide_original_structure_when_native_scores_are_missin
     record = load_result_record(database, USER, selected)
     assert [structure["id"] for structure in record["structures"]] == [design["structure"]]
     assert not record["observations"] and not record["scores"]
+
+
+def test_prediction_role_distinguishes_standalone_experiment_and_design_refold():
+    from mn_molecular_design_studio.database_outcomes import workflow_role
+
+    candidate = {"stage": "complex_refolding", "raw_metadata": {
+        "source_candidate": {"stage": "complex_refolding", "raw_metadata": {}},
+    }}
+    inputs = {"workflow": "refolding.openfold3"}
+    assert workflow_role({}, inputs, candidate, mode="evaluation", prediction=True) == "independent_prediction"
+    candidate["raw_metadata"]["source_candidate"]["raw_metadata"]["source_candidate"] = {
+        "stage": "complex_refolding", "raw_metadata": {"validation_reference": {"candidate_id": "design-1"}},
+    }
+    assert workflow_role({}, inputs, candidate, mode="evaluation", prediction=True) == "design_validation"

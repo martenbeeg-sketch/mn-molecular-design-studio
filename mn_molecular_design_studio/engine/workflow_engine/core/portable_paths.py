@@ -82,7 +82,8 @@ def is_operational_path_key(key: str) -> bool:
     # These names are common in scientific schemas as direct artifact fields
     # (rather than ``*_file``/``*_path``). Treat them as paths so managed
     # PAE matrices and MD trajectories retain their owning-workstation affinity.
-    if lowered in {"pae", "pae_matrix", "trajectory", "trajectories", "trajectory_set", "traj", "mimosa_complex"}:
+    if lowered in {"pae", "pae_matrix", "trajectory", "trajectories", "trajectory_set", "traj", "mimosa_complex",
+                   "original_prediction", "role_normalized_prediction"}:
         return True
     # Format names such as "pdb" and "mmcif" are values, even when the key
     # contains "input" or "output"; they must not be resolved as filesystem paths.
@@ -119,7 +120,7 @@ def _relative_path_key(key: str) -> bool:
     # when candidates are reopened from normalized output.
     if lowered == "secondary_structure" or lowered.endswith("_secondary_structure"):
         return False
-    return lowered == "path" or lowered.endswith(_RELATIVE_PATH_KEY_SUFFIXES)
+    return lowered in {"path", "original_prediction", "role_normalized_prediction"} or lowered.endswith(_RELATIVE_PATH_KEY_SUFFIXES)
 
 
 def _is_named_resource_key(key: str) -> bool:

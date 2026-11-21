@@ -80,8 +80,15 @@ def workflow_role(metadata, inputs, candidate, *, mode, analysis_only=False, pre
     if workflow in {"nesso_affinity", "ligand.affinity.nesso"}:
         return "binding_affinity"
     if prediction:
-        if _object(raw.get("pipeline_refold_input")).get("source_candidate_id"):
-            return "design_validation"
+        current = candidate
+        for _ in range(8):
+            source = _object(current.get("raw_metadata"))
+            if (workflow == "refolding.af2_design_validation" or source.get("validation_reference")
+                    or _object(source.get("pipeline_refold_input")).get("source_candidate_id")):
+                return "design_validation"
+            current = _object(source.get("source_candidate"))
+            if not current:
+                break
         return "independent_prediction"
     return ""
 

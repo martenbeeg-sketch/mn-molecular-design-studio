@@ -1689,8 +1689,14 @@ def _is_cofolding_prediction(tool, metadata, inputs, mode):
 
 def _prediction_engine_label(tool):
     value = str(tool or "").casefold().replace("_", "-")
+    if "boltzgen" in value:
+        return "BoltzGen Fold"
     if "boltz" in value:
         return "Boltz-2"
+    if value == "rf3":
+        return "RosettaFold3"
+    if value == "openfold3":
+        return "OpenFold3"
     if "alphafold3" in value or "af3" in value:
         return "AlphaFold 3"
     return str(tool or "Prediction").replace("_", " ").title()
@@ -2000,6 +2006,12 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             log.warning("Could not recover original target for %s: %s", run_dir, exc)
             return {}
 
+    from mn_molecular_design_studio.cofolding_results import is_prediction_run
+    prediction_run = not analysis_only and mode != "curated" and (
+        is_prediction_run(metadata, inputs, {"tool": tool}) or _is_cofolding_prediction(tool, metadata, inputs, mode)
+    )
+    if prediction_run:
+        mode = "evaluation"
     output_method = "user_uploads" if mode == "curated" else "tool_output"
     seen_molecules = set()
     candidate_groups = {}
@@ -2021,12 +2033,14 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         _attach_prediction_input(candidate, task_inputs_by_id)
         for candidate in read_candidates(run_dir)
     ]
-    prediction_run = _is_cofolding_prediction(tool, metadata, inputs, mode)
     best_prediction_ids = set()
+    ranked_prediction_ids = set()
     if prediction_run and candidates:
         candidates = _enrich_prediction_candidates(run_dir, candidates)
     candidate_records = []
     for candidate in candidates:
+        if prediction_run and (candidate.get("metrics") or {}).get("complex_refolding_backend") == "contract_only":
+            continue  # Legacy handoff rows carry input coordinates rather than a prediction.
         record = _record(candidate, run_dir)
         if record is not None:
             candidate_records.append((candidate, record))
@@ -2054,9 +2068,11 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     native_reference = (_run_target_reference(database, user, project, inputs, metadata, path=target_path)
                         if not is_legacy_aggregate and not analysis_only else {})
     if prediction_run and candidate_records:
-        from mn_molecular_design_studio.cofolding_results import best_candidates_by_complex
+        from mn_molecular_design_studio.cofolding_results import best_candidates_by_complex, rank_metric
         with_structures = [candidate for candidate, record in candidate_records if record.get("files")]
         best_prediction_ids = {id(candidate) for candidate in best_candidates_by_complex(with_structures)}
+        ranked_prediction_ids = {id(candidate) for candidate in with_structures
+                                 if rank_metric([candidate]) and id(candidate) in best_prediction_ids}
 
     input_compounds = _run_input_compounds(run_dir)
     score_paths = [run_dir / "artifacts" / filename for filename in ("docking_scores.csv", "nesso_affinity.csv")]
@@ -2189,6 +2205,14 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             analysis_only=analysis_only, prediction=prediction_run),
             workflow_id=str(inputs.get("workflow") or metadata.get("workflow") or ""),
             job_type=str(inputs.get("job_type") or metadata.get("job_type") or ""))
+        if prediction_run:
+            from mn_molecular_design_studio.cofolding_results import complex_group_key, model_seed
+            provenance["prediction_input_id"] = complex_group_key(candidate)
+            provenance["prediction_seed"] = model_seed(candidate)
+            model_digest = next((item["validated_content_sha256"] for item in record.get("files", [])
+                                 if item.get("source_file_field") == "complex_pdb"), "")
+            if model_digest:
+                provenance["structure_digest"] = model_digest
         if not analysis_only:
             provenance.update(recovered_target_context({"candidate_id": candidate.get("candidate_id")}))
         if mode == "curated":
@@ -2381,7 +2405,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             selected_item = dict(item)
             if prediction_run:
                 selected_item["database_structure_policy"] = "best_prediction"
-                label = f"{_prediction_engine_label(tool)} best complex"
+                label = f"{_prediction_engine_label(tool)} " + ("best complex" if id(candidate) in ranked_prediction_ids else "saved model")
                 selected_item["label"] = label
                 # Include the label in the structure identity so old generic
                 # "Complex Pdb" records are replaced during re-indexing.
@@ -2468,7 +2492,9 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                          "error": (candidate.get("metrics") or {}).get("qc_error") or "",
                          "image_digest": raw.get("image_digest") or "",
                          "target_structure_digest": raw.get("target_structure_digest") or (file_digest(target_source) if target_source else ""),
-                         "structure_digest": analysis_source_context.get("structure_digest") or raw.get("structure_digest") or "",
+                         "structure_digest": (analysis_source_context.get("structure_digest")
+                                              or provenance.get("structure_digest")
+                                              or (raw.get("structure_digest") if not prediction_run else "") or ""),
                          "model_id": str(candidate.get("model_id") or candidate.get("model_index") or
                                          ((raw.get("complex_analysis_selection") or {}).get("model_id") if isinstance(raw.get("complex_analysis_selection"), dict) else "") or ""),
                          "is_representative": not prediction_run or id(candidate) in best_prediction_ids},

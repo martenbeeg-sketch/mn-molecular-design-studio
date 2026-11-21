@@ -41,6 +41,7 @@ def _path(value, run_dir=None) -> Path:
 
 def _absolute_candidates(source: dict) -> list[dict]:
     from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+    from mn_molecular_design_studio.cofolding_results import enrich_candidate, uses_refold_evidence
     run_dir = _path(source["run_dir"])
     rows = copy.deepcopy(read_candidates(_path(source["candidates_jsonl"], run_dir)))
     for row in rows:
@@ -49,7 +50,8 @@ def _absolute_candidates(source: dict) -> list[dict]:
                 resolved = resolve_stored_path(row[key], run_dir=run_dir)
                 if resolved:
                     row[key] = str(resolved)
-    return rows
+    return [enrich_candidate(run_dir, row, include_interface_pae=False) if uses_refold_evidence(row) else row
+            for row in rows]
 
 
 def _selected_source_rows(kind: str, selected: list[dict], all_rows: list[dict]) -> list[dict]:
@@ -1686,10 +1688,11 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         key_params["evidence_namespace"] = node["data"]["evidence_namespace"]
                     if settings["mode"] != "native":
                         key_params["candidate_execution"] = settings
-                    if kind in {"filter", "results", "ipsae", "rosetta_metrics"} or NODE_CATALOG[kind]["workflow"] and NODE_CATALOG[kind]["workflow"].startswith("analysis."):
-                        from mn_molecular_design_studio import output_vocabulary, candidate_selection, measurement_status
+                    if (kind in {"filter", "results", "ipsae", "rosetta_metrics", "shared_filter", "candidate_analyzer", "candidate_rank"}
+                            or NODE_CATALOG[kind]["workflow"] and NODE_CATALOG[kind]["workflow"].startswith("analysis.")):
+                        from mn_molecular_design_studio import cofolding_results, output_vocabulary, candidate_selection, measurement_status
                         key_params["scientific_results_revision"] = [file_digest(Path(module.__file__)) for module in
-                            (output_vocabulary, candidate_selection, measurement_status)]
+                            (output_vocabulary, candidate_selection, measurement_status, cofolding_results)]
                     if kind == "target" or kind == 'cofold_input' and params.get('target_pdb') or kind=='complexa_generator' and params.get('target_pdb'):
                         target_path = _path(params["target_pdb"])
                         key_params["structure_digest"] = file_digest(target_path)

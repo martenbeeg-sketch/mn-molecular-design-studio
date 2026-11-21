@@ -214,6 +214,73 @@ def test_external_refold_shows_its_own_model_confidence_and_never_inherits_input
     assert row["metrics"]["iptm"] == .95
 
 
+def test_pipeline_and_acceptance_use_output_score_and_leave_missing_score_unresolved(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import candidate_sets, validation_acceptance
+    from mn_molecular_design_studio.engine.workflow_engine.core import portable_paths
+
+    runs = tmp_path / "runs"
+    monkeypatch.setattr(portable_paths, "runs_root", lambda: runs)
+    output = runs / "refolding-validation" / "test-run"
+    output.mkdir(parents=True)
+    rows = []
+    for index, iptm in enumerate((.25, .8, None)):
+        name = f"task_sample_{index}"
+        (output / f"{name}_model.cif").touch()
+        if iptm is not None:
+            (output / f"{name}_confidences_aggregated.json").write_text(json.dumps({"iptm": iptm}))
+        rows.append({
+            "candidate_id": f"model-{index}", "stage": "complex_refolding", "source_tool": "openfold3",
+            "complex_pdb": f"{name}_model.cif",
+            "metrics": {"complex_refolding_backend": "openfold3", "iptm": .95},
+            "raw_metadata": {"source_candidate": {"candidate_id": "input", "metrics": {"iptm": .95}},
+                             "original_prediction": f"{name}_model.cif",
+                             "prediction_protocol": {"engine": "openfold3"},
+                             "candidate_set": {"schema_version": candidate_sets.SCHEMA, "target_id": "target",
+                                               "variant_id": f"variant-{index}", "backbone_id": "backbone",
+                                               "eligible_for_prediction": True}},
+        })
+    manifest = output / "candidates.jsonl"
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    collected = list(candidate_sets.iter_candidates({"run_dir": str(output), "candidates_jsonl": str(manifest)}))
+    policy = {"mandatory_filters": [{"field": "iptm", "operator": ">=", "value": .5}]}
+    assert [validation_acceptance.evaluate_candidate(row, policy)["status"] for row in collected] == [
+        "rejected", "accepted", "unresolved",
+    ]
+    assert [candidate_sets.observation(row, "iptm")["value"] for row in collected] == [.25, .8, None]
+    assert results.ranked_candidates(collected)[0]["candidate_id"] == "model-1"
+
+    pipeline = runs / "pipelines" / "test-pipeline"
+    handoff = candidate_sets.write_collection(pipeline, "refold", collected, {})
+    rematerialized = list(candidate_sets.iter_candidates(handoff))
+    assert [candidate_sets.observation(row, "iptm")["value"] for row in rematerialized] == [.25, .8, None]
+    ranked = candidate_sets.rank(pipeline, "rank", handoff, {
+        "rules": policy["mandatory_filters"], "ranking_rules": [{"field": "iptm", "direction": "higher"}],
+        "unique_sequences": False, "limit": 0,
+    })
+    decisions = {row["candidate_id"]: row["raw_metadata"]["selection"] for row in candidate_sets.iter_candidates(ranked)}
+    assert decisions["model-1"]["selected"] and decisions["model-1"]["rank"] == 1
+    assert decisions["model-0"]["status"] == "failed"
+    assert decisions["model-2"]["status"] == "missing_evidence"
+
+
+@pytest.mark.parametrize("tool", ["af2_initial_guess", "boltz2_initial_guess"])
+def test_legacy_template_refold_discards_parent_confidence(tmp_path, tool):
+    structure = tmp_path / "model_0.pdb"
+    structure.touch()
+    row = {"candidate_id": "refold", "stage": "complex_refolding", "source_tool": tool,
+           "complex_pdb": structure.name,
+           "metrics": {"complex_refolding_backend": tool, "iptm": .94},
+           "raw_metadata": {"source_candidate": {"metrics": {"iptm": .94},
+                                                 "raw_metadata": {"confidence_outputs": {"iptm": .94}}},
+                            "confidence_outputs": {"iptm": .94}}}
+    assert results.model_scores(results.enrich_candidate(tmp_path, row))["ipTM"] is None
+    if tool == "af2_initial_guess":
+        row["metrics"]["average_iptm"] = .94  # Recorded by the output even if equal to the input.
+    else:
+        (tmp_path / "confidence_model_0.json").write_text('{"iptm":0.94}')
+    assert results.model_scores(results.enrich_candidate(tmp_path, row))["ipTM"] == .94
+
+
 def test_connected_prediction_structure_resolves_from_managed_source_run(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core import portable_paths
 

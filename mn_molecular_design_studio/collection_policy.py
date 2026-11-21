@@ -74,6 +74,8 @@ def default_policy_for_job(metadata):
         return "automatic"
     if group == "refolding-validation" and job_type in {"complex_refolding", "monomer_refolding"}:
         return "automatic"
+    if group == "refolding" and job_type == "rfd4_structure_prediction":
+        return "automatic"
     if group == "ligand-docking" and job_type in {"ligand_docking", "ligand_affinity"}:
         return "automatic"
     if group in {"ligand-affinity", "ligand-md", "md-analysis", "simulation"}:

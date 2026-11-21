@@ -1149,6 +1149,63 @@ def test_prediction_indexes_only_the_best_structure_per_input(database):
     assert row["structures"][0]["context"]["candidate_id"] == "model-a"
 
 
+@pytest.mark.parametrize("policy", ["automatic", "manual", "none"])
+def test_standalone_cofolding_saves_a_representative_with_its_exact_score(database, policy):
+    from mn_molecular_design_studio.evaluations import file_digest
+
+    candidates = []
+    for sample in range(3):
+        name = f"task_sample_{sample}"
+        candidates.append({
+            "candidate_id": f"model-{sample}", "stage": "complex_refolding", "source_tool": "openfold3",
+            "complex_pdb": f"{name}_model.pdb",
+            "metrics": {"complex_refolding_backend": "openfold3", "iptm": .95},
+            "raw_metadata": {
+                "ligand_smiles": ["CCO"], "input_name": "Standalone complex",
+                "source_candidate": {"candidate_id": "input", "metrics": {"iptm": .95}},
+                "original_prediction": f"{name}_model.pdb",
+            },
+        })
+    run = _make_run(database, "refolding-validation", "standalone-complex", tool="openfold3",
+                    workflow="refolding.openfold3", candidates=candidates, collection_policy=policy)
+    for index, score in enumerate((.25, .8)):
+        (run / f"task_sample_{index}_confidences_aggregated.json").write_text(json.dumps({"iptm": score}))
+    for row in candidates:
+        (run / row["complex_pdb"]).write_text(_pdb_acd_with_generic_ligand())
+
+    assert ingest_run(run, database=database) == (1 if policy == "automatic" else 0)
+    instances = database.list_molecules(A, collection="all")["items"]
+    if policy != "automatic":
+        assert instances == []
+        return
+    record, = instances
+    structure, = record["structures"]
+    assert structure["context"]["workflow_role"] == "independent_prediction"
+    assert structure["context"]["candidate_id"] == "model-1"
+    assert structure["context"]["portable"]
+    assert file_digest(Path(structure["path"])) == file_digest(run / candidates[1]["complex_pdb"])
+    measurements = {obs["context"]["candidate_id"]: obs["metrics"].get("iptm") for obs in record["observations"]}
+    assert measurements["model-0"] == .25
+    assert measurements["model-1"] == .8
+    assert measurements.get("model-2") is None
+    assert ingest_run(run, database=database) == 0
+
+
+def test_standalone_prediction_can_save_coordinates_without_confidence(database):
+    run = _make_run(database, "refolding-validation", "saved-coordinates", tool="openfold3",
+                    workflow="refolding.openfold3", candidates=[{
+        "candidate_id": "unscored", "stage": "complex_refolding", "source_tool": "openfold3",
+        "complex_pdb": "model.pdb", "raw_metadata": {"confidence_available": False},
+    }])
+    (run / "model.pdb").write_text(_pdb_acd())
+
+    assert ingest_run(run, database=database) == 1
+    record, = database.list_molecules(A, collection="all")["items"]
+    structure, = record["structures"]
+    assert structure["label"] == "OpenFold3 saved model"
+    assert structure["context"]["workflow_role"] == "independent_prediction"
+
+
 def test_docking_indexes_only_the_top_pose_for_each_compound(database):
     from mn_molecular_design_studio import ligand_compounds
 

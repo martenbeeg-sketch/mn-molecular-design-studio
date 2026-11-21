@@ -51,6 +51,8 @@ def metadata(row):
 
 def iter_candidates(source, *, review=False):
     """Strict streaming reader: corruption is an operational error, never rejection."""
+    from mn_molecular_design_studio.cofolding_results import enrich_candidate, uses_refold_evidence
+
     path = Path(source.get("review_candidates_jsonl") if review and source.get("review_candidates_jsonl") else source["candidates_jsonl"])
     base = Path(source["run_dir"])
     with path.open() as handle:
@@ -72,6 +74,8 @@ def iter_candidates(source, *, review=False):
                     resolved = resolve_stored_path(row[key], run_dir=base)
                     if resolved:
                         row[key] = str(resolved)
+            if uses_refold_evidence(row):
+                row = enrich_candidate(base, row, include_interface_pae=False)
             yield row
 
 

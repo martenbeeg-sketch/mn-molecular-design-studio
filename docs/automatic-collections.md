@@ -67,6 +67,17 @@ before any job is created, and normal input-path/project authorization still app
 
 ## Results, failures and cancellation
 
+Standalone cofolding and structure prediction jobs use automatic Database
+collection by default. The Database keeps one representative structure per
+input, with confidence associated with its producing model. A saved model
+without a ranking score can still be inspected. A missing required confidence
+score leaves a validation decision unresolved.
+
+Design refolds are identified as design validation. Canvas child jobs inherit
+the pipeline collection boundary. API and MCP callers can set
+`database_collection_policy` to `manual` to keep an independent job in Results
+until they select outputs to save.
+
 One Results entry owns the selection. `batch_manifest.json` records the collection.
 Scalar fallback artifacts live below `artifacts/batch_items`, so purging the parent
 removes the whole batch. Per-input statuses and errors are shown together. Failed

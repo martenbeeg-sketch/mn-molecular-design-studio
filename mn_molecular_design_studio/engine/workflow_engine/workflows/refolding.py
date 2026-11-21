@@ -4669,7 +4669,7 @@ def run_af2_initial_guess_complex_refolding(
                 pae_path = predicted_pdb.with_name(f"{predicted_pdb.stem}_pae.json")
                 if old_pae and old_pae.exists() and old_pae != pae_path:
                     old_pae.rename(pae_path)
-            metrics = dict(source.get("metrics") or {})
+            metrics = {}
             _update_source_monomer_rmsd(source_run_dir, source, metrics)
             metrics.update(metrics_by_id.get(safe_id, {}))
             execution_path = output_dir / "af2_initial_guess" / f"{safe_id}.execution.json"
@@ -4819,6 +4819,8 @@ def run_af2_initial_guess_complex_refolding(
         raw["measurement_status"] = measurement_outcome(candidate["metrics"], required,
             candidate["metrics"].get("validation_error", "") or ("AF2 produced no predicted complex." if not candidate.get("complex_pdb") else ""))
     comparison_report = design_comparison.write_report(job.run_dir, validation_candidates) if validation_candidates else None
+    from mn_molecular_design_studio.cofolding_results import enrich_candidate
+    candidates = [enrich_candidate(job.run_dir, row, include_interface_pae=False) for row in candidates]
     normalized = write_candidates(job.run_dir, "af2_initial_guess", candidates) if candidates else []
     artifacts = _collect_refolding_artifacts(job.run_dir)
     finish_job(
@@ -5208,8 +5210,10 @@ def run_boltz2_complex_refolding(
         for safe_id, source in source_by_id.items():
             prediction_dir = target_root / safe_id
             cif_matches = sorted(prediction_dir.glob("*.cif")) if prediction_dir.exists() else []
-            confidence_matches = sorted(prediction_dir.glob("confidence*.json")) if prediction_dir.exists() else []
-            metrics = dict(source.get("metrics") or {})
+            if not cif_matches:
+                continue
+            predicted_cif = cif_matches[0]
+            metrics = {}
             target_only = bool(target_only_by_id.get(safe_id))
             output_target_chains = (
                 _structure_chains(staged[safe_id])
@@ -5225,15 +5229,15 @@ def run_boltz2_complex_refolding(
             )
             _update_source_monomer_rmsd(source_run_dir, source, metrics)
             metrics["complex_refolding_backend"] = "boltz2_initial_guess"
-            if confidence_matches:
+            confidence_path = prediction_dir / f"confidence_{predicted_cif.stem}.json"
+            if confidence_path.is_file():
                 try:
-                    confidence = json.loads(confidence_matches[0].read_text())
+                    confidence = json.loads(confidence_path.read_text())
                     for key, value in confidence.items():
                         if isinstance(value, (int, float, str, bool)):
                             metrics[f"boltz2_{key}"] = value
                 except json.JSONDecodeError:
                     pass
-            predicted_cif = cif_matches[0] if cif_matches else None
             metrics.update(
                 {
                     f"boltz2_{key}": value
@@ -5258,7 +5262,7 @@ def run_boltz2_complex_refolding(
                     "tool": "boltz2_initial_guess",
                     "binder_chains": output_binder_chains,
                     "target_chains": output_target_chains,
-                    "complex_pdb": _rel_path(job.run_dir, predicted_cif) if predicted_cif else source.get("complex_pdb"),
+                    "complex_pdb": _rel_path(job.run_dir, predicted_cif),
                     "metrics": metrics,
                     "parents": [str(source.get("candidate_id") or "")],
                     "raw_metadata": {
@@ -5271,6 +5275,8 @@ def run_boltz2_complex_refolding(
                     },
                 }
             )
+    from mn_molecular_design_studio.cofolding_results import enrich_candidate
+    candidates = [enrich_candidate(job.run_dir, row, include_interface_pae=False) for row in candidates]
     normalized = write_candidates(job.run_dir, "boltz2_initial_guess", candidates) if candidates else []
     artifacts = _collect_refolding_artifacts(job.run_dir)
     finish_job(
@@ -5308,86 +5314,6 @@ def _first_prediction_file(output_dir: Path, safe_id: str) -> Path | None:
     return None
 
 
-def _prediction_summary_metrics(output_dir: Path, prefix: str) -> dict[str, Any]:
-    summary_paths: list[Path] = []
-    for pattern in (
-        "**/*summary_confidence*.json",
-        "**/*summary_confidences*.json",
-        "**/*confidences_aggregated.json",
-        "**/confidence*.json",
-        "**/*_confidences.json",
-        "**/*confidences.json",
-    ):
-        summary_paths = sorted(output_dir.glob(pattern))
-        if summary_paths:
-            break
-    if not summary_paths:
-        npz_paths = sorted(output_dir.glob("**/*.npz"))
-        if not npz_paths:
-            return {}
-        try:
-            payload = np.load(npz_paths[0])
-            return {
-                f"{prefix}_{key}": float(np.asarray(payload[key]).mean())
-                for key in payload.files
-                if np.asarray(payload[key]).dtype.kind in "biuf" and np.asarray(payload[key]).size
-            }
-        except (OSError, ValueError):
-            return {}
-    try:
-        payload = json.loads(summary_paths[0].read_text())
-    except (json.JSONDecodeError, OSError):
-        return {}
-    if isinstance(payload, list) and payload:
-        payload = payload[0]
-    if not isinstance(payload, dict):
-        return {}
-    metrics: dict[str, Any] = {}
-    for key, value in payload.items():
-        metric_key = f"{prefix}_{key}"
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            metrics[metric_key] = value
-            continue
-        try:
-            array = np.asarray(value, dtype=float)
-        except (TypeError, ValueError):
-            continue
-        if not array.size:
-            continue
-        finite = array[np.isfinite(array)]
-        if not finite.size:
-            continue
-        metrics[f"{metric_key}_mean"] = float(np.mean(finite))
-        metrics[f"{metric_key}_min"] = float(np.min(finite))
-        metrics[f"{metric_key}_max"] = float(np.max(finite))
-    return metrics
-
-
-def _prediction_pae_file(output_dir: Path, prefix: str) -> Path | None:
-    if prefix.startswith("protenix"):
-        patterns = ("**/*_full_data_sample_*.json", "**/*full_data*.json")
-    else:
-        patterns = {
-            "rf3": ("**/*_confidences.json", "**/*confidences.json"),
-            "boltzgen_fold": ("**/*.npz",),
-        }.get(prefix, ("**/*pae*.json", "**/*confidences.json", "**/*.npz"))
-    for pattern in patterns:
-        for path in sorted(output_dir.glob(pattern)):
-            name = path.name.lower()
-            if "summary" in name:
-                continue
-            if prefix == "boltzgen_fold":
-                try:
-                    payload = np.load(path)
-                    if any(np.asarray(payload[key]).ndim >= 2 and "pae" in key.lower() for key in payload.files):
-                        return path
-                except (OSError, ValueError):
-                    continue
-                continue
-            return path
-    return None
-
-
 def _standard_pae_json_path(pae_source: Path, output_dir: Path, safe_id: str, prefix: str) -> Path | None:
     if pae_source.suffix.lower() == ".npz":
         try:
@@ -5397,10 +5323,12 @@ def _standard_pae_json_path(pae_source: Path, output_dir: Path, safe_id: str, pr
                 if key in payload.files:
                     matrix_array = np.asarray(payload[key])
                     break
-            if matrix_array is None or matrix_array.ndim < 2:
+            if matrix_array is None:
                 return None
-            if matrix_array.ndim == 3:
+            if matrix_array.ndim == 3 and matrix_array.shape[0] == 1:
                 matrix_array = matrix_array[0]
+            if matrix_array.ndim != 2 or matrix_array.shape[0] != matrix_array.shape[1]:
+                return None
             matrix = np.asarray(matrix_array, dtype=float).tolist()
             plddt = None
             for key in ("plddt", "atom_plddt", "token_plddt"):
@@ -5450,6 +5378,8 @@ def _finish_external_complex_refolding(
     rc: int,
     extra_metrics: dict[str, Any] | None = None,
 ) -> Path:
+    from mn_molecular_design_studio.cofolding_results import confidence_files, enrich_candidate
+
     candidates: list[dict[str, Any]] = []
     chain_role_finding_count = 0
     chain_role_warning_count = 0
@@ -5458,11 +5388,16 @@ def _finish_external_complex_refolding(
             source = next(item for item in source_candidates if safe_id == _safe_id(item.get("candidate_id")))
             candidate_output = output_root / safe_id
             prediction = _first_prediction_file(candidate_output, safe_id)
-            pae_source = _prediction_pae_file(candidate_output, tool)
-            pae_path = _standard_pae_json_path(pae_source, candidate_output, safe_id, tool) if pae_source else None
-            raw_metadata = source.get("raw_metadata") if isinstance(source.get("raw_metadata"), dict) else {}
             if prediction is None:
                 continue
+            raw_metadata = source.get("raw_metadata") if isinstance(source.get("raw_metadata"), dict) else {}
+            pae_source = pae_path = None
+            for sidecar in confidence_files(prediction):
+                if sidecar.is_relative_to(candidate_output) and sidecar.suffix in {".json", ".npz"}:
+                    pae_path = _standard_pae_json_path(sidecar, candidate_output, safe_id, tool)
+                    if pae_path is not None:
+                        pae_source = sidecar
+                        break
             if _is_target_refolding_input_candidate(source):
                 target_only = True
                 target_source_chains = _target_only_candidate_chains(source)
@@ -5492,11 +5427,11 @@ def _finish_external_complex_refolding(
             if normalized_prediction is None:
                 binder_chains = [] if target_only else binder_source_chains
                 target_chains = target_source_chains
-            metrics = dict(source.get("metrics") or {})
-            metrics.update(_prediction_summary_metrics(candidate_output, tool))
-            metrics["complex_refolding_backend"] = tool
-            metrics[f"{tool}_has_full_pae"] = pae_path is not None
-            metrics["chain_role_normalized"] = normalized_prediction is not None
+            metrics = {
+                "complex_refolding_backend": tool,
+                f"{tool}_has_full_pae": pae_path is not None,
+                "chain_role_normalized": normalized_prediction is not None,
+            }
             findings = read_json(staged_path.with_name(f"{safe_id}.chain_role_findings.json"))
             if not isinstance(findings, list):
                 findings = read_json(staged_path.with_name(f"{safe_id}.chain_role_warnings.json"))
@@ -5537,6 +5472,7 @@ def _finish_external_complex_refolding(
                     findings,
                 )
             )
+    candidates = [enrich_candidate(job_run_dir, row, include_interface_pae=False) for row in candidates]
     normalized = write_candidates(job_run_dir, tool, candidates) if candidates else []
     artifacts = _collect_refolding_artifacts(job_run_dir)
     residue_counts = _candidate_residue_counts(source_candidates, staged)

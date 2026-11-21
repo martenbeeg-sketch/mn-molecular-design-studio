@@ -449,15 +449,20 @@ def available_metrics(binder_format: str, target_type: str, mode: str, *, engine
 
 def _observe(candidate: dict, field: str) -> dict:
     value, measurement_candidate = _selected_measurement(candidate, field)
+    prediction = candidate.get("stage") in {"complex_refolding", "monomer_refolding"}
     if value is None and not str(field).startswith(("prediction/", "analysis/")):
         # Native source-design scores remain available for display/ranking, but
         # are explicitly attributed to the source candidate rather than being
         # presented as measurements from the independent prediction engine.
         source_candidate = (candidate.get("raw_metadata") or {}).get("source_candidate")
         if isinstance(source_candidate, dict):
-            source_value = metric_value(source_candidate, field)
-            if source_value is not None:
-                value, measurement_candidate = source_value, source_candidate
+            source_tool = source_candidate.get("source_tool") or source_candidate.get("tool")
+            explicitly_native = any(spec["field"] == field and source_tool in spec.get("source_tools", ())
+                                    for spec in METRICS.values())
+            if not prediction or explicitly_native:
+                source_value = metric_value(source_candidate, field)
+                if source_value is not None:
+                    value, measurement_candidate = source_value, source_candidate
     measurement_candidate = measurement_candidate or candidate
     if value is None:
         return {"field": field, "value": None, "status": "missing_evidence", "error": "Measurement is unavailable."}
