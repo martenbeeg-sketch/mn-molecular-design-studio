@@ -102,6 +102,13 @@ def test_results_and_mcp_only_link_registered_exact_models(api_data):
     assert [a["observation_id"] for a in observed["exact"]["binderscope_derived"]] == [derived]
     assert observed["exact"]["binderscope_derived"][0]["structure_id"] == refold
     assert analysis_models(observed["exact"])[0]["structure_id"] == refold
+    outcome = observed["exact"]
+    refold_model, = outcome["database"]["derived_structures"]
+    duplicate = {**refold_model, "structure_id": "same-bytes-without-report"}
+    choices = analysis_models({**outcome, "database": {
+        **outcome["database"], "derived_structures": [duplicate, refold_model],
+    }})
+    assert len(choices) == 2 and choices[0]["structure_id"] == refold
     assert observed["exact"]["preferred_binderscope_observation_id"] == derived
     assert [(a["observation_id"], a["relation"]) for a in _assessment_choices(observed["exact"])] == [
         (derived, "Refolded model"), (matching, "Results model")]

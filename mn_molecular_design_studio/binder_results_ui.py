@@ -35,7 +35,17 @@ def _assessment_choices(row):
 def analysis_models(row):
     database = row["database"]
     choices = {model["structure_id"]: model for model in database["structures"] + database["derived_structures"]}
-    return sorted(choices.values(), key=lambda model: model["representation_role"] != "refolded_validation")
+    assessed = {report["structure_id"] for report in row["binderscope"] + row["binderscope_derived"]}
+    ranked = sorted(choices.values(), key=lambda model: (
+        model["representation_role"] != "refolded_validation", model["structure_id"] not in assessed))
+    # The same model may be registered in more than one run collection.
+    # Prefer the identity with the attached report for identical evidence.
+    models = {}
+    for model in ranked:
+        identity = (model["molecule_id"], model["sha256"], model["representation_role"],
+                    tuple(model["binder_chains"]), tuple(model["target_chains"]), model["target_molecule_id"])
+        models.setdefault(identity, model)
+    return list(models.values())
 
 
 def render_binder_outcomes(job, candidates, user, *, inputs=None, digests=None, database=None, key="binder"):
