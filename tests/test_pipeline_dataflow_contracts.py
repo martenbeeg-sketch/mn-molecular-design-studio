@@ -1,5 +1,5 @@
 from mn_molecular_design_studio import pipeline_graph
-from mn_molecular_design_studio.tool_connections import connection_catalog
+from mn_molecular_design_studio.tool_connections import connection_catalog, editor_connections
 
 
 def test_registered_nodes_expose_one_uniform_contract():
@@ -72,3 +72,28 @@ def test_active_learning_catalogue_only_offers_connections_in_the_template():
     page = connection_catalog(view="connections", query="", operation="", direction="both",
                               artifact_type="active_learning_state", offset=0, limit=100)
     assert {(row["source"], row["target"]) for row in page["items"]} == expected
+
+
+def test_editor_and_mcp_use_the_same_outgoing_port_matches():
+    page = connection_catalog(view="connections", query="", operation="filter", direction="outgoing",
+                              artifact_type="", offset=0, limit=10000, port="fail")
+    index = editor_connections()
+    assert page["items"]
+    assert all(row["output"] == "fail" for row in page["items"])
+    rebuilt = {(row["target"], row["input"]): row["artifact_type"] for row in page["items"]}
+    assert rebuilt == {(target, port): kind for target, match in index["wires"]["filter"]["fail"].items()
+                       for port, kind in match.items()}
+    assert index["wires"]["tile_prepare_library"]["out"]["tile_library_centroids"]["features"] == "fingerprint_manifest"
+    assert any(row["target"] == "library.seed_dock" for row in index["handoffs"]["library.centroids"])
+
+
+def test_canvas_groups_round_trip_without_modifying_the_execution_plan():
+    graph = pipeline_graph.new_graph("md_simulation")
+    baseline = pipeline_graph.validate_graph(graph)
+    groups = [{"id": "group-preparation", "name": "Prepare and simulate", "collapsed": True,
+               "members": [node["id"] for node in graph["nodes"][:2]]}]
+    grouped = pipeline_graph.validate_graph(dict(graph, layout_groups=groups))
+    assert grouped["graph"]["layout_groups"] == groups
+    assert grouped["graph"]["nodes"] == baseline["graph"]["nodes"]
+    assert grouped["graph"]["edges"] == baseline["graph"]["edges"]
+    assert grouped["order"] == baseline["order"]

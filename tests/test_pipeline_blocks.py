@@ -126,7 +126,7 @@ def test_pipeline_builder_opens_screen_and_blocks_unconfigured_run(monkeypatch, 
     from mn_molecular_design_studio.navigation import WORKSPACE_PAGES
 
     pages = [item[2] for item in WORKSPACE_PAGES]
-    assert "Pipelines" in pages and "Pipeline Builder" in pages
+    assert pages.count("Pipelines") == 1 and "Pipeline Builder" not in pages
     monkeypatch.setattr(pipeline_graph, "app_home", lambda: tmp_path)
     app = AppTest.from_string("""
 from mn_molecular_design_studio.pipeline_blocks_ui import render_pipeline_blocks

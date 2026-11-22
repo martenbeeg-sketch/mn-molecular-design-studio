@@ -1129,7 +1129,11 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             st.caption("No saved pipelines in this project.")
         return
     if state_key not in st.session_state:
-        if definitions:
+        preview_prefix = f"pipeline-blocks-{project_id or 'unassigned'}"
+        from_preview = st.session_state.get(preview_prefix + "-graph")
+        if from_preview:
+            _activate_graph(prefix, from_preview, _draft_revision(preview_prefix, from_preview))
+        elif definitions:
             _activate_graph(prefix, definitions[0]["graph"], definitions[0]["revision"])
         else:
             _activate_graph(prefix, new_graph("targeted_protein_binder"))
@@ -1192,7 +1196,25 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         last_path = Path(last_job["run_dir"])
         execution = _matching_execution(graph, read_json(last_path/"graph_snapshot.json"), read_json(last_path/"graph_execution.json"))
     reset_token = st.session_state[prefix + "-reset"]
+    from mn_molecular_design_studio.tool_connections import editor_connections
+    round_outline = None
+    if graph.get("template_id") == "unidock_active_learning":
+        from mn_molecular_design_studio.pipeline_blocks import program
+        try:
+            round_outline = program(graph)
+        except ValueError:
+            from mn_molecular_design_studio.pipeline_graph import restore_screening_connections
+            try:
+                restored = restore_screening_connections(graph)
+                validate_graph(restored, allow_incomplete=True)
+            except ValueError:
+                pass  # The runnable-graph check below explains the draft issue.
+            else:
+                if restored != graph and st.button("Restore screening recipe connections", key=prefix + "-restore-screen"):
+                    _activate_graph(prefix, restored, _draft_revision(prefix, graph))
+                    st.rerun()
     value = _component()(graph=graph, catalog=NODE_CATALOG, active_study_layout=ACTIVE_LEARNING_LAYOUT,
+                         connections=editor_connections(), round_outline=round_outline,
                          active_execution_ready=graph.get("template_id") == "unidock_active_learning",
                          reuse_completed=reuse,
                          reset_token=reset_token, input_contexts=contexts,

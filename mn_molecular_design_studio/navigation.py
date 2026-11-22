@@ -7,7 +7,6 @@ WORKSPACE_PAGES = (
     ("All tools", ":material/apps:", "All tools"),
     ("Projects", ":material/folder_open:", "Projects"),
     ("Pipelines", ":material/account_tree:", "Pipelines"),
-    ("Pipeline Builder", ":material/extension:", "Pipeline Builder"),
     ("My results", ":material/query_stats:", "My runs"),
     ("Datasets", ":material/library_books:", "Datasets"),
     ("Data browser", ":material/folder_copy:", "Data Browser"),
@@ -17,6 +16,8 @@ WORKSPACE_PAGES = (
 def render_workspace_navigation(user, *, development=False):
     if st.session_state.get("page") == "Database":
         st.session_state["page"] = "Data Browser"
+    if st.session_state.get("page") == "Pipeline Builder":
+        st.session_state["page"] = "Pipelines"
     st.markdown("""<style>
         [data-testid="stSidebar"] { background: #f7f8f7; }
         [data-testid="stSidebar"] [class*="st-key-nav-"] button {

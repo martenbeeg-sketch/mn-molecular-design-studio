@@ -131,6 +131,18 @@ def test_decision_cannot_bypass_training_prediction_and_selection():
         graph.validate_graph(study)
 
 
+def test_missing_library_wire_is_rejected_and_can_be_restored():
+    study = graph.new_graph("unidock_active_learning")
+    ids = {node["data"]["kind"]: node["id"] for node in study["nodes"]}
+    damaged = {**study, "edges": [edge for edge in study["edges"] if (edge["source"], edge["target"])
+                                 != (ids["active_library"], ids["active_select"])]}
+    with pytest.raises(ValueError, match="Restore the screening recipe connections"):
+        graph.validate_graph(damaged)
+    fixed = graph.restore_screening_connections(damaged)
+    assert fixed == study
+    graph.validate_graph(fixed)
+
+
 def test_binder_percentage_changes_logarithmically_each_round_then_holds_final_value():
     settings = ActiveLearningSettings()
     percentages = [settings.percentile(i) for i in range(1, 11)]

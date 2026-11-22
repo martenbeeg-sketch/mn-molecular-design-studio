@@ -674,13 +674,14 @@ def get_tool_connections(
     artifact_type: str = "",
     offset: int = Query(0, ge=0),
     limit: int = Query(25, ge=1, le=100),
+    port: str = "",
     user: dict[str, Any] = Depends(_current_user),
 ) -> dict[str, Any]:
     """Browse tool modes, workflow inputs, canvas ports and artifact handoffs."""
     from mn_molecular_design_studio.tool_connections import connection_catalog
 
     return connection_catalog(view=view, query=query, operation=operation, direction=direction,
-                              artifact_type=artifact_type, offset=offset, limit=limit)
+                              artifact_type=artifact_type, offset=offset, limit=limit, port=port)
 
 
 @app.get("/api/v1/workflows/{workflow_id}/schema")

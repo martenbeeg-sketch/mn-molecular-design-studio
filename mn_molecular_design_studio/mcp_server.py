@@ -106,11 +106,11 @@ def create_server(client=None):
     @server.tool(annotations=read)
     async def tool_connections(ctx: Context, view: Literal["tiles", "workflows", "operations", "connections", "handoffs"] = "tiles",
                                query: str = "", operation: str = "", direction: Literal["both", "incoming", "outgoing"] = "both",
-                               artifact_type: str = "", offset: int = 0, limit: int = 25) -> dict[str, Any]:
-        """Search tiles and workflows. Switch to connections and pass a canvas operation ID to find its upstream or downstream ports. Use handoffs for saved jobs and manifests."""
+                               artifact_type: str = "", offset: int = 0, limit: int = 25, port: str = "") -> dict[str, Any]:
+        """Search tools or find upstream/downstream canvas sockets by operation and port. Handoffs list saved jobs and manifests."""
         return await call(ctx, "GET", "/api/v1/workflows/connections", query={
             "view": view, "query": query, "operation": operation, "direction": direction,
-            "artifact_type": artifact_type, "offset": offset, "limit": limit,
+            "artifact_type": artifact_type, "offset": offset, "limit": limit, "port": port,
         })
 
     @server.tool(annotations=read)

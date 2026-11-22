@@ -217,6 +217,23 @@ _ACTIVE_LEARNING_EDGES = (
     ("active_decision", "active_results"),
 )
 _ACTIVE_LEARNING_FEEDBACK = ("active_select", "active_docking")
+
+
+def restore_screening_connections(graph):
+    """Rebuild the controller's fixed wires using the existing stage IDs."""
+    by_kind = {node["data"]["kind"]: node["id"] for node in graph["nodes"]}
+    if (graph.get("template_id") != "unidock_active_learning"
+            or set(by_kind) != set(ACTIVE_LEARNING_LAYOUT) or len(graph["nodes"]) != len(by_kind)):
+        raise ValueError("Open a complete Large-library screen recipe to restore its connections.")
+    edges = [{"id": f"edge-active-{index}", "source": by_kind[source], "sourceHandle": "out",
+              "target": by_kind[target], "targetHandle": "in"}
+             for index, (source, target) in enumerate(_ACTIVE_LEARNING_EDGES)]
+    source, target = _ACTIVE_LEARNING_FEEDBACK
+    edges.append({"id": "edge-active-loop", "source": by_kind[source], "sourceHandle": "out",
+                  "target": by_kind[target], "targetHandle": "in", "loop_back": True})
+    return {**graph, "edges": edges}
+
+
 NODE_CATALOG.update({
     "complex_analysis": _spec("complex_analysis", "Complex Analysis", "Collection",
         "Open exact saved complexes for comparison and analysis. Accepted-only requires a completed scientific policy; manual selection keeps acceptance separate. Rejected and unresolved designs remain in Results. Connect Biotite Interface, Interface Clustering or ligand tools after this node.",
@@ -926,18 +943,11 @@ def new_graph(template="foundry") -> dict[str, Any]:
             params = {item["name"]: copy.deepcopy(item["default"]) for item in spec["fields"]}
             nodes.append({"id": f"{kind}-{index}", "type": "studio", "position": {"x": position["x"], "y": position["y"]},
                           "data": {"kind": kind, "label": labels[kind], "params": params}})
-        by_kind = {node["data"]["kind"]: node["id"] for node in nodes}
-        edges = [{"id": f"edge-active-{index}", "source": by_kind[source], "sourceHandle": "out",
-                  "target": by_kind[target], "targetHandle": "in"}
-                 for index, (source, target) in enumerate(_ACTIVE_LEARNING_EDGES)]
-        feedback_source, feedback_target = _ACTIVE_LEARNING_FEEDBACK
-        edges.append({"id": "edge-active-loop", "source": by_kind[feedback_source], "sourceHandle": "out",
-                      "target": by_kind[feedback_target], "targetHandle": "in", "loop_back": True})
-        return clean_graph({"schema_version": SCHEMA, "id": uuid.uuid4().hex,
+        return clean_graph(restore_screening_connections({"schema_version": SCHEMA, "id": uuid.uuid4().hex,
                             "name": "Active-learning docking screen",
-                            "nodes": nodes, "edges": edges,
+                            "nodes": nodes,
                             "viewport": {"x": 0, "y": 0, "zoom": 0.62},
-                            "template_id": template, "template_version": ACTIVE_LEARNING_TEMPLATE_VERSION})
+                            "template_id": template, "template_version": ACTIVE_LEARNING_TEMPLATE_VERSION}))
     if template == "abmpnn_cdr_redesign":
         kinds = ["project_design_source", "sabr", "abmpnn", "boltz2", "sequence_qc", "results"]
         positions = [(60, 190), (370, 190), (680, 190), (990, 190), (1300, 80), (1610, 190)]
@@ -1525,6 +1535,31 @@ def bindcraft2_native_overrides(params: dict) -> dict:
     return settings
 
 
+def _layout_groups(groups, node_ids):
+    """Keep presentation groups separate from the operations the runner schedules."""
+    if not isinstance(groups, list) or len(groups) > 50:
+        raise ValueError("A pipeline supports up to 50 canvas groups.")
+    cleaned, used_ids, used_members = [], set(node_ids), set()
+    for item in groups:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid canvas group.")
+        group_id, members = item.get("id"), item.get("members")
+        if (not isinstance(group_id, str) or not re.fullmatch(r"group-[A-Za-z0-9_-]{1,90}", group_id)
+                or group_id in used_ids or not isinstance(members, list) or len(members) > 100
+                or any(not isinstance(member, str) for member in members)):
+            raise ValueError("Invalid canvas group or membership.")
+        used_ids.add(group_id)
+        remaining = [member for member in dict.fromkeys(members) if member in node_ids]
+        if len(remaining) < 2:
+            continue
+        if used_members.intersection(remaining):
+            raise ValueError("A step can belong to one canvas group.")
+        used_members.update(remaining)
+        cleaned.append({"id": group_id, "name": str(item.get("name") or "Group").strip()[:80] or "Group",
+                        "members": remaining, "collapsed": item.get("collapsed") is True})
+    return cleaned
+
+
 def clean_graph(graph: dict) -> dict:
     """Discard render state so saved definitions never contain execution results."""
     if not isinstance(graph, dict):
@@ -1648,7 +1683,9 @@ def clean_graph(graph: dict) -> dict:
     if not isinstance(viewport, dict) or any(isinstance(viewport.get(k), bool) or not isinstance(viewport.get(k), (float, int)) or not math.isfinite(viewport[k]) for k in ("x", "y", "zoom")) or not .05 <= viewport["zoom"] <= 5:
         raise ValueError("Invalid canvas viewport.")
     kinds_by_id = {node["id"]: node.get("data", {}).get("kind") for node in nodes}
+    groups = _layout_groups(graph.get("layout_groups", []), kinds_by_id)
     return {"schema_version": SCHEMA, "id": graph["id"], "name": str(graph.get("name") or "Untitled pipeline")[:160], "nodes": cleaned,
+            **({"layout_groups": groups} if groups else {}),
             "edges": [{k: edge[k] for k in ("id", "source", "target", "sourceHandle", "targetHandle") if k in edge}
                       | ({"loop_back": True} if edge.get("loop_back") is True or (
                           graph.get("template_id") == "unidock_active_learning"
@@ -2426,13 +2463,12 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
     if not allow_incomplete and not any(n["data"]["kind"] in {"results", "active_results"} for n in nodes.values()):
         raise ValueError("Add a Results node to collect the pipeline outputs.")
     if graph.get("template_id") == "unidock_active_learning":
-        required = {"active_library", "active_target", "active_seed", "active_docking", "active_accumulate",
-                    "active_binder_rule", "active_train", "active_predict", "active_select", "active_decision", "active_results"}
-        present = {node["data"]["kind"] for node in nodes.values()}
-        if present != required:
-            raise ValueError("The active-learning template needs its complete set of source, docking, learning, decision and Results nodes.")
-        if sum(edge.get("loop_back") is True for edge in graph["edges"]) != 1:
-            raise ValueError("The active-learning template needs exactly one selection-to-docking feedback connection.")
+        expected = restore_screening_connections(graph)["edges"]
+        def wiring(edge):
+            return (edge["source"], edge.get("sourceHandle", "out"), edge["target"],
+                    edge.get("targetHandle", "in"), edge.get("loop_back", False))
+        if len(graph["edges"]) != len(expected) or {wiring(edge) for edge in graph["edges"]} != {wiring(edge) for edge in expected}:
+            raise ValueError("Restore the screening recipe connections. The controller requires every declared stage and wire.")
     shared_campaign = _validate_shared_campaign(graph, nodes, incoming) if not allow_incomplete else None
     if shared_campaign:
         graph["shared_campaign"] = shared_campaign

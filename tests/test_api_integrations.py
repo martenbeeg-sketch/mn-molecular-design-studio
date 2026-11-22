@@ -1042,6 +1042,13 @@ def test_tool_connection_map_through_rest_and_mcp(api_data):
             assert any(row["source"] == "ligand.generation.lddm" and row["target"] == "ligand.docking.vina"
                        for row in handoffs)
             assert all(row["transfer"] == "source_job" for row in handoffs)
+            sockets = await mcp.call_tool("tool_connections", {
+                "view": "connections", "operation": "filter", "direction": "outgoing", "port": "fail",
+            })
+            assert not sockets.is_error, sockets.content
+            assert sockets.structured_content["items"]
+            assert all(row["source"] == "filter" and row["output"] == "fail"
+                       for row in sockets.structured_content["items"])
 
     asyncio.run(check())
 

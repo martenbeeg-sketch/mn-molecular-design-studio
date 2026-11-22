@@ -1,18 +1,22 @@
 # Visual pipelines
 
-**Pipeline Builder** opens a canvas for the same project drafts. Drag a block
-from the palette onto the workspace, or drop it directly on a compatible output
-to connect it. Drag an output to an input on an existing block. You can also
-click the two ports in order. Open **Block settings** to configure the selected
-step. Moving a block preserves its connections, and saving a draft keeps the
-layout. A filter has separate Pass, Fail and Unresolved outputs.
+**Pipelines** opens one canvas for project drafts. Open **Connections**, select a
+step, and choose an output to see compatible tools and their input sockets. Click
+a match to add and connect that tool, or drag a wire between existing sockets.
+**Saved-result handoffs** lists tools that read a saved job or manifest. The app,
+API and MCP use the same declared compatibility matrix. In MCP, use
+`tool_connections` with `view="connections"`, `operation`, `direction` and `port`.
+Run validation also checks the graph's inputs and scientific constraints.
 
-Switch to **Outline** for a reading order and sockets that insert steps into
-existing connections. The large-library screen displays its fixed workflow as
-snapped blocks. The Repeat block contains the docking round and its If/Otherwise
-decision, with Final results after the loop. Select a step and open **Block settings**
-to edit the controller's existing settings. Both views use the same graph,
-validation and scheduler.
+Shift-select steps and click **Group** to name, collapse or duplicate them. A
+collapsed group exposes its boundary sockets. It keeps the original runnable
+steps and wires in the draft. **Open group** shows the contents on the canvas.
+
+In the large-library screen, **Screening round** opens a block outline inside the
+canvas. **Repeat docking rounds** frames the real stages. The If/Otherwise
+decision either exits to Final results or prepares the next batch. Select a step
+in the outline to edit that stage's settings. The screening controller manages
+the recipe's wires.
 
 The screening stack shows the selected centroid sample for round one, the
 stopping criteria, and how the next batch is built. The selection block uses the

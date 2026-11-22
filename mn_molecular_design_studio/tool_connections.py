@@ -1,6 +1,7 @@
 """Read-only discovery of registered tools and supported artifact handoffs."""
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Literal
 
 from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, workflow_catalog
@@ -57,7 +58,7 @@ def _operations():
         contract = capability_contract(kind, spec)
         yield {"id": kind, "title": spec["label"], "category": spec["category"], "workflow": spec.get("workflow"),
                "engine_profile": spec.get("engine_profile"), "inputs": contract["inputs"], "outputs": contract["outputs"],
-               "constraints": contract["constraints"]}
+               "constraints": contract["constraints"], "addable": not spec.get("hidden", False)}
 
 
 def _connections(operation, direction):
@@ -87,11 +88,30 @@ def _handoffs():
                    "transfer": "source_job", "additional_inputs": required}
 
 
+@lru_cache(maxsize=1)
+def editor_connections():
+    """Compact lookup for the canvas, built from the same rows as API/MCP discovery."""
+    wires = {}
+    for row in _connections("", "both"):
+        outputs = wires.setdefault(row["source"], {})
+        targets = outputs.setdefault(row["output"], {})
+        targets.setdefault(row["target"], {})[row["input"]] = row["artifact_type"]
+    handoffs = {}
+    for row in _handoffs():
+        handoffs.setdefault(row["source"], []).append(row)
+    return {"wires": wires, "handoffs": handoffs}
+
+
 def connection_catalog(*, view: ConnectionView, query: str, operation: str, direction: ConnectionDirection,
-                       artifact_type: str, offset: int, limit: int) -> dict:
+                       artifact_type: str, offset: int, limit: int, port: str = "") -> dict:
     """Project live registry entries into a bounded, searchable result page."""
     if view == "connections":
         rows = _connections(operation, direction)
+        if port:
+            rows = (row for row in rows if (
+                (direction != "incoming" and (not operation or row["source"] == operation) and row["output"] == port)
+                or (direction != "outgoing" and (not operation or row["target"] == operation) and row["input"] == port)
+            ))
         scope = "Declared canvas port matches. Validate a saved graph to check inputs, formats and scientific constraints."
     elif view == "handoffs":
         rows = _handoffs()
