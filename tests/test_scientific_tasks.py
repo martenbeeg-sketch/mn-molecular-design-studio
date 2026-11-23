@@ -380,6 +380,15 @@ def test_shared_protein_design_routes_open_and_save_independently(api_data):
             assert used["nodes"] == preview["graph"]["nodes"]
 
     assert kinds(previews["protein_design_native"]["graph"]) == ["target", "binder_context", "bindcraft2", "results"]
+    for internal, suffix in ((True, "native"), (False, "external")):
+        route = previews[f"protein_design_rfd4_{suffix}"]["graph"]
+        assert kinds(route) == ["target", "binder_context", "rfd4", *([] if internal else ["boltz2"]), "results"]
+        rfd4 = next(node for node in route["nodes"] if node["data"]["kind"] == "rfd4")
+        request = runner.node_request("rfd4", rfd4["data"]["params"], {}, route["name"])
+        assert request["parameters"]["options"]["refold"] is internal
+        expected = "results" if internal else "boltz2"
+        downstream = next(node for node in route["nodes"] if node["data"]["kind"] == expected)
+        assert any(edge["source"] == rfd4["id"] and edge["target"] == downstream["id"] for edge in route["edges"])
     comparison = kinds(previews["protein_design_comparison"]["graph"])
     assert comparison.count("target") == 1 and "bindcraft2" in comparison and "rfd4" in comparison
     assert kinds(previews["protein_design_new_fold"]["graph"]) == ["protpardelle", "ligandmpnn", "esmfold", "results"]

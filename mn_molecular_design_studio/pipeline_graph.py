@@ -2697,9 +2697,11 @@ SHARED_TEMPLATE_STARTERS = {
 
 PROTEIN_DESIGN_STARTING_POINTS = (
     {"label": "Design against a target", "routes": (
-        {"id": "protein_design", "label": "Folded target · separate evaluation"},
-        {"id": "protein_design_native", "label": "Folded target · native evaluation"},
-        {"id": "protein_design_comparison", "label": "Folded target · compare methods"},
+        {"id": "protein_design", "label": "RFdiffusion3 · separate evaluation"},
+        {"id": "protein_design_native", "label": "BindCraft2 · native evaluation"},
+        {"id": "protein_design_rfd4_native", "label": "RFD4 · internal refolding"},
+        {"id": "protein_design_rfd4_external", "label": "RFD4 · external refolding with Boltz-2"},
+        {"id": "protein_design_comparison", "label": "Compare BindCraft2 and RFD4"},
         {"id": "protein_design_idr", "label": "Peptide / IDR · template-based recognition"},
     )},
     {"label": "Design a new fold", "routes": (
@@ -2744,6 +2746,23 @@ def _protein_design_starter(template_id):
         graph = new_task_graph("template_peptide_idr")
     elif template_id == "protein_design_native":
         graph = new_task_graph("targeted_protein_binder", {"methods": ["bindcraft2"]})
+    elif template_id in {"protein_design_rfd4_native", "protein_design_rfd4_external"}:
+        internal = template_id == "protein_design_rfd4_native"
+        graph = new_task_graph("targeted_protein_binder", {
+            "methods": ["rfd4"],
+            "method_settings": {"rfd4": {"options_json": json.dumps({"refold": internal})}},
+        })
+        rfd4 = next(node for node in graph["nodes"] if node["data"]["kind"] == "rfd4")
+        predictor = next(node for node in graph["nodes"] if node["data"]["kind"] == "boltz2")
+        if internal:
+            rfd4["data"]["label"] = "RFD4 · design and internal refolding"
+            results = next(node for node in graph["nodes"] if node["data"]["kind"] == "results")
+            results["position"] = predictor["position"]
+            graph["nodes"].remove(predictor)
+            graph["edges"] = [edge for edge in graph["edges"] if edge["target"] != predictor["id"]]
+            next(edge for edge in graph["edges"] if edge["source"] == predictor["id"])["source"] = rfd4["id"]
+        else:
+            predictor["data"]["label"] = "Boltz-2 · external refolding"
     elif template_id == "protein_design_comparison":
         from mn_molecular_design_studio.candidate_pipeline import new_pipeline
 
