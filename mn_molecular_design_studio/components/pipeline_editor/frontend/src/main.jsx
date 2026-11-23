@@ -91,15 +91,20 @@ function Editor({args}){
   pipelineNameRef.current=pipelineName;
   const state=useRef({nodes,edges,groups}),history=useRef({past:[],future:[]}),clipboard=useRef(null),dragSnapshot=useRef(null);
   const groupEndpoints=useRef(new Map());
-  const rf=useReactFlow(), initialized=useNodesInitialized(), fitPending=useRef(true); state.current={nodes,edges,groups};
+  const rf=useReactFlow(), initialized=useNodesInitialized(), fitPending=useRef(!args.restore_viewport); state.current={nodes,edges,groups};
   const snapshot=useCallback(()=>authored(state.current.nodes,state.current.edges,{...base.current,name:pipelineNameRef.current,layout_groups:pruneGroups(state.current.groups,state.current.nodes)},viewport.current),[]);
-  const emit=useCallback((action=null)=>{const graph=snapshot();lastSent.current=JSON.stringify(graph);post('streamlit:setComponentValue',{value:{graph,...(action?{action:{...(typeof action==='string'?{type:action}:action),id:uid()}}:{})}});},[snapshot]);
+  const emit=useCallback((action=null)=>{
+    if(['save','save_as','save_template'].includes(action))viewport.current=rf.getViewport();
+    const graph=snapshot();
+    lastSent.current=JSON.stringify(graph);
+    post('streamlit:setComponentValue',{value:{graph,...(action?{action:{...(typeof action==='string'?{type:action}:action),id:uid()}}:{})}});
+  },[rf,snapshot]);
   const pushHistory=useCallback((snap=null)=>{const h=history.current;h.past.push(snap||snapshot());if(h.past.length>60)h.past.shift();h.future=[];setHistoryTick(x=>x+1);},[snapshot]);
   const restore=useCallback(g=>{base.current={...base.current,name:g.name};setPipelineName(g.name||'Untitled pipeline');setNodes(copy(g.nodes));setEdges(copy(g.edges));setGroups(copy(g.layout_groups||[]));if(g.viewport){viewport.current=g.viewport;rf.setViewport(g.viewport);}},[rf]);
   const undo=useCallback(()=>{const h=history.current;if(!h.past.length)return;h.future.push(snapshot());restore(h.past.pop());setHistoryTick(x=>x+1);},[snapshot,restore]);
   const redo=useCallback(()=>{const h=history.current;if(!h.future.length)return;h.past.push(snapshot());restore(h.future.pop());setHistoryTick(x=>x+1);},[snapshot,restore]);
   useEffect(()=>{
-    if(reset.current!==args.reset_token){reset.current=args.reset_token;base.current=args.graph;setPipelineName(args.graph.name||'Untitled pipeline');setNodes(copy(args.graph.nodes));setEdges(copy(args.graph.edges));setGroups(copy(args.graph.layout_groups||[]));history.current={past:[],future:[]};setSelection(null);viewport.current=args.graph.viewport;fitPending.current=true;}
+    if(reset.current!==args.reset_token){reset.current=args.reset_token;base.current=args.graph;setPipelineName(args.graph.name||'Untitled pipeline');setNodes(copy(args.graph.nodes));setEdges(copy(args.graph.edges));setGroups(copy(args.graph.layout_groups||[]));history.current={past:[],future:[]};setSelection(null);viewport.current=args.graph.viewport;fitPending.current=!args.restore_viewport;if(args.restore_viewport&&viewport.current)rf.setViewport(viewport.current);}
     base.current={...base.current,name:args.graph.name};
     if(args.graph.name!==pipelineNameRef.current)setPipelineName(args.graph.name||'Untitled pipeline');
   },[args.reset_token,args.graph.name,rf]);

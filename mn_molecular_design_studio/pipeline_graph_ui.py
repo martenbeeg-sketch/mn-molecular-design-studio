@@ -666,10 +666,38 @@ def _activate_graph(prefix, graph, revision=None):
     st.session_state[prefix+"-graph"] = copy.deepcopy(graph)
     st.session_state[prefix + "-draft-base"] = (graph["id"], revision)
     st.session_state[prefix + "-view"] = "editor"
+    st.session_state.pop(prefix + "-restore-viewport", None)
     st.session_state.pop(prefix + "-draft-conflict", None)
     st.session_state.pop(prefix + "-run-check", None)
     st.session_state[prefix+"-reset"] = uuid.uuid4().hex
     _close_node_editor(prefix)
+
+
+def _show_pipeline_save_project(prefix, graph, project_selector, submit_api, read_only_projects):
+    open_key = prefix + "-save-project-open"
+    if not st.session_state.get(open_key):
+        return
+
+    @st.dialog("Save pipeline to a project", on_dismiss=lambda: st.session_state.pop(open_key, None))
+    def dialog():
+        project_id = project_selector("visual-pipeline-save-destination")
+        save, cancel = st.columns(2)
+        writable = bool(project_id and project_id not in read_only_projects)
+        if save.button("Save pipeline", type="primary", key=open_key + "-confirm", disabled=not writable):
+            try:
+                saved = submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": graph})
+                _activate_graph(f"visual-pipeline-{project_id}", saved["graph"], saved["revision"])
+                st.session_state.setdefault("project-pending-selection", {})["visual-pipeline-project-id"] = project_id
+                st.session_state.pop(prefix + "-graph", None)
+                st.session_state.pop(open_key, None)
+                st.rerun()
+            except (ValueError, OSError, RuntimeError, KeyError, TypeError) as exc:
+                st.error(str(exc))
+        if cancel.button("Cancel", key=open_key + "-cancel"):
+            st.session_state.pop(open_key, None)
+            st.rerun()
+
+    dialog()
 
 
 def _show_pipeline_save_as(prefix, project_id, submit_api):
@@ -1064,11 +1092,7 @@ def _change_archive_status(draft, project_id, submit_api, *, archived):
 
 
 def _open_saved_pipeline(prefix, draft):
-    current = st.session_state.get(prefix + "-graph")
-    if current and current["id"] == draft["graph"]["id"] and _draft_revision(prefix, current) == draft["revision"]:
-        st.session_state[prefix + "-view"] = "editor"
-    else:
-        _activate_graph(prefix, draft["graph"], draft["revision"])
+    _activate_graph(prefix, draft["graph"], draft["revision"])
 
 
 def _show_save_pipeline_template(prefix, project_id, submit_api):
@@ -1168,6 +1192,7 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
                                 result = submit_api(f"/api/v1/pipelines/saved-templates/{item['id']}/use",
                                                     {"project_id": project_id})
                                 _activate_graph(prefix, result["graph"])
+                                st.session_state[prefix + "-restore-viewport"] = True
                                 st.rerun()
                             except (ValueError, RuntimeError, OSError, LookupError, KeyError) as exc:
                                 st.error(str(exc))
@@ -1205,6 +1230,7 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
         if current and not any(item["graph"]["id"] == current["id"] for item in (*definitions, *archived, *trashed)):
             if st.button(f"Continue editing {current['name']}", key=prefix + "-resume"):
                 st.session_state[prefix + "-view"] = "editor"
+                st.session_state[prefix + "-restore-viewport"] = True
                 st.rerun()
         if definitions:
             names = Counter(row["graph"]["name"].casefold() for row in definitions)
@@ -1438,7 +1464,7 @@ def _render_pipeline_run_setup(prefix, project_id, graph, submit_api, execution_
 
 def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs,
                             read_only_projects=(), execution_available=True, search_cluster_runs=None,
-                            library_catalog_available=True):
+                            library_catalog_available=True, save_project_selector=None):
     st.markdown("<style>.block-container{max-width:1900px;padding-top:3.75rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
     project_id = project_selector("visual-pipeline")
     prefix = f"visual-pipeline-{project_id or 'unassigned'}"
@@ -1527,7 +1553,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     settings = candidate_execution.policy(graph.get("candidate_execution"))
     graph["candidate_execution"] = settings
     if not project_id:
-        st.info("Choose a project before saving a pipeline version or running it. Each pipeline run is recorded under its selected project.")
+        st.info("Save lets you choose a project for this pipeline. Run setup also requires a project.")
     launch_panel = st.container()
     last_job = st.session_state.get(prefix+"-last-job", {})
     if st.session_state.get(prefix + "-last-job-graph") != graph["id"]:
@@ -1561,6 +1587,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                          connections=editor_connections(), round_outline=round_outline,
                          reset_token=reset_token, input_contexts={},
                          draft_saved=bool(_draft_revision(prefix, graph)),
+                         restore_viewport=bool(_draft_revision(prefix, graph) or st.session_state.get(prefix + "-restore-viewport")),
                          execution=execution, settings_update=st.session_state.get(prefix+"-settings-update"),
                          key=f"{prefix}-canvas-{reset_token}", default=None)
     if value and (value.get("graph") or {}).get("id") == graph["id"]:
@@ -1607,7 +1634,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                             st.rerun()
                     elif action["type"] == "save":
                         if not project_id:
-                            st.warning("Choose a project before saving a pipeline.")
+                            st.session_state[prefix + "-save-project-open"] = True
                         else:
                             st.success(f"Saved {graph['name']}.")
                             link = urlencode({"pipeline": graph["id"], "pipeline_project": project_id})
@@ -1659,6 +1686,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     _show_pipeline_versions(prefix, owner_id, project_id, graph, saved_draft, submit_api)
     _show_save_pipeline_template(prefix, project_id, submit_api)
     _show_pipeline_save_as(prefix, project_id, submit_api)
+    _show_pipeline_save_project(prefix, graph, save_project_selector or project_selector, submit_api, read_only_projects)
     _show_node_editor(prefix, owner_id=owner_id, project_id=project_id, submit_api=submit_api,
                       search_jobs=search_jobs, library_catalog_available=library_catalog_available)
 

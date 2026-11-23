@@ -1365,6 +1365,49 @@ render_pipeline_builder(owner_id="test-user",project_selector=lambda _:None,
     assert any("Choose a project" in c.value for c in app.info)
 
 
+def test_saving_unassigned_template_keeps_the_canvas_in_the_chosen_project(monkeypatch, tmp_path):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import pipeline_graph_ui
+
+    monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
+    draft = graph.new_graph("unidock_active_learning")
+    draft["nodes"][0]["position"] = {"x": 216, "y": 48}
+    draft["viewport"] = {"x": 154, "y": -38, "zoom": .66}
+    monkeypatch.setattr(pipeline_graph_ui, "_component", lambda: lambda **kwargs: None if kwargs["draft_saved"] else {
+        "graph": kwargs["graph"], "action": {"type": "save", "id": "save-open-canvas"},
+    })
+    app = AppTest.from_string("""
+import streamlit as st
+from mn_molecular_design_studio.pipeline_graph import save_definition
+from mn_molecular_design_studio.pipeline_graph_ui import render_pipeline_builder
+
+def project(_key):
+    return st.session_state.get("project-pending-selection", {}).get("visual-pipeline-project-id")
+
+def destination(_key):
+    return st.selectbox("Project", ["", "screening"], key="save-destination")
+
+def submit(path, request):
+    assert path == "/api/v1/pipelines/save"
+    return save_definition(request["graph"], "test-user", request["project_id"])
+
+render_pipeline_builder(owner_id="test-user", project_selector=project, save_project_selector=destination,
+    submit_api=submit, search_jobs=lambda **k: {"items": []})
+""")
+    app.session_state["visual-pipeline-unassigned-graph"] = draft
+    app.session_state["visual-pipeline-unassigned-reset"] = "unassigned-canvas"
+    app.run()
+    assert app.button(key="visual-pipeline-unassigned-save-project-open-confirm").disabled
+    app.selectbox(key="save-destination").set_value("screening").run()
+    app.button(key="visual-pipeline-unassigned-save-project-open-confirm").click().run()
+    assert not app.exception
+    saved = graph.list_definitions("test-user", "screening")[0]["graph"]
+    assert saved["id"] == draft["id"]
+    assert saved["viewport"] == draft["viewport"]
+    assert saved["nodes"][0]["position"] == draft["nodes"][0]["position"]
+    assert app.session_state["visual-pipeline-screening-graph"] == saved
+
+
 def test_screen_run_setup_opens_each_required_input_editor(monkeypatch, tmp_path):
     from streamlit.testing.v1 import AppTest
     from mn_molecular_design_studio import pipeline_graph_ui

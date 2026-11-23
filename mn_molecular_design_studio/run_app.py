@@ -4203,6 +4203,7 @@ def _render_pipelines() -> None:
 
     pipeline_graph_ui.render_pipeline_builder(owner_id=str(CURRENT_USER["id"]),
         project_selector=lambda key: _render_project_selector(key, include_archived=True),
+        save_project_selector=lambda key: _render_project_selector(key, allow_create=False),
         submit_api=_post_local_api, search_jobs=search_jobs, read_only_projects=read_only,
         search_cluster_runs=search_pipeline_cluster_runs if cluster_config.enabled() else None)
 
