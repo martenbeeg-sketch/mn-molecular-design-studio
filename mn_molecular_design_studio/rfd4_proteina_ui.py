@@ -610,8 +610,8 @@ def render_results(run_id: str, run_dir: Path, candidates: list[dict], parameter
     evidence = representation.get("oracle_pae")
     if evidence and st.toggle("Show internal refold PAE", key=f"rfd4-show-pae-{run_id}-{selected}"):
         from mn_molecular_design_studio.cache_provenance import file_digest
-        from mn_molecular_design_studio.cofolding_results import local_artifact, read_confidence
-        from mn_molecular_design_studio.cofolding_results_ui import render_confidence_plots
+        from mn_molecular_design_studio.cofolding_results import local_artifact
+        from mn_molecular_design_studio.cofolding_results_ui import render_openfold3_pae
 
         model = local_artifact(run_dir, evidence.get("oracle_model_path"))
         pae = local_artifact(run_dir, evidence.get("pae_path"))
@@ -620,15 +620,6 @@ def render_results(run_id: str, run_dir: Path, candidates: list[dict], parameter
                     or file_digest(pae) != evidence.get("pae_sha256")):
                 st.info("The matching OpenFold3 confidence files are unavailable for this design.")
                 return
-            confidence = read_confidence(model, (pae,))
-            pae_bytes, model_bytes = pae.read_bytes(), model.read_bytes()
+            render_openfold3_pae(model, pae, key=f"rfd4-pae-{run_id}-{selected}")
         except (OSError, ValueError, RuntimeError):
             st.info("The matching OpenFold3 confidence files could not be read.")
-            return
-        st.caption("The matrix uses OpenFold3’s original token order. Download it with the matching OpenFold3 model.")
-        render_confidence_plots(confidence)
-        first, second = st.columns(2)
-        first.download_button("Download full PAE JSON", pae_bytes, file_name=pae.name,
-                              mime="application/json", key=f"rfd4-pae-{run_id}-{selected}")
-        second.download_button("Download matching OpenFold3 CIF", model_bytes, file_name=model.name,
-                               key=f"rfd4-oracle-model-{run_id}-{selected}")

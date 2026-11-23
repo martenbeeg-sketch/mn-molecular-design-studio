@@ -609,6 +609,9 @@ class MolecularDatabase:
         suffix = Path(name).suffix.lower()
         if suffix not in {".pdb", ".ent", ".cif", ".mmcif", ".pdbqt", ".sdf", ".mol", ".fasta", ".fa"}:
             raise ValueError("Unsupported molecular structure file.")
+        return self._store_molecular_blob(suffix, content)
+
+    def _store_molecular_blob(self, suffix, content):
         digest = hashlib.sha256(content).hexdigest()
         directory = self.root / "molecular_files" / digest[:2]
         directory.mkdir(parents=True, exist_ok=True)
@@ -977,6 +980,66 @@ class MolecularDatabase:
             connection.execute("UPDATE molecule_structures SET path=?,context=? WHERE id=?",
                                (str(destination), _json(context), structure_id))
         return {"structure_id": structure_id, "path": str(destination), "sha256": digest}
+
+    def retain_rfd4_pae(self, user, structure_id, pae, model, evidence):
+        """Save the native OpenFold3 model and its matrix on one exact refold."""
+        from mn_molecular_design_studio.rfd4_pae import verified_pae_pair
+
+        with self.connection() as connection:
+            row = connection.execute("SELECT group_id,context FROM molecule_structures WHERE id=?", (structure_id,)).fetchone()
+        if not row:
+            raise FileNotFoundError("Structure not found.")
+        self.group(row["group_id"], user, write=True)
+        context = json.loads(row["context"])
+        if context.get("design_representation_role") != "refolded_validation":
+            raise ValueError("RFD4 confidence requires its refolded validation structure.")
+        refolded_sha256 = context.get("portable_sha256") or context.get("content_sha256")
+        payload, pae_bytes, model_bytes = verified_pae_pair(
+            pae, model, refolded_sha256, pae_sha256=evidence["pae_sha256"],
+            oracle_model_sha256=evidence["oracle_model_sha256"])
+        self._store_molecular_blob(".json", pae_bytes)
+        self._store_file("oracle_model.cif", model_bytes)
+        retained = {"pae_sha256": evidence["pae_sha256"],
+                    "oracle_model_sha256": payload["oracle_model_sha256"],
+                    "refolded_sha256": refolded_sha256}
+        with self.connection() as connection:
+            connection.execute("UPDATE molecule_structures SET context=json_set(context,'$.rfd4_pae',json(?)) WHERE id=?",
+                               (_json(retained), structure_id))
+        return retained
+
+    def rfd4_pae_file(self, user, structure_id, kind):
+        """Authorize and verify one file belonging to a saved refold's confidence pair."""
+        from mn_molecular_design_studio.cache_provenance import file_digest
+
+        fields = {"matrix": ("pae_sha256", ".json"), "model": ("oracle_model_sha256", ".cif")}
+        if not isinstance(kind, str) or kind not in fields:
+            raise ValueError("Unknown RFD4 confidence file.")
+        with self.connection() as connection:
+            row = connection.execute("SELECT group_id,context FROM molecule_structures WHERE id=?", (structure_id,)).fetchone()
+        if not row:
+            raise FileNotFoundError("Structure not found.")
+        self.group(row["group_id"], user)
+        context = json.loads(row["context"])
+        evidence = context.get("rfd4_pae") or {}
+        field, suffix = fields[kind]
+        digest = evidence.get(field)
+        if not digest or evidence.get("refolded_sha256") != (context.get("portable_sha256") or context.get("content_sha256") or context.get("sha256")):
+            raise FileNotFoundError("No RFD4 confidence was retained for this structure.")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(digest)):
+            raise ValueError("Invalid saved RFD4 confidence digest.")
+        path = self.root / "molecular_files" / digest[:2] / (digest + suffix)
+        if not path.is_file() and context.get("_replica_node"):
+            from mn_molecular_design_studio.molecular_database_peer import fetch_rfd4_pae
+
+            content = fetch_rfd4_pae(user, context, kind)
+            if hashlib.sha256(content).hexdigest() != digest:
+                raise ValueError("Remote RFD4 confidence digest mismatch.")
+            path = self._store_molecular_blob(suffix, content)
+        if not path.is_file():
+            raise FileNotFoundError("Saved RFD4 confidence file is unavailable.")
+        if file_digest(path) != digest:
+            raise ValueError("Saved RFD4 confidence digest mismatch.")
+        return path
 
     def _visible_ids(self, user, group_id="", project_id="", scope="organization", methods=None, collection="all",
                      hide_smoke_test=False):

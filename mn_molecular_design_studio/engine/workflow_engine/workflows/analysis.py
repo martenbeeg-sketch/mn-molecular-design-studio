@@ -1680,6 +1680,19 @@ def _flatten_metrics(metrics: dict[str, Any], prefix: str = "") -> dict[str, Any
     return flat
 
 
+def _rfd4_pae_paths(source_run_dir, candidate):
+    raw = candidate.get("raw_metadata") or {}
+    representation = raw.get("design_representation") or {}
+    evidence = representation.get("oracle_pae") or {}
+    pae = _resolve_path(source_run_dir, evidence.get("pae_path"))
+    model = _resolve_path(source_run_dir, evidence.get("oracle_model_path"))
+    if (pae and pae.is_file() and model and model.is_file()
+            and evidence.get("pae_sha256") and evidence.get("oracle_model_sha256")):
+        return {"path": str(pae), "oracle_model_path": str(model),
+                "sha256": evidence["pae_sha256"], "oracle_model_sha256": evidence["oracle_model_sha256"]}
+    return None
+
+
 def _find_pae_path(source_run_dir: Path, candidate: dict[str, Any], structure_path: Path | None) -> Path | None:
     search_dirs: list[Path] = []
     raw = candidate.get("raw_metadata") or {}
@@ -1688,6 +1701,11 @@ def _find_pae_path(source_run_dir: Path, candidate: dict[str, Any], structure_pa
         resolved = _resolve_path(source_run_dir, str(explicit_pae))
         if resolved and resolved.exists():
             return resolved
+        return None
+    if ((raw.get("design_representation") or {}).get("oracle_pae")
+            and structure_path and structure_path.name.endswith("_refolded.cif")):
+        # Native token order belongs to the sibling oracle CIF. It must be
+        # reindexed before a scorer reads the canonical RFD4 refold.
         return None
     if structure_path:
         direct_matches = [
@@ -1749,6 +1767,9 @@ def _ipsae_engine(candidate: dict[str, Any], pae_path: Path | None) -> tuple[str
         return "boltz", "boltz_npz"
     if "boltz" in source_tool:
         return "boltz", "boltz_npz"
+    raw = candidate.get("raw_metadata") or {}
+    if pae_path and (raw.get("ipsae_aligned_rfd4_pae") or (raw.get("database_pae_evidence") or {}).get("oracle_model_sha256")):
+        return "openfold3", "af3_json"
     return "af2", "af2_json"
 
 
@@ -2245,6 +2266,7 @@ def _run_ipsae(
     used_ids: set[str] = set()
     staged_structures: dict[str, Path] = {}
     staged_measurement_structures: dict[str, Path] = {}
+    staged_pae_files: dict[str, Path] = {}
 
     for index, candidate in enumerate(candidates, start=1):
         safe_id = _safe_id(candidate)
@@ -2278,7 +2300,24 @@ def _run_ipsae(
             staged_pae = staged_dir / pae_path.name
             shutil.copy2(pae_path, staged_pae)
         else:
-            metrics["ipsae_error"] = "PAE file missing; structure metrics were still calculated"
+            evidence = _rfd4_pae_paths(source_run_dir, candidate)
+            if evidence:
+                from mn_molecular_design_studio.rfd4_pae import write_aligned_pae
+
+                try:
+                    staged_pae = write_aligned_pae(structure_path, evidence["path"], evidence["oracle_model_path"],
+                        staged_dir / "aligned_openfold3_pae.json", pae_sha256=evidence["sha256"],
+                        oracle_model_sha256=evidence["oracle_model_sha256"])
+                    candidate["raw_metadata"]["ipsae_aligned_rfd4_pae"] = {
+                        "source_sha256": evidence["sha256"], "path": str(staged_pae),
+                        "oracle_model_sha256": evidence["oracle_model_sha256"],
+                    }
+                except (OSError, ValueError, RuntimeError) as exc:
+                    metrics["ipsae_error"] = f"Could not align the saved OpenFold3 matrix: {exc}"
+            else:
+                metrics["ipsae_error"] = "PAE file missing; structure metrics were still calculated"
+        if staged_pae:
+            staged_pae_files[safe_id] = staged_pae
         staged_structure = _collapse_target_chains_for_ipsae(
             staged_measurement_structure,
             binder_chain=binder_chain,
@@ -2434,7 +2473,7 @@ def _run_ipsae(
         if not binder_chains or not target_chains:
             continue
         structure_path = _resolve_path(source_run_dir, candidate.get("complex_pdb"))
-        pae_path = _find_pae_path(source_run_dir, candidate, structure_path)
+        pae_path = staged_pae_files.get(safe_id)
         staged_structure = staged_structures.get(safe_id)
         row_metrics = _parse_ipsae_row(row_path) if row_path.exists() else {}
         summary_metrics: dict[str, Any] = {}
@@ -2543,7 +2582,8 @@ def run_ipsae_analysis_contract(
             "structure_contact_cutoff": float(structure_contact_cutoff),
             "hotspot_contact_cutoff": float(hotspot_contact_cutoff),
             "image": IPSAE_IMAGE,
-            "pae_file": str(_find_pae_path(source_run_dir, candidate, _resolve_path(source_run_dir, candidate.get("complex_pdb"))) or "")}
+            "pae_file": ((raw.get("ipsae_aligned_rfd4_pae") or {}).get("path")
+                         or str(_find_pae_path(source_run_dir, candidate, _resolve_path(source_run_dir, candidate.get("complex_pdb"))) or ""))}
         raw["measurement_provenance"] = {
             **dict(raw.get("measurement_provenance") or {}),
             "bindcraft2_ipdae_recomputed": {

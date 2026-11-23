@@ -236,6 +236,86 @@ def test_explicit_run_membership_removal_survives_forced_reindex(database):
     assert database.list_molecules(A, group_id=other)["total"] == 1
 
 
+@pytest.mark.parametrize("status", ["accepted", "rejected", "not_evaluated"])
+def test_rfd4_pae_moves_to_database_only_after_acceptance(database, status, monkeypatch):
+    import gemmi
+    from mn_molecular_design_studio.complex_analysis_sources import build_database_analysis_source
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_refold_evidence import SCHEMA
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+
+    structure = gemmi.read_pdb_string(_pdb_efg_acd_complex())
+    structure.setup_entities()
+    for chain in structure[0]:
+        for index, residue in enumerate(chain, 1):
+            residue.subchain = chain.name
+            residue.label_seq = index
+            if residue.name != "GLY":
+                side_chain = residue[0].clone()
+                side_chain.name = "CB"
+                side_chain.pos.y += 1.5
+                residue.add_atom(side_chain)
+    native = structure.make_mmcif_document().as_string().encode()
+    for atom in structure[0].all():
+        atom.atom.b_iso = 85
+    refolded = structure.make_mmcif_document().as_string().encode()
+    matrix = [[float((i * 7 + j) % 11) for j in range(6)] for i in range(6)]
+    def digest(content):
+        return hashlib.sha256(content).hexdigest()
+
+    pae = json.dumps({"schema": SCHEMA, "pae": matrix, "token_chain_ids": ["B"] * 3 + ["A"] * 3,
+                      "token_res_ids": [1, 2, 3] * 2, "oracle_model_sha256": digest(native),
+                      "refolded_sha256": digest(refolded)}).encode()
+    run = _make_run(database, "design", f"rfd4-pae-{status}", tool="rfd4_proteina", workflow="design_generation",
+        candidates=[{"candidate_id": "design-1", "source_tool": "rfd4_proteina", "stage": "generation.backbone_sequence",
+            "binder_sequence": "ACD", "binder_chains": ["B"], "target_chains": ["A"], "complex_pdb": "example_refolded.cif",
+            "metrics": {"oracle_ppi.overall_plddt": 85},
+            "raw_metadata": {"validation_acceptance": {"status": status}, "design_representation": {
+                "schema": "studio.rfd4-representations.v1", "role": "refolded_validation",
+                "b_factor_interpretation": "plddt_0_100", "oracle_pae": {
+                    "oracle_model_path": "oracle_model.cif", "oracle_model_sha256": digest(native),
+                    "pae_path": "oracle_pae.json", "pae_sha256": digest(pae)}}}}])
+    (run / "example_refolded.cif").write_bytes(refolded)
+    (run / "oracle_model.cif").write_bytes(native)
+    (run / "oracle_pae.json").write_bytes(pae)
+    assert ingest_run(run, database=database) == int(status == "accepted")
+    assert (run / "oracle_pae.json").read_bytes() == pae
+    if status != "accepted":
+        assert not list((database.root / "molecular_files").rglob("*.json"))
+        return
+
+    (run / "example_refolded.cif").unlink()
+    (run / "oracle_model.cif").unlink()
+    (run / "oracle_pae.json").unlink()
+    with database.connection() as connection:
+        saved = connection.execute("SELECT id,molecule_id,group_id FROM molecule_structures").fetchone()
+    assert database.rfd4_pae_file(A, saved["id"], "matrix").read_bytes() == pae
+    assert database.rfd4_pae_file(A, saved["id"], "model").read_bytes() == native
+    with pytest.raises(PermissionError):
+        database.rfd4_pae_file(B, saved["id"], "matrix")
+    source = build_database_analysis_source(A, {"molecule_id": saved["molecule_id"], "group_id": saved["group_id"],
+        "structure_id": saved["id"], "binder_chains": ["B"], "target_chains": ["A"]},
+        workflow_id="analysis.ipsae", project_id="project-1", database=database)
+    candidate = read_candidates(Path(source["candidates_jsonl"]))[0]
+    aligned = json.loads(Path(candidate["raw_metadata"]["pae_path"]).read_text())
+    order = [3, 4, 5, 0, 1, 2]
+    assert aligned["pae"] == [[matrix[i][j] for j in order] for i in order]
+
+    from mn_molecular_design_studio.cluster import config, transport
+    from mn_molecular_design_studio.cluster.replication import Replica
+    from mn_molecular_design_studio.molecular_database import _id
+    from test_molecular_database_peer import SOURCE, _sync_all
+
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(database.root.parent / "cluster"))
+    peer = MolecularDatabase(database.root.parent / "peer")
+    _sync_all(Replica(), database, peer)
+    monkeypatch.setattr(config, "load", lambda: {"peers": [{"id": SOURCE, "url": "https://studio.invalid"}]})
+    monkeypatch.setattr(transport, "node_request", lambda path, payload, **kwargs:
+        database.rfd4_pae_file(A, path.rsplit("/", 1)[-1], payload["confidence_file"]).read_bytes())
+    peer_structure = _id("peer-structure-", SOURCE + ":" + saved["id"])
+    assert peer.rfd4_pae_file(A, peer_structure, "matrix").read_bytes() == pae
+    assert peer.rfd4_pae_file(A, peer_structure, "model").read_bytes() == native
+
+
 @pytest.mark.parametrize("status", ["rejected", "unresolved", "accepted"])
 def test_saved_acceptance_decisions_are_not_confused_with_candidate_execution_status(database, status):
     source, molecule_id, source_group, source_structure, digest = _database_source(database, "ACDE")

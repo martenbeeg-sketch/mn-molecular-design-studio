@@ -1887,6 +1887,8 @@ def _candidate_structure_signature(run_dir):
         raw_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
         references.append(("validation_complex_pdb", raw_metadata.get("validation_complex_pdb")))
         references.append(("generated_complex_pdb", raw_metadata.get("generated_complex_pdb")))
+        pae_evidence = (raw_metadata.get("design_representation") or {}).get("oracle_pae") or {}
+        references.extend((field, pae_evidence.get(field)) for field in ("pae_path", "oracle_model_path"))
         for field, reference in references:
             if not reference:
                 continue
@@ -2423,6 +2425,16 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             # from any workstation. Keep a content-addressed copy in the
             # shared Database store before peer replication captures the row.
             database.make_structure_portable(user, structure_id)
+            if acceptance_state == "accepted" and selected_item.get("design_representation_role") == "refolded_validation":
+                representation = (candidate.get("raw_metadata") or {}).get("design_representation") or {}
+                evidence = representation.get("oracle_pae")
+                if evidence:
+                    pae = _path(evidence.get("pae_path"), run_dir)
+                    model = _path(evidence.get("oracle_model_path"), run_dir)
+                    if pae and model:
+                        database.retain_rfd4_pae(user, structure_id, pae, model, evidence)
+                    else:
+                        log.warning("RFD4 confidence files missing for saved structure %s", structure_id)
             if prediction_run:
                 preferred_prediction_structure_ids.add(structure_id)
 

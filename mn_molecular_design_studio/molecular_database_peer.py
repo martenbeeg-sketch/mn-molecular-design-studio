@@ -883,6 +883,21 @@ def fetch_structure(row, user):
     return path
 
 
+def fetch_rfd4_pae(user, context, kind):
+    from mn_molecular_design_studio.cluster import config, transport
+
+    node_id = context["_replica_node"]
+    peer = next((item for item in config.load().get("peers", []) if item["id"] == node_id), None)
+    if not peer:
+        raise FileNotFoundError("Connect the source workstation to retrieve this refold's PAE.")
+    try:
+        return transport.node_request("/molecules/structures/" + context["_replica_structure"],
+            {"user_id": user["id"], "confidence_file": kind}, method="POST",
+            base_url=peer["url"], raw=True, timeout=60)
+    except transport.ClusterUnavailable as exc:
+        raise FileNotFoundError("The source workstation's refold confidence is unavailable.") from exc
+
+
 def _removal_records(database, group_id, selected):
     """Publish only the authoritative group policy and selected tombstones."""
     from mn_molecular_design_studio.cluster import config
@@ -1125,7 +1140,9 @@ def install_routes(app):
             if not user:
                 raise PermissionError("Unknown or disabled user.")
             database = MolecularDatabase()
-            path = database.structure_file(user, structure_id)
+            confidence = payload.get("confidence_file")
+            path = (database.rfd4_pae_file(user, structure_id, confidence) if confidence is not None
+                    else database.structure_file(user, structure_id))
             return FileResponse(path, filename=path.name)
         except (PermissionError, FileNotFoundError) as exc:
             raise HTTPException(404, "Structure not found or inaccessible.") from exc

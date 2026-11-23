@@ -226,6 +226,16 @@ def _render_structure(database, user, record, preferred):
             key="data-browser-download-" + chosen)
     except (OSError, ValueError, PermissionError) as exc:
         st.warning("The saved coordinates could not be opened: " + str(exc))
+        return
+    if context.get("rfd4_pae") and st.toggle("Show internal refold PAE", key=f"saved-rfd4-pae-{chosen}"):
+        from mn_molecular_design_studio.cofolding_results_ui import render_openfold3_pae
+
+        try:
+            model = database.rfd4_pae_file(user, chosen, "model")
+            pae = database.rfd4_pae_file(user, chosen, "matrix")
+            render_openfold3_pae(model, pae, key=f"saved-pae-{chosen}")
+        except (OSError, ValueError, RuntimeError) as exc:
+            st.info(f"The saved OpenFold3 confidence could not be opened. {exc}")
 
 
 def _render_details(database, user, cache, index, entry):

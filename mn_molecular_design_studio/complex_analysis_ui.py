@@ -3471,7 +3471,7 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
         return
     source["structure_digest"] = digest
     from mn_molecular_design_studio.complex_analysis_sources import database_pae_evidence
-    pae_evidence = database_pae_evidence(user, source)
+    pae_evidence = database_pae_evidence(user, source, materialize=False)
     source["pae_digest"] = pae_evidence["sha256"] if pae_evidence else ""
     key = hashlib.sha256(f"database:{record['id']}:{structure['id']}".encode()).hexdigest()[:14]
     st.markdown("### Available analyses")
@@ -3531,7 +3531,8 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
                 name.replace("_", " ").title() + " (Å)", min_value=0.1, max_value=50.0,
                 value=value, step=0.5, key=f"complex-analysis-db-ipsae-{name}-{key}")), 3)
                 for index, (name, value) in enumerate(defaults.items())}
-        st.caption("ipSAE can use saved structure geometry here. PAE-derived terms remain unavailable unless the source stores a compatible pairwise PAE matrix.")
+        st.caption("A full PAE matrix is recorded for this model." if source["pae_digest"] else
+                   "This model has structure geometry for analysis. A full PAE matrix is unavailable.")
         show_ppi("analysis.ipsae", ipsae_params, schema_errors.get("analysis.ipsae", "") or (
             "The registered ipSAE workflow currently accepts exactly one chain in each group."
             if len(binder_chains) != 1 or len(target_chains) != 1 else ""))

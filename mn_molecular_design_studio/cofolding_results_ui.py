@@ -122,3 +122,15 @@ def render_confidence_plots(confidence: dict | None, *, unavailable: str = "") -
         st.pyplot(figure)
     finally:
         plt.close(figure)
+
+
+def render_openfold3_pae(model: Path, pae: Path, *, key: str) -> None:
+    confidence = results.read_confidence(model, (pae,))
+    pae_bytes, model_bytes = pae.read_bytes(), model.read_bytes()
+    st.caption("The PAE matrix uses the original OpenFold3 token order. Download it with the matching CIF.")
+    render_confidence_plots(confidence)
+    first, second = st.columns(2)
+    first.download_button("Download full PAE JSON", pae_bytes, file_name="openfold3_pae.json",
+                          mime="application/json", key=f"{key}-matrix")
+    second.download_button("Download matching OpenFold3 CIF", model_bytes,
+                           file_name="openfold3_model.cif", key=f"{key}-model")

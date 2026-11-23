@@ -481,16 +481,28 @@ def authorize_database_structure(
     }
 
 
-def database_pae_evidence(user: dict, source: dict) -> dict | None:
-    """Find a local source-model sidecar only through exact, authorized lineage."""
+def database_pae_evidence(user: dict, source: dict, *, database=None, materialize=True) -> dict | None:
+    """Prefer saved, model-bound confidence. Fall back to exact local run lineage."""
     from mn_molecular_design_studio.auth import can_access_job
     from mn_molecular_design_studio.job_catalog import get_job_access_record
     from mn_molecular_design_studio.runtime import runs_root
     from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
-    from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import _find_pae_path, _resolve_path
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import _find_pae_path, _resolve_path, _rfd4_pae_paths
 
     context = source.get("structure_context") or {}
     origin = source.get("group_origin") or {}
+    retained = context.get("rfd4_pae")
+    if (isinstance(retained, dict) and retained.get("refolded_sha256") == source.get("structure_digest")
+            and retained.get("pae_sha256") and retained.get("oracle_model_sha256")):
+        evidence = {"sha256": retained["pae_sha256"], "oracle_model_sha256": retained["oracle_model_sha256"],
+                    "source_tool": "rfd4_proteina"}
+        if materialize:
+            from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+            database = database or MolecularDatabase()
+            evidence["path"] = str(database.rfd4_pae_file(user, source["structure_id"], "matrix"))
+            evidence["oracle_model_path"] = str(database.rfd4_pae_file(user, source["structure_id"], "model"))
+        return evidence
     if context.get("_replica_node") or origin.get("_replica_node"):
         # A peer's cached coordinates alone do not authorize guessing paths to
         # its confidence files. Run this evaluation on the owning workstation.
@@ -509,6 +521,9 @@ def database_pae_evidence(user: dict, source: dict) -> dict | None:
     structure = _resolve_path(run, candidate.get("complex_pdb"))
     if not structure or file_digest(structure) != source.get("structure_digest"):
         return None
+    rfd4 = _rfd4_pae_paths(run, candidate)
+    if rfd4:
+        return {**rfd4, "source_run_id": run_id, "candidate_id": candidate_id, "source_tool": "rfd4_proteina"}
     pae = _find_pae_path(run, candidate, structure)
     if not pae or not pae.is_file():
         return None
@@ -552,7 +567,7 @@ def _build_database_analysis_source(
         "model_id", "structure_digest", "binder_chains", "target_chains", "ligand_selection",
     )}
     identity["workflow"] = workflow_id
-    pae_evidence = database_pae_evidence(user, source) if workflow_id == "analysis.ipsae" else None
+    pae_evidence = database_pae_evidence(user, source, database=database) if workflow_id == "analysis.ipsae" else None
     if workflow_id == "analysis.ipsae":
         identity["pae_digest"] = pae_evidence["sha256"] if pae_evidence else ""
     context_association = None
@@ -727,11 +742,19 @@ def _build_database_analysis_source(
     if pae_evidence:
         pae_path = Path(pae_evidence["path"])
         staged_pae = bundle_dir / ("selected_model_pae" + pae_path.suffix.lower())
-        shutil.copyfile(pae_path, staged_pae)
-        if file_digest(staged_pae) != pae_evidence["sha256"]:
-            raise ValueError("The saved model PAE changed while its Database input was staged.")
+        oracle_model = pae_evidence.get("oracle_model_path")
+        if oracle_model:
+            from mn_molecular_design_studio.rfd4_pae import write_aligned_pae
+
+            write_aligned_pae(staged_structure, pae_path, oracle_model, staged_pae,
+                              pae_sha256=pae_evidence["sha256"], oracle_model_sha256=pae_evidence["oracle_model_sha256"])
+        else:
+            shutil.copyfile(pae_path, staged_pae)
+            if file_digest(staged_pae) != pae_evidence["sha256"]:
+                raise ValueError("The saved model PAE changed while its Database input was staged.")
         raw_metadata["pae_path"] = str(staged_pae)
-        raw_metadata["database_pae_evidence"] = {k: v for k, v in pae_evidence.items() if k != "path"}
+        raw_metadata["database_pae_evidence"] = {k: v for k, v in pae_evidence.items()
+                                                 if k not in {"path", "oracle_model_path"}}
     candidate = {
         "candidate_id": candidate_id,
         "source_molecule_id": source["molecule_id"],
