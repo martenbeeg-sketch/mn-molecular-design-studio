@@ -1414,6 +1414,13 @@ def test_screen_run_setup_opens_each_required_input_editor(monkeypatch, tmp_path
 
     monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
     monkeypatch.setattr(pipeline_graph_ui, "_show_node_editor", lambda *args, **kwargs: None)
+
+    def canvas(**args):
+        action = pipeline_graph_ui.st.session_state.pop("canvas-test-action", None)
+        if action:
+            return {"graph": args["graph"], "action": {"type": action, "id": "template-action"}}
+
+    monkeypatch.setattr(pipeline_graph_ui, "_component", lambda: canvas)
     app = AppTest.from_string("""
 from mn_molecular_design_studio.pipeline_graph_ui import render_pipeline_builder
 render_pipeline_builder(owner_id="test-user", project_selector=lambda _: "project",
@@ -1423,6 +1430,12 @@ render_pipeline_builder(owner_id="test-user", project_selector=lambda _: "projec
     prefix = "visual-pipeline-project"
     app.segmented_control(key=prefix + "-library-section").set_value("Templates").run()
     app.button(key=prefix + "-template-unidock_active_learning").click().run()
+    assert not app.exception
+    assert prefix + "-graph" not in app.session_state
+    template_id = app.session_state["visual-pipeline-shared-template-graph"]["id"]
+    app.session_state["canvas-test-action"] = "use_template"
+    app.run()
+    assert app.session_state[prefix + "-graph"]["id"] != template_id
     app.session_state[prefix + "-view"] = "run-setup"
     app.run()
     assert not app.exception

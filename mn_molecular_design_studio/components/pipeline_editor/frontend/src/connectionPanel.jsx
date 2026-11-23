@@ -21,10 +21,16 @@ export function ConnectionPanel({node, catalog, matrix, close, configure, branch
     {!spec ? <p className="panel-hint">Select a step to see its inputs, outputs and compatible tools.</p> : <>
       <div className="port-summary">
         <h2>{node.data.label}</h2>
-        <button onClick={configure}>Configure step</button>
+        {configure?<button onClick={configure}>Configure step</button>:<details>
+          <summary>Step settings</summary>
+          {Object.entries(node.data.params || {}).filter(([,value])=>value!==''&&value!=null).map(([key,value])=><div className="readonly-setting" key={key}>
+            <span>{spec.fields?.find(field=>field.name===key)?.label || key.replaceAll('_',' ')}</span>
+            <strong>{typeof value==='object'?JSON.stringify(value):String(value)}</strong>
+          </div>)}
+        </details>}
         <dl><dt>Inputs</dt><dd><ul>{labels(inputs, true)}</ul></dd><dt>Outputs</dt><dd><ul>{labels(outputs)}</ul></dd></dl>
       </div>
-      {outputs.length > 0 && <section className="connection-options">
+      {branch && outputs.length > 0 && <section className="connection-options">
         <h3>Add next step</h3>
         <ul>{outputs.map(port => <li key={port.id}>
           <button onClick={() => branch(port.id)}>Add from {port.label}</button>

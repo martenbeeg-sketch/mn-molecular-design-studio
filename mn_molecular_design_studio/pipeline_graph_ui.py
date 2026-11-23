@@ -15,7 +15,7 @@ import streamlit.components.v1 as components
 from mn_molecular_design_studio.pipeline_graph import (
     ACTIVE_LEARNING_LAYOUT, NODE_CATALOG, PipelineInputError, clean_graph, fingerprint, is_screening_graph,
     get_shared_pipeline_template, list_definitions, list_pipeline_templates, list_shared_pipeline_templates,
-    list_versions, migrate_template_graph, new_graph, screening_graph_issues, use_shared_pipeline_template,
+    list_versions, migrate_template_graph, new_graph, screening_graph_issues,
     validate_graph,
 )
 from mn_molecular_design_studio.api_client import StudioAPIConflictError
@@ -1096,14 +1096,14 @@ def _open_saved_pipeline(prefix, draft):
     _activate_graph(prefix, draft["graph"], draft["revision"])
 
 
-_TEMPLATE_EDITOR_PREFIX = "visual-pipeline-shared-template"
+_TEMPLATE_VIEW_PREFIX = "visual-pipeline-shared-template"
 
 
-def _open_template_editor(template_id, return_prefix, project_id):
+def _open_template_view(template_id, return_prefix, project_id):
     template = get_shared_pipeline_template(template_id)
-    _activate_graph(_TEMPLATE_EDITOR_PREFIX, template["graph"])
-    st.session_state[_TEMPLATE_EDITOR_PREFIX + "-restore-viewport"] = bool(template.get("saved_at"))
-    st.session_state[_TEMPLATE_EDITOR_PREFIX + "-editing"] = {
+    _activate_graph(_TEMPLATE_VIEW_PREFIX, template["graph"])
+    st.session_state[_TEMPLATE_VIEW_PREFIX + "-restore-viewport"] = bool(template.get("saved_at"))
+    st.session_state[_TEMPLATE_VIEW_PREFIX + "-open"] = {
         "id": template_id, "revision": template["revision"], "return_prefix": return_prefix,
         "return_project": project_id,
     }
@@ -1196,26 +1196,17 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
             for index, item in enumerate(shared):
                 template_id = item["id"]
                 with cards[index % len(cards)], st.container(border=True):
-                    st.write(item["name"])
+                    if st.button(item["name"], key=prefix + "-template-" + template_id, width="stretch",
+                                 help="Open the template canvas"):
+                        try:
+                            _open_template_view(template_id, prefix, project_id)
+                            st.rerun()
+                        except (ValueError, OSError, LookupError) as exc:
+                            st.error(str(exc))
                     if item.get("description"):
                         st.caption(item["description"])
                     if item.get("saved_at"):
                         st.caption(f"Updated {item['saved_at'][:10]} UTC")
-                    use, edit = st.columns(2) if can_edit_templates else (st.container(), None)
-                    if use.button("Use template", key=prefix + "-template-" + template_id, width="stretch",
-                                  help=f"Open a new pipeline from {item['name']}"):
-                        try:
-                            _activate_graph(prefix, use_shared_pipeline_template(template_id))
-                            st.session_state[prefix + "-restore-viewport"] = bool(item.get("saved_at"))
-                            st.rerun()
-                        except (ValueError, OSError, LookupError) as exc:
-                            st.error(str(exc))
-                    if edit and edit.button("Edit template", key=prefix + "-edit-template-" + template_id, width="stretch"):
-                        try:
-                            _open_template_editor(template_id, prefix, project_id)
-                            st.rerun()
-                        except (ValueError, OSError, LookupError) as exc:
-                            st.error(str(exc))
 
             saved_templates = list_pipeline_templates(owner_id, project_id) if project_id else []
             if saved_templates:
@@ -1489,10 +1480,11 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                             read_only_projects=(), execution_available=True, search_cluster_runs=None,
                             library_catalog_available=True, save_project_selector=None, can_edit_templates=False):
     st.markdown("<style>.block-container{max-width:1900px;padding-top:3.75rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
-    editing_key = _TEMPLATE_EDITOR_PREFIX + "-editing"
-    editing_template = st.session_state.get(editing_key) if can_edit_templates else None
-    project_id = None if editing_template else project_selector("visual-pipeline")
-    prefix = _TEMPLATE_EDITOR_PREFIX if editing_template else f"visual-pipeline-{project_id or 'unassigned'}"
+    template_key = _TEMPLATE_VIEW_PREFIX + "-open"
+    opened_template = st.session_state.get(template_key)
+    template_read_only = bool(opened_template and not can_edit_templates)
+    project_id = None if opened_template else project_selector("visual-pipeline")
+    prefix = _TEMPLATE_VIEW_PREFIX if opened_template else f"visual-pipeline-{project_id or 'unassigned'}"
     state_key = prefix + "-graph"
     saved_drafts = list_definitions(owner_id, project_id, include_archived=True, include_trashed=True) if project_id else []
     definitions = [item for item in saved_drafts if not (item.get("archived_at") or item.get("trashed_at"))]
@@ -1522,7 +1514,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         return
     requested_pipeline = st.query_params.get("pipeline")
     request_key = prefix + "-linked-pipeline"
-    if not editing_template and requested_pipeline and st.session_state.get(request_key) != requested_pipeline:
+    if not opened_template and requested_pipeline and st.session_state.get(request_key) != requested_pipeline:
         st.session_state[request_key] = requested_pipeline
         linked = next((draft for draft in definitions if draft["graph"]["id"] == requested_pipeline), None)
         if linked:
@@ -1537,7 +1529,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     reuse_key = prefix + "-reuse"
     st.session_state.setdefault(reuse_key, True)
     pending = st.session_state.get("pipeline-pending-draft")
-    if not editing_template and pending and pending["project_id"] == project_id:
+    if not opened_template and pending and pending["project_id"] == project_id:
         _activate_graph(prefix, pending["graph"])
         st.session_state.pop("pipeline-pending-draft", None)
     current_graph = st.session_state.get(state_key)
@@ -1550,7 +1542,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     if view == "runs":
         _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs, graph=current_graph)
         return
-    if not editing_template:
+    if not opened_template:
         migrated_graph = migrate_template_graph(current_graph)
         if migrated_graph is not current_graph:
             _activate_graph(prefix, migrated_graph, _draft_revision(prefix, current_graph))
@@ -1583,8 +1575,9 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     from mn_molecular_design_studio import candidate_execution
     settings = candidate_execution.policy(graph.get("candidate_execution"))
     graph["candidate_execution"] = settings
-    if editing_template:
-        st.caption("Editing a shared template. Saving updates it for all signed-in users.")
+    if opened_template:
+        st.caption("Saving updates the shared template for everyone." if can_edit_templates
+                   else "Choose Use template to create an editable pipeline.")
         if notice := st.session_state.pop(prefix + "-save-notice", None):
             st.success(notice)
     elif not project_id:
@@ -1615,16 +1608,17 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         except ValueError:
             pass  # The checklist below explains the missing stages.
         else:
-            if restored != graph and st.button("Restore screening connections", key=prefix + "-restore-screen"):
+            if not template_read_only and restored != graph and st.button("Restore screening connections", key=prefix + "-restore-screen"):
                 _activate_graph(prefix, restored, _draft_revision(prefix, graph))
-                if editing_template:
+                if opened_template:
                     st.session_state[prefix + "-restore-viewport"] = True
                 st.rerun()
     value = _component()(graph=graph, catalog=editor_tool_catalog(), screening_positions=ACTIVE_LEARNING_LAYOUT,
                          connections=editor_connections(), round_outline=round_outline,
                          reset_token=reset_token, input_contexts={},
                          draft_saved=bool(_draft_revision(prefix, graph)),
-                         template_edit=bool(editing_template), can_edit_templates=can_edit_templates,
+                         shared_template=bool(opened_template), template_read_only=template_read_only,
+                         can_edit_templates=can_edit_templates,
                          restore_viewport=bool(_draft_revision(prefix, graph) or st.session_state.get(prefix + "-restore-viewport")),
                          execution=execution, settings_update=st.session_state.get(prefix+"-settings-update"),
                          key=f"{prefix}-canvas-{reset_token}", default=None)
@@ -1633,7 +1627,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         if signature != st.session_state.get(prefix+"-last-value"):
             st.session_state[prefix+"-last-value"] = signature
             try:
-                component_graph = copy.deepcopy(value["graph"])
+                component_graph = copy.deepcopy(graph if template_read_only else value["graph"])
                 component_graph["candidate_execution"] = copy.deepcopy(graph["candidate_execution"])
                 for component_node in component_graph.get("nodes", []):
                     previous_node = next((n for n in graph["nodes"] if n["id"] == component_node["id"]), {})
@@ -1658,27 +1652,33 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 st.session_state[state_key] = graph = updated
                 if new_action:
                     st.session_state[prefix+"-handled-action"] = action["id"]
-                    if action_type == "edit_node":
+                    if action_type == "edit_node" and not template_read_only:
                         _open_node_editor(prefix, action.get("node_id"))
-                    elif editing_template:
-                        if action_type == "save":
+                    elif opened_template:
+                        if action_type == "save" and can_edit_templates:
                             saved = submit_api("/api/v1/pipelines/shared-templates/save", {
-                                "graph": graph, "template_id": editing_template["id"],
-                                "expected_revision": editing_template["revision"],
+                                "graph": graph, "template_id": opened_template["id"],
+                                "expected_revision": opened_template["revision"],
                             })
-                            editing_template["revision"] = saved["revision"]
+                            opened_template["revision"] = saved["revision"]
                             _activate_graph(prefix, saved["graph"])
                             st.session_state[prefix + "-restore-viewport"] = True
                             st.session_state[prefix + "-save-notice"] = f"Saved shared template {saved['name']}."
                             st.rerun()
-                        if action_type == "library":
-                            destination = editing_template["return_prefix"]
-                            st.session_state.pop(editing_key, None)
+                        if action_type in {"library", "use_template"}:
+                            destination = opened_template["return_prefix"]
+                            st.session_state.pop(template_key, None)
                             st.session_state.setdefault("project-pending-selection", {})["visual-pipeline-project-id"] = (
-                                editing_template["return_project"] or ""
+                                opened_template["return_project"] or ""
                             )
-                            st.session_state[destination + "-view"] = "library"
-                            st.session_state[destination + "-library-next-section"] = "Templates"
+                            if action_type == "use_template":
+                                _activate_graph(destination, {**graph, "id": uuid.uuid4().hex})
+                                st.session_state[destination + "-restore-viewport"] = (
+                                    can_edit_templates or st.session_state.get(prefix + "-restore-viewport", False)
+                                )
+                            else:
+                                st.session_state[destination + "-view"] = "library"
+                                st.session_state[destination + "-library-next-section"] = "Templates"
                             st.rerun()
                     elif action["type"] == "campaign":
                         st.session_state[prefix + "-campaign-open"] = True
@@ -1710,9 +1710,10 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 st.rerun()
             except (ValueError, RuntimeError, OSError, TypeError, KeyError) as exc:
                 launch_panel.error(str(exc))
-    if editing_template:
-        _show_node_editor(prefix, owner_id=owner_id, project_id=None, submit_api=submit_api,
-                          search_jobs=search_jobs, stage_edits=True, library_catalog_available=library_catalog_available)
+    if opened_template:
+        if can_edit_templates:
+            _show_node_editor(prefix, owner_id=owner_id, project_id=None, submit_api=submit_api,
+                              search_jobs=search_jobs, stage_edits=True, library_catalog_available=library_catalog_available)
         return
     from mn_molecular_design_studio.cluster.ui import _job_details_reference, _navigate_to_job_details
     with launch_panel:

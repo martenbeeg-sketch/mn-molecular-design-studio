@@ -42,7 +42,7 @@ function SocketList({ports, side, counts, onBranch}) {
             {count > 1 ? count + ' links · ' : ''}{types.length === 1 ? types[0] : types.length + ' artifact types'}
           </small>
         </span>
-        {!input && <button className="socket-branch nodrag nopan" type="button" title={'Add step after ' + port.label}
+        {!input && onBranch && <button className="socket-branch nodrag nopan" type="button" title={'Add step after ' + port.label}
           aria-label={'Add step after ' + port.label} onClick={event => {event.stopPropagation();onBranch(port.id);}}>+</button>}
       </div>;
     })}
@@ -77,6 +77,7 @@ const matrixEmpty={wires:{},handoffs:{}};
 function Editor({args}){
   catalog=args.catalog;
   const initial=args.graph;
+  const readOnly=Boolean(args.template_read_only);
   const matrix=args.connections || matrixEmpty;
   const feedback = (source, output, target, input) => matrix.screening_feedback?.join('/') === [source, output, target, input].join('/');
   const fitPadding=.4;
@@ -94,7 +95,7 @@ function Editor({args}){
   const rf=useReactFlow(), initialized=useNodesInitialized(), fitPending=useRef(!args.restore_viewport); state.current={nodes,edges,groups};
   const snapshot=useCallback(()=>authored(state.current.nodes,state.current.edges,{...base.current,name:pipelineNameRef.current,layout_groups:pruneGroups(state.current.groups,state.current.nodes)},viewport.current),[]);
   const emit=useCallback((action=null)=>{
-    if(['save','save_as','save_template'].includes(action))viewport.current=rf.getViewport();
+    if(['save','save_as','save_template','use_template'].includes(action))viewport.current=rf.getViewport();
     const graph=snapshot();
     lastSent.current=JSON.stringify(graph);
     post('streamlit:setComponentValue',{value:{graph,...(action?{action:{...(typeof action==='string'?{type:action}:action),id:uid()}}:{})}});
@@ -124,9 +125,10 @@ function Editor({args}){
     setNodes(prev=>prev.map(n=>args.input_contexts[n.id]?{...n,data:{...n.data,params:{...n.data.params,...args.input_contexts[n.id]}}}:n));
   },[JSON.stringify(args.input_contexts)]);
   useEffect(()=>{
+    if(readOnly)return;
     const timer=setTimeout(()=>{const g=snapshot(),serialized=JSON.stringify(g);if(serialized!==lastSent.current){lastSent.current=serialized;post('streamlit:setComponentValue',{value:{graph:g}});}},500);
     return()=>clearTimeout(timer);
-  },[nodes,edges,groups,pipelineName,snapshot]);
+  },[nodes,edges,groups,pipelineName,readOnly,snapshot]);
   useEffect(()=>{if(initialized&&fitPending.current){const id=requestAnimationFrame(()=>{rf.fitView({padding:fitPadding,maxZoom:1});fitPending.current=false;});return()=>cancelAnimationFrame(id);}},[initialized,nodes,rf,args.reset_token,fitPadding]);
   useEffect(()=>{post('streamlit:setFrameHeight',{height:focus?950:760});},[focus]);
   useEffect(()=>{
@@ -261,16 +263,17 @@ function Editor({args}){
   useEffect(()=>{
     const handler=e=>{
       if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)||e.target.isContentEditable)return;
+      if(e.key.toLowerCase()==='f'){e.preventDefault();rf.fitView({padding:fitPadding,duration:250});}
+      if(e.key==='Escape')setSelection(null);
+      if(readOnly)return;
       const mod=e.ctrlKey||e.metaKey;
       if(mod&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?redo():undo();}
       if(mod&&e.key.toLowerCase()==='y'){e.preventDefault();redo();}
       if(mod&&e.key.toLowerCase()==='d'){e.preventDefault();duplicate();}
       if(mod&&e.key.toLowerCase()==='c'){const ns=state.current.nodes.filter(n=>n.selected);clipboard.current={nodes:copy(ns),edges:copy(state.current.edges.filter(e=>ns.some(n=>n.id===e.source)&&ns.some(n=>n.id===e.target)))};}
       if(mod&&e.key.toLowerCase()==='v'&&clipboard.current?.nodes.length){e.preventDefault();pushHistory();const c=clipboard.current,ids=Object.fromEntries(c.nodes.map(n=>[n.id,`${n.data.kind}-${uid().slice(0,10)}`]));setNodes(p=>[...p.map(n=>({...n,selected:false})),...c.nodes.map(n=>({...copy(n),id:ids[n.id],position:{x:n.position.x+70,y:n.position.y+70},selected:true}))]);setEdges(p=>[...p,...c.edges.map(e=>({...e,id:`edge-${uid()}`,source:ids[e.source],target:ids[e.target]}))]);}
-      if(e.key.toLowerCase()==='f'){e.preventDefault();rf.fitView({padding:fitPadding,duration:250});}
-      if(e.key==='Escape')setSelection(null);
     };window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);
-  },[undo,redo,duplicate,pushHistory,rf,fitPadding]);
+  },[undo,redo,duplicate,pushHistory,rf,fitPadding,readOnly]);
   const layout=()=>{
     pushHistory();
     const ns=state.current.nodes,es=state.current.edges;
@@ -365,7 +368,8 @@ function Editor({args}){
     return {...n,data:{...n.data,status:args.execution?.[n.id]?.status,
       count:mdStep?undefined:args.execution?.[n.id]?.candidate_count,
       summary:summary || args.round_outline?.screen?.step_details[n.id],
-      inputCounts:inputCounts[n.id],outputCounts:outputCounts[n.id],onBranch:port=>openBranch(n.id,port)}};
+      inputCounts:inputCounts[n.id],outputCounts:outputCounts[n.id],
+      onBranch:readOnly?undefined:port=>openBranch(n.id,port)}};
   });
   const projection=projectGroups(displayNodes,displayEdges,edges,groups,catalog);
   groupEndpoints.current=projection.endpoints;
@@ -386,23 +390,27 @@ function Editor({args}){
     const id=node.id;
     setSelection(id);
     if(event.shiftKey||event.ctrlKey||event.metaKey)return;
-    if(canvasOnly)openSettings(id);
-    else setPanel('connections');
+    if(canvasOnly&&!readOnly)openSettings(id);
+    else{
+      if(canvasOnly)setFocus(false);
+      setPanel('connections');
+    }
   };
   return <div ref={shellRef} className={`editor-shell ${focus?'focus-mode':''} ${fullscreen?'fullscreen-mode':''}`}>
     <header className="editor-toolbar">
       <div className="editor-heading">
         <div className="toolbar-title">
           <button className="library-back" onClick={()=>emit('library')}>‹ Pipeline library</button>
-          <input className="pipeline-name-input" aria-label={args.template_edit?'Template name':'Pipeline name'} value={pipelineName}
+          <input className="pipeline-name-input" aria-label={args.shared_template?'Template name':'Pipeline name'} value={pipelineName} readOnly={readOnly}
             onChange={event=>setPipelineName(event.target.value)}
-            onBlur={()=>setPipelineName(name=>name.trim()||'Untitled pipeline')} title={args.template_edit?'Template name':'Pipeline name'}/>
-          <span className="draft-chip">{args.template_edit?'Shared template':args.draft_saved?'Saved pipeline':'Unsaved pipeline'}</span>
+            onBlur={()=>setPipelineName(name=>name.trim()||'Untitled pipeline')} title={args.shared_template?'Template name':'Pipeline name'}/>
+          <span className="draft-chip">{args.shared_template?'Shared template':args.draft_saved?'Saved pipeline':'Unsaved pipeline'}</span>
         </div>
         <div className="toolbar-actions primary-actions">
-          {args.template_edit ?
-            <button className="run-button" disabled={!nodes.length} onClick={()=>emit('save')}>Save template</button> :
-            <>
+          {args.shared_template ? <>
+            <button className={readOnly?'run-button':undefined} disabled={!nodes.length} onClick={()=>emit('use_template')}>Use template</button>
+            {!readOnly&&<button className="run-button" disabled={!nodes.length} onClick={()=>emit('save')}>Save template</button>}
+            </> : <>
               <button onClick={()=>emit('versions')}>Versions</button>
               <button onClick={()=>emit('runs')}>Runs</button>
               <button className="run-button" disabled={!nodes.length} title={!nodes.length?'Add a step before setting up a run':'Review inputs and execution before submitting'}
@@ -411,11 +419,13 @@ function Editor({args}){
         </div>
       </div>
       <div className="toolbar-actions canvas-actions">
+        {!readOnly && <>
         <button title="Undo (Ctrl+Z)" disabled={!history.current.past.length} onClick={undo}>↶</button>
         <button title="Redo (Ctrl+Shift+Z)" disabled={!history.current.future.length} onClick={redo}>↷</button>
         <span className="toolbar-divider"/>
         <button onClick={layout} title="Arrange the current graph">Arrange</button>
         <button disabled={selectionMembers.length<2} onClick={groupSelection} title="Group selected steps">Group</button>
+        </>}
         <button aria-pressed={panel==='connections'} onClick={()=>{setPanel(panel==='connections'?'':'connections');setHelpOpen(false);}}
           title="Inspect inputs, outputs and compatible steps">Connections</button>
         {args.round_outline?.screen&&<button aria-pressed={panel==='round'}
@@ -424,7 +434,7 @@ function Editor({args}){
         <span className="canvas-spacer"/>
         <button onClick={()=>{setFocus(!focus);setTimeout(()=>rf.fitView({padding:fitPadding,duration:200}),80);}}>{focus?'Exit focus':'Focus canvas'}</button>
         <button onClick={toggleFullscreen} title={fullscreen?'Exit fullscreen':'Enter fullscreen'}>{fullscreen?'Exit fullscreen':'⛶ Fullscreen'}</button>
-        {!args.template_edit && <>
+        {!args.shared_template && <>
           <button title="Configure campaign objective and stopping limits" onClick={()=>emit('campaign')}>Campaign</button>
           <button title="Configure workstation, GPU and batching defaults" onClick={()=>emit('resources')}>Resources</button>
           <button onClick={()=>emit('save')}>Save</button>
@@ -435,25 +445,27 @@ function Editor({args}){
       </div>
     </header>
     <div className="workspace">
-      {palette && !canvasOnly && <ToolPalette key={branchData?.nodeId || 'all'}
+      {!readOnly && palette && !canvasOnly && <ToolPalette key={branchData?.nodeId || 'all'}
         catalog={catalog} branch={branchData} usedStages={usedStages} onConnect={wire=>{if(onConnect(wire))setBranch(null);}} onBranchPort={port=>setBranch({...branch,port})}
         onClearBranch={()=>setBranch(null)} onClose={()=>setPalette(false)}
         onAdd={(kind,inlet) => {
           if (!branchData) addNode(kind);
           else if (connectNext(branchData.node, branchData.port, kind, inlet)) setBranch(null);
         }}/>}
-      <main className="flow-region" onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect='move';}} onDrop={e=>{e.preventDefault();const kind=e.dataTransfer.getData('application/studio-node');if(catalog[kind])addNode(kind,rf.screenToFlowPosition({x:e.clientX,y:e.clientY}));}}>
-        {!palette&&!canvasOnly&&<button className="show-library" onClick={()=>setPalette(true)}>+ Tools</button>}
-        <ReactFlow nodes={projection.nodes} edges={projection.edges} nodeTypes={nodeTypes}
+      <main className="flow-region" onDragOver={readOnly?undefined:e=>{e.preventDefault();e.dataTransfer.dropEffect='move';}}
+        onDrop={readOnly?undefined:e=>{e.preventDefault();const kind=e.dataTransfer.getData('application/studio-node');if(catalog[kind])addNode(kind,rf.screenToFlowPosition({x:e.clientX,y:e.clientY}));}}>
+        {!readOnly&&!palette&&!canvasOnly&&<button className="show-library" onClick={()=>setPalette(true)}>+ Tools</button>}
+        <ReactFlow nodes={readOnly?projection.nodes.map(node=>({...node,draggable:false})):projection.nodes}
+          edges={projection.edges} nodeTypes={nodeTypes} nodesConnectable={!readOnly}
           onNodesChange={changeCanvasNodes}
           onEdgesChange={changes=>{if(changes.some(c=>c.type==='remove'))pushHistory();setEdges(prev=>applyEdgeChanges(changes,prev));}}
           onNodeDragStart={()=>{dragSnapshot.current=snapshot();}} onNodeDragStop={()=>{if(dragSnapshot.current){pushHistory(dragSnapshot.current);dragSnapshot.current=null;}}}
-          onConnect={onConnect} isValidConnection={compatible}
+          onConnect={readOnly?undefined:onConnect} isValidConnection={compatible}
           onNodeClick={inspectNode}
-          onNodeDoubleClick={(_,node)=>{if(node.type==='studio'&&!canvasOnly)openSettings(node.id);}}
+          onNodeDoubleClick={(_,node)=>{if(!readOnly&&node.type==='studio'&&!canvasOnly)openSettings(node.id);}}
           onPaneClick={()=>{setSelection(null);if(panel==='group'||panel==='connections')setPanel('');}}
-          onEdgeDoubleClick={(_,edge)=>{pushHistory();setEdges(es=>es.filter(e=>e.id!==edge.id));}}
-          onMoveEnd={(_,v)=>{viewport.current=v;emit();}} minZoom={.18} maxZoom={2} defaultViewport={initial.viewport} snapToGrid snapGrid={[12,12]} selectionKeyCode="Shift" multiSelectionKeyCode="Shift" panOnDrag={[0,1,2]} deleteKeyCode={['Backspace','Delete']} connectionRadius={28} defaultEdgeOptions={{type:'default',pathOptions:{curvature:.12},style:{stroke:'#8ca99b',strokeWidth:2.2},interactionWidth:22}}>
+          onEdgeDoubleClick={readOnly?undefined:(_,edge)=>{pushHistory();setEdges(es=>es.filter(e=>e.id!==edge.id));}}
+          onMoveEnd={(_,v)=>{viewport.current=v;if(!readOnly)emit();}} minZoom={.18} maxZoom={2} defaultViewport={initial.viewport} snapToGrid snapGrid={[12,12]} selectionKeyCode="Shift" multiSelectionKeyCode="Shift" panOnDrag={[0,1,2]} deleteKeyCode={readOnly?null:['Backspace','Delete']} connectionRadius={28} defaultEdgeOptions={{type:'default',pathOptions:{curvature:.12},style:{stroke:'#8ca99b',strokeWidth:2.2},interactionWidth:22}}>
           <Background gap={24} size={1.2} color="#cad6cf"/><Controls showInteractive={false} fitViewOptions={{padding:fitPadding,maxZoom:1}}/>{showMap&&<MiniMap style={{pointerEvents:'none'}} nodeColor={n=>catalog[n.data.kind]?.color||'#799687'} maskColor="rgba(246,249,246,.72)"/>}
         </ReactFlow>
         {!nodes.length&&<div className="canvas-empty"><h2>Your pipeline starts here</h2>
@@ -464,20 +476,31 @@ function Editor({args}){
       </main>
       {!canvasOnly&&panel==='connections'&&<ConnectionPanel key={focusedNode?.id||'empty'}
         node={focusedNode} catalog={catalog} matrix={matrix}
-        close={()=>setPanel('')} configure={()=>openSettings(focusedNode.id)}
-        branch={port=>openBranch(focusedNode.id,port)}/>}
-      {!canvasOnly&&panel==='round'&&<RoundOutline program={args.round_outline} configure={openSettings} close={()=>setPanel('')}/>}
+        close={()=>setPanel('')} configure={readOnly?undefined:()=>openSettings(focusedNode.id)}
+        branch={readOnly?undefined:port=>openBranch(focusedNode.id,port)}/>}
+      {!canvasOnly&&panel==='round'&&<RoundOutline program={args.round_outline}
+        configure={readOnly?id=>{setSelection(id);setPanel('connections');}:openSettings} close={()=>setPanel('')}/>}
       {!canvasOnly&&panel==='group'&&selectedGroup&&<aside className="node-inspector group-panel" aria-label="Group settings">
-        <div className="panel-heading"><span>Group settings</span><button aria-label="Close group settings" onClick={()=>setPanel('')}>×</button></div>
-        <label>Group name<input key={selectedGroup.id+selectedGroup.name} defaultValue={selectedGroup.name} maxLength={80}
+        <div className="panel-heading"><span>{readOnly?selectedGroup.name:'Group settings'}</span><button aria-label="Close group settings" onClick={()=>setPanel('')}>×</button></div>
+        {!readOnly&&<label>Group name<input key={selectedGroup.id+selectedGroup.name} defaultValue={selectedGroup.name} maxLength={80}
           onKeyDown={event=>{if(event.key==='Enter')event.currentTarget.blur();}}
-          onBlur={event=>{const name=event.target.value.trim()||'Group';if(name!==selectedGroup.name)updateGroup(selectedGroup.id,{name});}}/></label>
-        <button onClick={()=>updateGroup(selectedGroup.id,{collapsed:!selectedGroup.collapsed})}>{selectedGroup.collapsed?'Open group':'Collapse group'}</button>
-        <button onClick={()=>duplicateGroup(selectedGroup)}>Duplicate group</button>
-        <button onClick={()=>removeGroup(selectedGroup.id)}>Ungroup steps</button>
+          onBlur={event=>{const name=event.target.value.trim()||'Group';if(name!==selectedGroup.name)updateGroup(selectedGroup.id,{name});}}/></label>}
+        <button onClick={()=>{
+          const collapsed=!selectedGroup.collapsed;
+          if(readOnly)setGroups(items=>items.map(item=>item.id===selectedGroup.id?{...item,collapsed}:item));
+          else updateGroup(selectedGroup.id,{collapsed});
+        }}>{selectedGroup.collapsed?'Open group':'Collapse group'}</button>
+        {!readOnly&&<>
+          <button onClick={()=>duplicateGroup(selectedGroup)}>Duplicate group</button>
+          <button onClick={()=>removeGroup(selectedGroup.id)}>Ungroup steps</button>
+        </>}
       </aside>}
-      {!canvasOnly&&helpOpen&&<aside className="node-inspector"><div className="panel-heading"><span>Build without losing work</span><button onClick={()=>setHelpOpen(false)} title="Close help">×</button></div><div className="inspector-welcome"><div className="welcome-icon">⌘</div><h2>Connect your experiment</h2><p>Move the blocks freely. Drag between sockets to pass structures and sequences to the next step.</p><p>Select a step to inspect its connections. Double-click to open its input form.</p><div className="non-destructive-note">Versions stores snapshots of this saved pipeline. Runs opens the execution history.</div><dl><dt>Pan</dt><dd>Drag the background</dd><dt>Zoom</dt><dd>Scroll</dd><dt>Select several</dt><dd>Shift + drag</dd><dt>Undo / redo</dt><dd>Ctrl + Z / Shift + Z</dd><dt>Duplicate</dt><dd>Ctrl + D</dd><dt>Fit canvas</dt><dd>F</dd><dt>Remove wire</dt><dd>Double-click it</dd></dl></div></aside>}
-    </div><footer className="canvas-footer"><span>{nodes.length} steps · {edges.length} connections</span><span>Run setup checks inputs before submission.</span><button onClick={()=>{const blob=new Blob([JSON.stringify(snapshot(),null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='pipeline.json';a.click();URL.revokeObjectURL(url);}}>Export graph ↗</button></footer>
+      {!canvasOnly&&helpOpen&&readOnly&&<aside className="node-inspector" aria-label="Template help">
+        <div className="panel-heading"><span>Template canvas</span><button onClick={()=>setHelpOpen(false)} title="Close help">×</button></div>
+        <p>Select a step to view its settings and connections. Pan by dragging the background and zoom by scrolling.</p>
+      </aside>}
+      {!canvasOnly&&helpOpen&&!readOnly&&<aside className="node-inspector"><div className="panel-heading"><span>Build without losing work</span><button onClick={()=>setHelpOpen(false)} title="Close help">×</button></div><div className="inspector-welcome"><div className="welcome-icon">⌘</div><h2>Connect your experiment</h2><p>Move the blocks freely. Drag between sockets to pass structures and sequences to the next step.</p><p>Select a step to inspect its connections. Double-click to open its input form.</p>{!args.shared_template&&<div className="non-destructive-note">Versions stores snapshots of this saved pipeline. Runs opens the execution history.</div>}<dl><dt>Pan</dt><dd>Drag the background</dd><dt>Zoom</dt><dd>Scroll</dd><dt>Select several</dt><dd>Shift + drag</dd><dt>Undo / redo</dt><dd>Ctrl + Z / Shift + Z</dd><dt>Duplicate</dt><dd>Ctrl + D</dd><dt>Fit canvas</dt><dd>F</dd><dt>Remove wire</dt><dd>Double-click it</dd></dl></div></aside>}
+    </div><footer className="canvas-footer"><span>{nodes.length} steps · {edges.length} connections</span><span>{args.shared_template?'Use template creates a separate pipeline.':'Run setup checks inputs before submission.'}</span><button onClick={()=>{const blob=new Blob([JSON.stringify(snapshot(),null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='pipeline.json';a.click();URL.revokeObjectURL(url);}}>Export graph ↗</button></footer>
   </div>;
 }
 
