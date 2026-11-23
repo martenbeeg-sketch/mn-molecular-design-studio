@@ -1,11 +1,14 @@
 import json
 from pathlib import Path
+import shutil
+from types import SimpleNamespace
 
 import gemmi
 import pytest
 
 from mn_molecular_design_studio.rfd4_representations import recorded_oracle_metrics, refolded_representation, recover_saved_refold
 from mn_molecular_design_studio.engine.workflow_engine.workflows import rfd4_proteina as workflow
+from mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_refold_evidence import capture_refolds
 from mn_molecular_design_studio.database_browser import build_browser_index, subject_results
 from mn_molecular_design_studio.data_browser import listed_results, load_saved_record, saved_results
 from mn_molecular_design_studio.binderscope import prepare_browser_selection
@@ -71,6 +74,54 @@ def test_native_adapter_prefers_refold_and_retains_generated_artifact(models, tm
     record = _record(candidate, tmp_path)
     assert {row["label"] for row in record["files"]} == {"Refolded validation complex", "Generated design complex"}
     assert record["components"][1]["sequence"] == "ACD"
+
+
+def test_pae_stays_with_the_original_oracle_model_after_scratch_cleanup(models, tmp_path):
+    generated, predicted, _ = models
+    scratch = tmp_path / "oracle-scratch"
+    scratch.mkdir()
+    raw_model = (scratch / "test_model.cif")
+    raw_model.write_bytes(generated.read_bytes())
+    matrix = [[abs(i - j) for j in range(6)] for i in range(6)]
+    token_fields = {"pae": matrix, "token_chain_ids": ["Y"] * 3 + ["X"] * 3,
+                    "token_res_ids": [1, 2, 3] * 2}
+    (scratch / "test_confidences.json").write_text(json.dumps({**token_fields, "pde": matrix}))
+    state = SimpleNamespace(af3_output_dir=scratch, job_name="test", out_dir=predicted.parent,
+                            example_id="example", save_id="of3_ppi")
+    metrics = {"oracle_ppi.overall_plddt": 85}
+
+    class Oracle:
+        def _finalize_af3_result(self, state):
+            path = self.refolded_cif_path(state.out_dir, state.example_id, state.save_id)
+            path.write_bytes(prediction)
+            return metrics
+
+        def refolded_cif_path(self, out_dir, example_id, save_id):
+            return out_dir / f"{example_id}_{save_id}_refolded.cif"
+
+    original = Oracle._finalize_af3_result
+    prediction = predicted.read_bytes()
+    predicted.unlink()
+    with capture_refolds(Oracle):
+        assert Oracle()._finalize_af3_result(state) == metrics
+    assert Oracle._finalize_af3_result is original
+    shutil.rmtree(scratch)
+
+    representation = refolded_representation(generated, metrics)
+    evidence = representation["oracle_pae"]
+    model_path = Path(evidence["oracle_model_path"])
+    evidence_path = Path(evidence["pae_path"])
+    assert model_path.read_bytes() == generated.read_bytes()
+    assert evidence["oracle_model_sha256"] != representation["refolded_sha256"]
+    stored = json.loads(evidence_path.read_text())
+    assert {field: stored[field] for field in token_fields} == token_fields
+    assert "pde" not in stored
+    assert "pae_path" not in representation
+
+    from mn_molecular_design_studio.cofolding_results import read_confidence
+    assert read_confidence(model_path, (evidence_path,))["pae"].tolist() == matrix
+    model_path.write_bytes(predicted.read_bytes())
+    assert "oracle_pae" not in refolded_representation(generated, metrics)
 
 
 def legacy_design(database, models):

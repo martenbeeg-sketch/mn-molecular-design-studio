@@ -195,7 +195,7 @@ def run_rfd4_proteina_design(
             return run_rfd4_proteina_distributed_campaign(job.run_dir)
         # Stage the exact adapter with every run for reproducibility and remote execution.
         runtime=prepared['root']/'runtime'; runtime.mkdir(exist_ok=True)
-        runtime_files=['rfd4_runtime.py','rfd4_studio_oracle.py']
+        runtime_files=['rfd4_runtime.py','rfd4_studio_oracle.py','rfd4_refold_evidence.py']
         if parameters['options'].get('native_phase_timing'):
             runtime_files.append('rfd4_native_diagnostics.py')
         for name in runtime_files:

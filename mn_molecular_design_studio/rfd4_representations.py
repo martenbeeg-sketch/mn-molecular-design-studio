@@ -12,6 +12,30 @@ from mn_molecular_design_studio import molecule_imports
 SCHEMA = "studio.rfd4-representations.v1"
 
 
+def _oracle_pae_evidence(predicted: Path, refolded_digest: str) -> dict:
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_refold_evidence import SCHEMA as PAE_SCHEMA
+
+    stem = predicted.stem.removesuffix("_refolded")
+    model = predicted.with_name(f"{stem}_oracle_model.cif")
+    pae = predicted.with_name(f"{stem}_oracle_pae.json")
+    try:
+        model = model.resolve(strict=True)
+        pae = pae.resolve(strict=True)
+        model.relative_to(predicted.parent)
+        pae.relative_to(predicted.parent)
+        model_digest = hashlib.sha256(model.read_bytes()).hexdigest()
+        pae_bytes = pae.read_bytes()
+        payload = json.loads(pae_bytes)
+    except (OSError, ValueError):
+        return {}
+    if (not isinstance(payload, dict) or payload.get("schema") != PAE_SCHEMA
+            or payload.get("refolded_sha256") != refolded_digest
+            or payload.get("oracle_model_sha256") != model_digest):
+        return {}
+    return {"oracle_model_path": str(model), "oracle_model_sha256": model_digest,
+            "pae_path": str(pae), "pae_sha256": hashlib.sha256(pae_bytes).hexdigest()}
+
+
 def refolded_representation(generated, metrics, *, root=None):
     generated = Path(generated).resolve(strict=True)
     if root is not None:
@@ -48,9 +72,12 @@ def refolded_representation(generated, metrics, *, root=None):
             checked.append(field)
     if not checked:
         raise ValueError("No candidate-specific RFD4 refolding measurements verify this model.")
+    refolded_digest = hashlib.sha256(predicted_bytes).hexdigest()
+    evidence = _oracle_pae_evidence(predicted, refolded_digest)
     return {"schema": SCHEMA, "role": "refolded_validation", "oracle": oracle,
             "generated_path": str(generated), "generated_sha256": hashlib.sha256(original_bytes).hexdigest(),
-            "refolded_path": str(predicted), "refolded_sha256": hashlib.sha256(predicted_bytes).hexdigest(),
+            "refolded_path": str(predicted), "refolded_sha256": refolded_digest,
+            **({"oracle_pae": evidence} if evidence else {}),
             "confidence_path": str(confidences), "confidence_sha256": hashlib.sha256(confidences.read_bytes()).hexdigest(),
             "matched_measurements": sorted(checked), "b_factor_interpretation": "plddt_0_100",
             "confidence_basis": "Native RFD4 oracle remapped per-atom pLDDT to the exact refolded model; matching confidence receipt."}

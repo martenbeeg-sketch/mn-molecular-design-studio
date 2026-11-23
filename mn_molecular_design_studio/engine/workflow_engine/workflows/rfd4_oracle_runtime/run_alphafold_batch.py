@@ -74,6 +74,10 @@ _SAVE_FULL_OUTPUTS = flags.DEFINE_bool(
     "save_full_outputs", False, "Retain full confidences and per-sample output files."
 )
 
+_RETAIN_TOP_PAE = flags.DEFINE_bool(
+    "retain_top_pae", False, "Retain the selected sample's PAE and token identifiers."
+)
+
 
 # Written by the OpenFold3 weight converter; the two names must match.
 _PROVENANCE_FILENAME = "of3_ported_weights.provenance.json"
@@ -221,6 +225,7 @@ def _run(
                 job_name=fold_input.name.replace(" ", "_"),
                 compress_large_output_files=False,
                 save_full_outputs=save_full,
+                retain_top_pae=_RETAIN_TOP_PAE.value,
             )
             print(
                 f"Batch wrapper: ({i + 1}/{len(designs)}) {payload['name']} OK",

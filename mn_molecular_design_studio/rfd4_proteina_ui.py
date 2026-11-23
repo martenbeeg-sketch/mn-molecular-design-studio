@@ -602,6 +602,33 @@ def render_results(run_id: str, run_dir: Path, candidates: list[dict], parameter
                 [StructureVisualization(pdb=path.read_text(errors="ignore"), color="molecule-type", representation_type="cartoon")],
                 key=f"rfd4-view-{run_id}-{selected}", height=560, show_controls=True, show_structure_tools=False,
             )
-            st.download_button("Download generated CIF", path.read_bytes(), file_name=path.name, key=f"rfd4-download-{run_id}-{selected}")
+            st.download_button("Download selected CIF", path.read_bytes(), file_name=path.name, key=f"rfd4-download-{run_id}-{selected}")
         except (OSError, UnicodeDecodeError):
             st.warning("The structure is available in the run artifacts but could not be displayed in the viewer.")
+
+    representation = (candidate.get("raw_metadata") or {}).get("design_representation") or {}
+    evidence = representation.get("oracle_pae")
+    if evidence and st.toggle("Show internal refold PAE", key=f"rfd4-show-pae-{run_id}-{selected}"):
+        from mn_molecular_design_studio.cache_provenance import file_digest
+        from mn_molecular_design_studio.cofolding_results import local_artifact, read_confidence
+        from mn_molecular_design_studio.cofolding_results_ui import render_confidence_plots
+
+        model = local_artifact(run_dir, evidence.get("oracle_model_path"))
+        pae = local_artifact(run_dir, evidence.get("pae_path"))
+        try:
+            if (model is None or pae is None or file_digest(model) != evidence.get("oracle_model_sha256")
+                    or file_digest(pae) != evidence.get("pae_sha256")):
+                st.info("The matching OpenFold3 confidence files are unavailable for this design.")
+                return
+            confidence = read_confidence(model, (pae,))
+            pae_bytes, model_bytes = pae.read_bytes(), model.read_bytes()
+        except (OSError, ValueError, RuntimeError):
+            st.info("The matching OpenFold3 confidence files could not be read.")
+            return
+        st.caption("The matrix uses OpenFold3’s original token order. Download it with the matching OpenFold3 model.")
+        render_confidence_plots(confidence)
+        first, second = st.columns(2)
+        first.download_button("Download full PAE JSON", pae_bytes, file_name=pae.name,
+                              mime="application/json", key=f"rfd4-pae-{run_id}-{selected}")
+        second.download_button("Download matching OpenFold3 CIF", model_bytes, file_name=model.name,
+                               key=f"rfd4-oracle-model-{run_id}-{selected}")

@@ -11,6 +11,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -737,6 +738,8 @@ def run(request, prepare_only=False):
     original_command=command
     count=1 if p['task']=='score_structures' else p.get('num_designs',8)
     commands=[]
+    options = p.get("options", {})
+    retain_pae = options.get("refold", True) and options.get("folding_engine", "openfold3_jax") == "openfold3_jax"
     for start in range(0,count,100):
         current=original_command.copy(); chunk_root=root
         if count>100:
@@ -750,15 +753,22 @@ def run(request, prepare_only=False):
         commands.append({'command':command,'overrides':current,'status':'launch_window'})
         (root/'native_command.json').write_text(json.dumps(commands,indent=2))
         timing_file=os.environ.get('MN_STUDIO_RFD4_NATIVE_TIMING_FILE')
+        launch = command
         if timing_file:
             from rfd4_native_diagnostics import phase, instrumented_command
-            diagnostic_command=instrumented_command(command,Path(__file__).with_name('rfd4_native_diagnostics.py'))
-            commands[-1]['diagnostic_command']=diagnostic_command
-            (root/'native_command.json').write_text(json.dumps(commands,indent=2))
-            with phase(timing_file,'native_subprocess_launch_through_exit'):
-                subprocess.run(diagnostic_command,check=True)
+            launch = instrumented_command(command, Path(__file__).with_name("rfd4_native_diagnostics.py"))
+            commands[-1]["diagnostic_command"] = launch
+        if retain_pae:
+            launcher = Path(__file__).with_name("rfd4_refold_evidence.py")
+            launch = [sys.executable, str(launcher), *(launch[1:] if timing_file else launch)]
+            commands[-1]["evidence_command"] = launch
+        if timing_file or retain_pae:
+            (root/"native_command.json").write_text(json.dumps(commands, indent=2))
+        if timing_file:
+            with phase(timing_file,"native_subprocess_launch_through_exit"):
+                subprocess.run(launch, check=True)
         else:
-            subprocess.run(command,check=True)
+            subprocess.run(launch, check=True)
         commands[-1]['status']='returned'
         (root/'native_command.json').write_text(json.dumps(commands,indent=2))
     csvs=list(out.rglob('per_example_metrics*.csv'))

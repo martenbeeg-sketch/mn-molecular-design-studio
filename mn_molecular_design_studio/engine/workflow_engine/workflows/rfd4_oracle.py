@@ -121,6 +121,8 @@ class OpenFold3Bridge:
                  '/work/artifacts/rfd4_proteina/oracle_runtime/run_alphafold_batch.py',
                  f'--manifest={path}',f'--model_dir=/cache/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/{HF_REVISION}/openfold3/weights',f'--num_recycles={int(self.options.get("folding_recycles",5))}','--num_diffusion_samples=1',
                  '--flash_attention_implementation=xla','--jax_compilation_cache_dir=/cache','--save_full_outputs=false']
+        if self.options.get("refold", True):
+            command.append("--retain_top_pae=true")
         with (root/'oracle_commands.jsonl').open('a') as out:
             out.write(json.dumps(command)+'\n')
         with (root/'oracle.log').open('a') as out:

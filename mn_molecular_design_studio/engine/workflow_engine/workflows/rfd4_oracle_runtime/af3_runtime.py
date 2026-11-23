@@ -308,6 +308,7 @@ def write_outputs(
     job_name: str,
     compress_large_output_files: bool = False,
     save_full_outputs: bool = False,
+    retain_top_pae: bool = False,
 ) -> None:
     """Write the top-ranked model and compact confidences for one design."""
     output_path = pathlib.Path(output_dir)
@@ -344,5 +345,5 @@ def write_outputs(
                 name=sample_name,
                 compress=compress_large_output_files,
             )
-    else:
+    elif not retain_top_pae:
         (output_path / f"{job_name}_confidences.json").unlink(missing_ok=True)
