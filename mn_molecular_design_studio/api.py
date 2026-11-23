@@ -1212,10 +1212,54 @@ def trash_pipeline(pipeline_id: str, payload: dict[str, Any] = Body(...), user: 
     return _change_saved_pipeline(set_draft_trashed, user, project_id, pipeline_id, request)
 
 
+def _shared_template_editor(user: dict[str, Any] = Depends(_current_user)):
+    from mn_molecular_design_studio.pipeline_graph import can_edit_shared_templates
+
+    if not can_edit_shared_templates(user):
+        raise HTTPException(403, "Only research_instructor can edit shared templates.")
+    return user
+
+
+@app.get("/api/v1/pipelines/shared-templates")
+def shared_pipeline_templates(user: dict[str, Any] = Depends(_current_user)):
+    from mn_molecular_design_studio.pipeline_graph import list_shared_pipeline_templates
+
+    return {"items": _call(list_shared_pipeline_templates)}
+
+
+@app.get("/api/v1/pipelines/shared-templates/{template_id}")
+def shared_pipeline_template(template_id: str, user: dict[str, Any] = Depends(_current_user)):
+    from mn_molecular_design_studio.pipeline_graph import get_shared_pipeline_template
+
+    return _call(get_shared_pipeline_template, template_id)
+
+
+@app.post("/api/v1/pipelines/shared-templates/save")
+def publish_shared_pipeline_template(payload: dict[str, Any] = Body(...),
+                                     user: dict[str, Any] = Depends(_shared_template_editor)):
+    from mn_molecular_design_studio.pipeline_graph import PipelineDraftConflictError, save_shared_pipeline_template
+
+    if "graph" not in payload or set(payload) - {"graph", "template_id", "name", "expected_revision"}:
+        raise HTTPException(422, "Provide the template graph and, for an edit, its template ID and revision.")
+    try:
+        return save_shared_pipeline_template(**payload)
+    except PipelineDraftConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (OSError, TypeError, ValueError, LookupError) as exc:
+        raise _http_error(exc) from exc
+
+
+@app.post("/api/v1/pipelines/shared-templates/{template_id}/use")
+def use_shared_pipeline_template(template_id: str, user: dict[str, Any] = Depends(_current_user)):
+    from mn_molecular_design_studio.pipeline_graph import use_shared_pipeline_template as copy_template
+
+    return {"graph": _call(copy_template, template_id)}
+
+
 @app.post("/api/v1/pipelines/{pipeline_id}/template")
 def publish_pipeline_template(pipeline_id: str, payload: dict[str, Any] = Body(...),
-                              user: dict[str, Any] = Depends(_current_user)):
-    """Save a reusable template from a specific saved pipeline revision."""
+                              user: dict[str, Any] = Depends(_shared_template_editor)):
+    """Publish a shared template from a specific saved project pipeline revision."""
     from mn_molecular_design_studio.pipeline_graph import save_pipeline_template
 
     request, project_id = _request_payload_and_project(payload, user)

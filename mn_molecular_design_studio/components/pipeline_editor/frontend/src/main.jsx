@@ -394,16 +394,20 @@ function Editor({args}){
       <div className="editor-heading">
         <div className="toolbar-title">
           <button className="library-back" onClick={()=>emit('library')}>‹ Pipeline library</button>
-          <input className="pipeline-name-input" aria-label="Pipeline name" value={pipelineName}
+          <input className="pipeline-name-input" aria-label={args.template_edit?'Template name':'Pipeline name'} value={pipelineName}
             onChange={event=>setPipelineName(event.target.value)}
-            onBlur={()=>setPipelineName(name=>name.trim()||'Untitled pipeline')} title="Pipeline name"/>
-          <span className="draft-chip">{args.draft_saved?'Saved pipeline':'Unsaved pipeline'}</span>
+            onBlur={()=>setPipelineName(name=>name.trim()||'Untitled pipeline')} title={args.template_edit?'Template name':'Pipeline name'}/>
+          <span className="draft-chip">{args.template_edit?'Shared template':args.draft_saved?'Saved pipeline':'Unsaved pipeline'}</span>
         </div>
         <div className="toolbar-actions primary-actions">
-          <button onClick={()=>emit('versions')}>Versions</button>
-          <button onClick={()=>emit('runs')}>Runs</button>
-          <button className="run-button" disabled={!nodes.length} title={!nodes.length?'Add a step before setting up a run':'Review inputs and execution before submitting'}
-            onClick={()=>emit('run')}>Run setup →</button>
+          {args.template_edit ?
+            <button className="run-button" disabled={!nodes.length} onClick={()=>emit('save')}>Save template</button> :
+            <>
+              <button onClick={()=>emit('versions')}>Versions</button>
+              <button onClick={()=>emit('runs')}>Runs</button>
+              <button className="run-button" disabled={!nodes.length} title={!nodes.length?'Add a step before setting up a run':'Review inputs and execution before submitting'}
+                onClick={()=>emit('run')}>Run setup →</button>
+            </>}
         </div>
       </div>
       <div className="toolbar-actions canvas-actions">
@@ -420,11 +424,13 @@ function Editor({args}){
         <span className="canvas-spacer"/>
         <button onClick={()=>{setFocus(!focus);setTimeout(()=>rf.fitView({padding:fitPadding,duration:200}),80);}}>{focus?'Exit focus':'Focus canvas'}</button>
         <button onClick={toggleFullscreen} title={fullscreen?'Exit fullscreen':'Enter fullscreen'}>{fullscreen?'Exit fullscreen':'⛶ Fullscreen'}</button>
-        <button title="Configure campaign objective and stopping limits" onClick={()=>emit('campaign')}>Campaign</button>
-        <button title="Configure workstation, GPU and batching defaults" onClick={()=>emit('resources')}>Resources</button>
-        <button onClick={()=>emit('save')}>Save</button>
-        <button onClick={()=>emit('save_as')}>Save as…</button>
-        <button disabled={!nodes.length} onClick={()=>emit('save_template')}>Save as template</button>
+        {!args.template_edit && <>
+          <button title="Configure campaign objective and stopping limits" onClick={()=>emit('campaign')}>Campaign</button>
+          <button title="Configure workstation, GPU and batching defaults" onClick={()=>emit('resources')}>Resources</button>
+          <button onClick={()=>emit('save')}>Save</button>
+          <button onClick={()=>emit('save_as')}>Save as…</button>
+          {args.can_edit_templates && <button disabled={!nodes.length} onClick={()=>emit('save_template')}>Save as shared template</button>}
+        </>}
         <button title="Canvas shortcuts and help" onClick={()=>{setHelpOpen(!helpOpen);setSelection(null);setPanel('');}}>?</button>
       </div>
     </header>

@@ -14,8 +14,9 @@ import streamlit.components.v1 as components
 
 from mn_molecular_design_studio.pipeline_graph import (
     ACTIVE_LEARNING_LAYOUT, NODE_CATALOG, PipelineInputError, clean_graph, fingerprint, is_screening_graph,
-    list_definitions, list_pipeline_templates, list_versions, migrate_template_graph, new_graph,
-    screening_graph_issues, validate_graph,
+    get_shared_pipeline_template, list_definitions, list_pipeline_templates, list_shared_pipeline_templates,
+    list_versions, migrate_template_graph, new_graph, screening_graph_issues, use_shared_pipeline_template,
+    validate_graph,
 )
 from mn_molecular_design_studio.api_client import StudioAPIConflictError
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
@@ -1095,29 +1096,40 @@ def _open_saved_pipeline(prefix, draft):
     _activate_graph(prefix, draft["graph"], draft["revision"])
 
 
-def _show_save_pipeline_template(prefix, project_id, submit_api):
+_TEMPLATE_EDITOR_PREFIX = "visual-pipeline-shared-template"
+
+
+def _open_template_editor(template_id, return_prefix, project_id):
+    template = get_shared_pipeline_template(template_id)
+    _activate_graph(_TEMPLATE_EDITOR_PREFIX, template["graph"])
+    st.session_state[_TEMPLATE_EDITOR_PREFIX + "-restore-viewport"] = bool(template.get("saved_at"))
+    st.session_state[_TEMPLATE_EDITOR_PREFIX + "-editing"] = {
+        "id": template_id, "revision": template["revision"], "return_prefix": return_prefix,
+        "return_project": project_id,
+    }
+
+
+def _show_save_pipeline_template(prefix, submit_api):
     key = prefix + "-template-source"
     source = st.session_state.get(key)
     if not source:
         return
 
-    @st.dialog("Save as template", on_dismiss=lambda: st.session_state.pop(key, None))
+    @st.dialog("Save as shared template", on_dismiss=lambda: st.session_state.pop(key, None))
     def dialog():
-        name = st.text_input("Template name", value=source["graph"]["name"], max_chars=160,
-                             key=key + "-name-" + source["graph"]["id"]).strip()
-        st.caption("The template uses this saved revision and is available in the selected project.")
+        name = st.text_input("Template name", value=source["name"], max_chars=160,
+                             key=key + "-name-" + source["id"]).strip()
+        st.caption("All signed-in users can use this template. Project inputs are chosen when setting up a pipeline.")
         if st.button("Save template", type="primary", disabled=not name, key=prefix + "-publish-template"):
             try:
-                submit_api(f"/api/v1/pipelines/{source['graph']['id']}/template", {
-                    "project_id": project_id, "name": name, "expected_revision": source["revision"],
-                })
+                submit_api("/api/v1/pipelines/shared-templates/save", {"graph": source, "name": name})
             except (ValueError, RuntimeError, OSError, LookupError) as exc:
                 st.error(str(exc))
                 return
             st.session_state.pop(key, None)
             st.session_state[prefix + "-view"] = "library"
             st.session_state[prefix + "-library-next-section"] = "Templates"
-            st.session_state[prefix + "-library-notice"] = f"Saved template {name}."
+            st.session_state[prefix + "-library-notice"] = f"Saved shared template {name}."
             st.rerun()
 
     dialog()
@@ -1142,7 +1154,7 @@ def _change_pipeline_trash(prefix, pipeline, project_id, submit_api, *, trashed)
 
 
 def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived, trashed,
-                             submit_api, search_jobs, search_cluster_runs):
+                             submit_api, search_jobs, search_cluster_runs, *, can_edit_templates=False):
     from mn_molecular_design_studio.pipeline_blocks import blank_program
     from mn_molecular_design_studio.pipeline_graph import MAIN_STARTERS
     from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
@@ -1179,9 +1191,35 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
                     _change_pipeline_trash(prefix, item, project_id, submit_api, trashed=False)
             return
         if section == "Templates":
+            shared = list_shared_pipeline_templates()
+            cards = st.columns(3)
+            for index, item in enumerate(shared):
+                template_id = item["id"]
+                with cards[index % len(cards)], st.container(border=True):
+                    st.write(item["name"])
+                    if item.get("description"):
+                        st.caption(item["description"])
+                    if item.get("saved_at"):
+                        st.caption(f"Updated {item['saved_at'][:10]} UTC")
+                    use, edit = st.columns(2) if can_edit_templates else (st.container(), None)
+                    if use.button("Use template", key=prefix + "-template-" + template_id, width="stretch",
+                                  help=f"Open a new pipeline from {item['name']}"):
+                        try:
+                            _activate_graph(prefix, use_shared_pipeline_template(template_id))
+                            st.session_state[prefix + "-restore-viewport"] = bool(item.get("saved_at"))
+                            st.rerun()
+                        except (ValueError, OSError, LookupError) as exc:
+                            st.error(str(exc))
+                    if edit and edit.button("Edit template", key=prefix + "-edit-template-" + template_id, width="stretch"):
+                        try:
+                            _open_template_editor(template_id, prefix, project_id)
+                            st.rerun()
+                        except (ValueError, OSError, LookupError) as exc:
+                            st.error(str(exc))
+
             saved_templates = list_pipeline_templates(owner_id, project_id) if project_id else []
             if saved_templates:
-                st.subheader("Project templates")
+                st.subheader("Previously saved in this project")
                 columns = st.columns(3)
                 for index, item in enumerate(saved_templates):
                     with columns[index % len(columns)], st.container(border=True):
@@ -1196,22 +1234,6 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
                                 st.rerun()
                             except (ValueError, RuntimeError, OSError, LookupError, KeyError) as exc:
                                 st.error(str(exc))
-                st.subheader("Built-in templates")
-            templates = [
-                ("unidock_active_learning", "Large-library screen", "Screen a registered compound library over successive rounds."),
-                ("md_simulation", "OpenMM simulation", "Prepare a complex, run a simulation, and analyze the trajectory."),
-                ("md_analysis", "Analyze an MD run", "Open a saved production segment and summarize its trajectory."),
-            ]
-            for column, (template, name, description) in zip(st.columns(3), templates):
-                with column, st.container(border=True):
-                    st.markdown(f"**{name}**")
-                    st.caption(description)
-                    if st.button("Use template", key=prefix + "-template-" + template, width="stretch",
-                                 help=f"Open {name}"):
-                        recipe = new_graph(template)
-                        recipe["name"] = name
-                        _activate_graph(prefix, recipe)
-                        st.rerun()
             categories = {value: name for name, value in MAIN_STARTERS.items()}
             categories["advanced"] = "Advanced and legacy"
             task = st.selectbox("Configure a template", [None, *categories], format_func=lambda item: categories.get(item, "Choose a category"), key=prefix + "-task-category")
@@ -1254,8 +1276,8 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
                     identifier = f" · {graph['id'][:8]}" if names[graph["name"].casefold()] > 1 else ""
                     details.caption(f"Updated {updated} UTC{identifier}")
                     with actions.popover("Actions", width="stretch"):
-                        if st.button("Save as template", key=prefix + "-save-template-" + graph["id"]):
-                            st.session_state[prefix + "-template-source"] = draft
+                        if can_edit_templates and st.button("Save as shared template", key=prefix + "-save-template-" + graph["id"]):
+                            st.session_state[prefix + "-template-source"] = graph
                         if st.button("Move to Trash", key=prefix + "-trash-" + graph["id"]):
                             _change_pipeline_trash(prefix, draft, project_id, submit_api, trashed=True)
 
@@ -1267,7 +1289,8 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
                     if _change_archive_status(selected, project_id, submit_api, archived=False):
                         _activate_graph(prefix, selected["graph"], selected["revision"])
                         st.rerun()
-        _show_save_pipeline_template(prefix, project_id, submit_api)
+        if can_edit_templates:
+            _show_save_pipeline_template(prefix, submit_api)
 
 
 def _show_pipeline_versions(prefix, owner_id, project_id, graph, draft, submit_api):
@@ -1464,10 +1487,12 @@ def _render_pipeline_run_setup(prefix, project_id, graph, submit_api, execution_
 
 def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs,
                             read_only_projects=(), execution_available=True, search_cluster_runs=None,
-                            library_catalog_available=True, save_project_selector=None):
+                            library_catalog_available=True, save_project_selector=None, can_edit_templates=False):
     st.markdown("<style>.block-container{max-width:1900px;padding-top:3.75rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
-    project_id = project_selector("visual-pipeline")
-    prefix = f"visual-pipeline-{project_id or 'unassigned'}"
+    editing_key = _TEMPLATE_EDITOR_PREFIX + "-editing"
+    editing_template = st.session_state.get(editing_key) if can_edit_templates else None
+    project_id = None if editing_template else project_selector("visual-pipeline")
+    prefix = _TEMPLATE_EDITOR_PREFIX if editing_template else f"visual-pipeline-{project_id or 'unassigned'}"
     state_key = prefix + "-graph"
     saved_drafts = list_definitions(owner_id, project_id, include_archived=True, include_trashed=True) if project_id else []
     definitions = [item for item in saved_drafts if not (item.get("archived_at") or item.get("trashed_at"))]
@@ -1476,6 +1501,11 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     if project_id in read_only_projects:
         st.title("Pipeline library")
         st.info("This project is read-only. You can inspect and download its saved pipeline graphs.")
+        if st.button("Browse shared templates", key=prefix + "-browse-shared-templates"):
+            st.session_state.setdefault("project-pending-selection", {})["visual-pipeline-project-id"] = ""
+            st.session_state["visual-pipeline-unassigned-view"] = "library"
+            st.session_state["visual-pipeline-unassigned-library-next-section"] = "Templates"
+            st.rerun()
         if saved_drafts:
             draft = st.selectbox("Saved pipeline", saved_drafts, format_func=lambda item: item["graph"]["name"],
                                  key=prefix + "-archived-draft")
@@ -1492,7 +1522,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         return
     requested_pipeline = st.query_params.get("pipeline")
     request_key = prefix + "-linked-pipeline"
-    if requested_pipeline and st.session_state.get(request_key) != requested_pipeline:
+    if not editing_template and requested_pipeline and st.session_state.get(request_key) != requested_pipeline:
         st.session_state[request_key] = requested_pipeline
         linked = next((draft for draft in definitions if draft["graph"]["id"] == requested_pipeline), None)
         if linked:
@@ -1507,7 +1537,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     reuse_key = prefix + "-reuse"
     st.session_state.setdefault(reuse_key, True)
     pending = st.session_state.get("pipeline-pending-draft")
-    if pending and pending["project_id"] == project_id:
+    if not editing_template and pending and pending["project_id"] == project_id:
         _activate_graph(prefix, pending["graph"])
         st.session_state.pop("pipeline-pending-draft", None)
     current_graph = st.session_state.get(state_key)
@@ -1515,14 +1545,15 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     view = st.session_state.get(view_key, "editor" if current_graph else "library")
     if view == "library" or current_graph is None:
         _render_pipeline_library(prefix, owner_id, project_id, definitions, archived, trashed,
-                                 submit_api, search_jobs, search_cluster_runs)
+                                 submit_api, search_jobs, search_cluster_runs, can_edit_templates=can_edit_templates)
         return
     if view == "runs":
         _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs, graph=current_graph)
         return
-    migrated_graph = migrate_template_graph(current_graph)
-    if migrated_graph is not current_graph:
-        _activate_graph(prefix, migrated_graph, _draft_revision(prefix, current_graph))
+    if not editing_template:
+        migrated_graph = migrate_template_graph(current_graph)
+        if migrated_graph is not current_graph:
+            _activate_graph(prefix, migrated_graph, _draft_revision(prefix, current_graph))
 
     graph = st.session_state[state_key]
     saved_draft = next((item for item in definitions if item["graph"]["id"] == graph["id"]), None)
@@ -1552,7 +1583,11 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     from mn_molecular_design_studio import candidate_execution
     settings = candidate_execution.policy(graph.get("candidate_execution"))
     graph["candidate_execution"] = settings
-    if not project_id:
+    if editing_template:
+        st.caption("Editing a shared template. Saving updates it for all signed-in users.")
+        if notice := st.session_state.pop(prefix + "-save-notice", None):
+            st.success(notice)
+    elif not project_id:
         st.info("Save lets you choose a project for this pipeline. Run setup also requires a project.")
     launch_panel = st.container()
     last_job = st.session_state.get(prefix+"-last-job", {})
@@ -1582,11 +1617,14 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         else:
             if restored != graph and st.button("Restore screening connections", key=prefix + "-restore-screen"):
                 _activate_graph(prefix, restored, _draft_revision(prefix, graph))
+                if editing_template:
+                    st.session_state[prefix + "-restore-viewport"] = True
                 st.rerun()
     value = _component()(graph=graph, catalog=editor_tool_catalog(), screening_positions=ACTIVE_LEARNING_LAYOUT,
                          connections=editor_connections(), round_outline=round_outline,
                          reset_token=reset_token, input_contexts={},
                          draft_saved=bool(_draft_revision(prefix, graph)),
+                         template_edit=bool(editing_template), can_edit_templates=can_edit_templates,
                          restore_viewport=bool(_draft_revision(prefix, graph) or st.session_state.get(prefix + "-restore-viewport")),
                          execution=execution, settings_update=st.session_state.get(prefix+"-settings-update"),
                          key=f"{prefix}-canvas-{reset_token}", default=None)
@@ -1615,13 +1653,33 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 new_action = action.get("id") and action["id"] != st.session_state.get(prefix+"-handled-action")
                 action_type = action.get("type") if new_action else None
                 changed = dict(updated, viewport=graph.get("viewport")) != graph
-                if project_id and action_type != "save_as" and (changed or action_type in {"save", "save_template"}):
+                if project_id and action_type not in {"save_as", "save_template"} and (changed or action_type == "save"):
                     _save_draft(prefix, project_id, updated, submit_api, from_canvas=True)
                 st.session_state[state_key] = graph = updated
                 if new_action:
                     st.session_state[prefix+"-handled-action"] = action["id"]
-                    if action["type"] == "edit_node":
+                    if action_type == "edit_node":
                         _open_node_editor(prefix, action.get("node_id"))
+                    elif editing_template:
+                        if action_type == "save":
+                            saved = submit_api("/api/v1/pipelines/shared-templates/save", {
+                                "graph": graph, "template_id": editing_template["id"],
+                                "expected_revision": editing_template["revision"],
+                            })
+                            editing_template["revision"] = saved["revision"]
+                            _activate_graph(prefix, saved["graph"])
+                            st.session_state[prefix + "-restore-viewport"] = True
+                            st.session_state[prefix + "-save-notice"] = f"Saved shared template {saved['name']}."
+                            st.rerun()
+                        if action_type == "library":
+                            destination = editing_template["return_prefix"]
+                            st.session_state.pop(editing_key, None)
+                            st.session_state.setdefault("project-pending-selection", {})["visual-pipeline-project-id"] = (
+                                editing_template["return_project"] or ""
+                            )
+                            st.session_state[destination + "-view"] = "library"
+                            st.session_state[destination + "-library-next-section"] = "Templates"
+                            st.rerun()
                     elif action["type"] == "campaign":
                         st.session_state[prefix + "-campaign-open"] = True
                     elif action["type"] == "resources":
@@ -1639,11 +1697,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                             st.success(f"Saved {graph['name']}.")
                             link = urlencode({"pipeline": graph["id"], "pipeline_project": project_id})
                             st.markdown(f"[Open saved pipeline](?{link})")
-                    elif action["type"] == "save_template":
-                        if revision := _draft_revision(prefix, graph):
-                            st.session_state[prefix + "-template-source"] = {"graph": graph, "revision": revision}
-                        else:
-                            st.warning("Choose a project before saving a template.")
+                    elif action_type == "save_template" and can_edit_templates:
+                        st.session_state[prefix + "-template-source"] = graph
                     elif action["type"] == "save_as":
                         if not project_id:
                             st.warning("Choose a project before saving a pipeline.")
@@ -1653,8 +1708,12 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     st.rerun()
             except StudioAPIConflictError:
                 st.rerun()
-            except (ValueError, OSError, TypeError, KeyError) as exc:
+            except (ValueError, RuntimeError, OSError, TypeError, KeyError) as exc:
                 launch_panel.error(str(exc))
+    if editing_template:
+        _show_node_editor(prefix, owner_id=owner_id, project_id=None, submit_api=submit_api,
+                          search_jobs=search_jobs, stage_edits=True, library_catalog_available=library_catalog_available)
+        return
     from mn_molecular_design_studio.cluster.ui import _job_details_reference, _navigate_to_job_details
     with launch_panel:
         if screen_issues is not None:
@@ -1684,7 +1743,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     _show_pipeline_campaign(prefix, project_id, submit_api)
     _show_pipeline_resources(prefix, owner_id, project_id, submit_api)
     _show_pipeline_versions(prefix, owner_id, project_id, graph, saved_draft, submit_api)
-    _show_save_pipeline_template(prefix, project_id, submit_api)
+    if can_edit_templates:
+        _show_save_pipeline_template(prefix, submit_api)
     _show_pipeline_save_as(prefix, project_id, submit_api)
     _show_pipeline_save_project(prefix, graph, save_project_selector or project_selector, submit_api, read_only_projects)
     _show_node_editor(prefix, owner_id=owner_id, project_id=project_id, submit_api=submit_api,

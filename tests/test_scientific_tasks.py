@@ -296,8 +296,8 @@ def test_pipeline_template_and_trash_are_independent_of_saved_versions(api_data)
     assert published.status_code == 200, published.text
     assert client.post(f"{root}/{pipeline_id}/template", json=publish).json() == published.json()
     template_id = published.json()["id"]
-    assert [row["id"] for row in client.get(root + "/saved-templates", params={"project_id": project}).json()["items"]] == [template_id]
-    assert client.get(root + "/saved-templates", params={"project_id": project}, headers=headers(api_data, "other")).status_code == 404
+    assert template_id in {row["id"] for row in client.get(root + "/shared-templates", headers=headers(api_data, "other")).json()["items"]}
+    assert client.post(f"{root}/{pipeline_id}/template", json=publish, headers=headers(api_data, "student")).status_code == 403
 
     edit = client.post(root + "/save", json={"project_id": project, "expected_revision": revision,
                                             "graph": {**original, "name": "Edited screening setup"}})
@@ -311,7 +311,7 @@ def test_pipeline_template_and_trash_are_independent_of_saved_versions(api_data)
     assert client.post(root + "/run", json={"project_id": project, "graph": original}).status_code == 409
     assert client.get(f"{root}/{pipeline_id}/versions", params={"project_id": project}).json()["items"][0]["revision"] == revision
 
-    copy = client.post(f"{root}/saved-templates/{template_id}/use", json={"project_id": project})
+    copy = client.post(f"{root}/shared-templates/{template_id}/use", headers=headers(api_data, "other"))
     assert copy.status_code == 200, copy.text
     new = copy.json()["graph"]
     assert new["id"] != pipeline_id
@@ -319,6 +319,41 @@ def test_pipeline_template_and_trash_are_independent_of_saved_versions(api_data)
     assert new["nodes"] == original["nodes"] and new["edges"] == original["edges"]
     assert client.post(f"{root}/{pipeline_id}/trash", json={**trash, "trashed": False}).status_code == 200
     assert client.get(root, params={"project_id": project}).json()[0]["graph"]["id"] == pipeline_id
+
+
+def test_shared_starter_update_is_visible_without_project_access(api_data):
+    client = api_data["client"]
+    base = "/api/v1/pipelines/shared-templates"
+    template_id = "unidock_active_learning"
+    reader = headers(api_data, "other")
+    starter = client.get(f"{base}/{template_id}", headers=reader).json()
+    edited = copy.deepcopy(starter["graph"])
+    edited.update(name="Shared screening recipe", viewport={"x": 74, "y": -49, "zoom": .68})
+    edited["nodes"][0]["position"] = {"x": 156, "y": 252}
+    for node in edited["nodes"]:
+        if node["data"]["kind"] == "active_seed":
+            node["data"]["params"].update(sample_size=137, library_id="private-library",
+                                            centroid_manifest="/private/centroids.json")
+    request = {"template_id": template_id, "expected_revision": starter["revision"], "graph": edited}
+    assert client.post(f"{base}/save", json=request, headers=reader).status_code == 403
+    assert not graph.can_edit_shared_templates({"role": "admin", "username": "another_admin"})
+    result = client.post(f"{base}/save", json=request)
+    assert result.status_code == 200, result.text
+    saved = result.json()
+    assert saved["revision"] != starter["revision"]
+    assert client.post(f"{base}/save", json=request).json() == saved
+    assert client.get(f"{base}/{template_id}", headers=reader).json() == saved
+    assert [item["name"] for item in client.get(base, headers=reader).json()["items"]
+            if item["id"] == template_id] == ["Shared screening recipe"]
+    assert client.post(f"{base}/save", json={**request, "name": "Stale edit"}).status_code == 409
+    assert client.post(f"{base}/save", json={**request, "project_id": "any"}).status_code == 422
+    fork = client.post(f"{base}/{template_id}/use", headers=reader).json()["graph"]
+    assert fork["id"] != saved["graph"]["id"]
+    assert fork["viewport"] == edited["viewport"]
+    assert fork["nodes"][0]["position"] == edited["nodes"][0]["position"]
+    assert fork["name"] == edited["name"]
+    seed = next(node["data"]["params"] for node in fork["nodes"] if node["data"]["kind"] == "active_seed")
+    assert (seed["sample_size"], seed["library_id"], seed["centroid_manifest"]) == (137, "", "")
 
 
 def test_pipeline_page_keeps_legacy_recipe_selector_and_canvas_as_main_builder(monkeypatch, tmp_path):

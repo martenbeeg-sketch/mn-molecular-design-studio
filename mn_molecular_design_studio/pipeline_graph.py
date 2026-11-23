@@ -2687,33 +2687,167 @@ def _template_summary(template):
     }
 
 
-def save_pipeline_template(owner_id: str, project_id: str, pipeline_id: str, *,
-                           name: str, expected_revision: str) -> dict:
-    """Copy a saved revision to an independent, reusable template in this project."""
+SHARED_TEMPLATE_STARTERS = {
+    "unidock_active_learning": ("Large-library screen", "Screen a registered compound library over successive rounds."),
+    "md_simulation": ("OpenMM simulation", "Prepare a complex, run a simulation, and analyze the trajectory."),
+    "md_analysis": ("Analyze an MD run", "Open a saved production segment and summarize its trajectory."),
+}
+
+
+def can_edit_shared_templates(user):
+    return user.get("role") == "admin" and user.get("username") == "research_instructor"
+
+
+def _shared_template_root():
+    return app_home() / "pipelines" / "shared-templates"
+
+
+def _shared_template_path(template_id):
+    if template_id not in SHARED_TEMPLATE_STARTERS and not re.fullmatch(r"[a-f0-9]{32}", template_id):
+        raise ValueError("Invalid template ID.")
+    return _shared_template_root() / f"{template_id}.json"
+
+
+def _template_revision(graph):
+    return hashlib.sha256(json.dumps(graph, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def get_shared_pipeline_template(template_id: str) -> dict:
+    path = _shared_template_path(template_id)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if template_id not in SHARED_TEMPLATE_STARTERS:
+            raise LookupError("Shared pipeline template not found.") from None
+    name, description = SHARED_TEMPLATE_STARTERS[template_id]
+    graph_id = hashlib.sha256(template_id.encode("utf-8")).hexdigest()[:32]
+    graph = clean_graph({**new_graph(template_id), "id": graph_id, "name": name})
+    return {"id": template_id, "name": name, "description": description,
+            "revision": _template_revision(graph), "graph": graph}
+
+
+def list_shared_pipeline_templates() -> list[dict]:
+    saved = []
+    for path in _shared_template_root().glob("*.json"):
+        if path.stem in SHARED_TEMPLATE_STARTERS:
+            continue
+        saved.append(_template_summary(get_shared_pipeline_template(path.stem)))
+    starters = [_template_summary(get_shared_pipeline_template(key)) for key in SHARED_TEMPLATE_STARTERS]
+    return sorted(saved, key=lambda item: item["saved_at"], reverse=True) + starters
+
+
+_TEMPLATE_INPUT_FIELDS = {
+    "bioemu2_structure_text", "centroid_manifest", "condition_spec", "dna_sequences", "feature_manifest",
+    "library_id", "ligand", "ligand_ccd_codes", "ligand_selection", "ligand_smiles", "manual_ids",
+    "motif_example", "partner_protein_sequences", "protein_selection", "protein_sequences", "rna_sequences",
+    "run_reference", "scaffold_ids", "selected_candidate_ids", "selected_docking_poses", "target_name",
+    "target_protein_sequences", "target_sequence", "target_source_molecule_id", "target_source_structure_id",
+    "topology_relative_path", "worker_nodes", "gpu_selection", "ssh_user", "deadline_at",
+    "gpu_device", "workstation_selection", "option_id", "project_id", "job_id", "run_id", "source_job",
+    "dataset_id", "molecule_id", "structure_id", "sequence", "smiles",
+}
+
+
+def _template_settings(value):
+    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import is_user_input_path_key
+
+    if isinstance(value, dict):
+        return {
+            key: _template_settings(child) for key, child in value.items()
+            if key not in _TEMPLATE_INPUT_FIELDS and not is_user_input_path_key(key)
+            and not key.endswith(("_project_id", "_job_id", "_run_id", "_uri"))
+        }
+    if isinstance(value, list):
+        return [_template_settings(child) for child in value]
+    return value
+
+
+def _portable_template_graph(graph):
+    graph = clean_graph(graph)
+    if "task_configuration" in graph:
+        graph["task_configuration"] = _template_settings(graph["task_configuration"])
+        graph["task_configuration"].pop("inputs", None)
+    for settings in (graph.get("candidate_execution"), graph.get("shared_campaign"),
+                     *(node["data"].get("execution") for node in graph["nodes"])):
+        if settings is not None:
+            for key in ("deadline_at", "gpu_device", "workstation_selection"):
+                settings.pop(key, None)
+            if "placement" in settings and settings["placement"] not in ("auto", "local"):
+                settings["placement"] = "auto"
+    for node in graph["nodes"]:
+        data = node["data"]
+        if data.pop("retained_run_dir", ""):
+            data["enabled"] = True
+        params = _template_settings(data["params"])
+        for key in ("engine_overrides_json", "options_json"):
+            if params.get(key):
+                settings = json.loads(params[key])
+                portable = _template_settings(settings)
+                if portable != settings:
+                    params[key] = json.dumps(portable)
+        data["params"] = params
+    return clean_graph(graph)
+
+
+def save_shared_pipeline_template(graph: dict, *, template_id: str | None = None,
+                                  name: str | None = None, expected_revision: str | None = None) -> dict:
+    """Publish a portable recipe or update the same shared template revision."""
     from mn_molecular_design_studio.cluster.config import atomic_json
-    _require_pipeline_revision(expected_revision)
+
+    graph = _portable_template_graph(graph)
+    name = graph["name"] if name is None else name
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 160:
         raise ValueError("Enter a template name of 1 to 160 characters.")
+    if not graph["nodes"]:
+        raise ValueError("Add a step before saving a template.")
+    validate_graph(graph, allow_incomplete=True)
     name = name.strip()
+    if template_id is None:
+        if expected_revision is not None:
+            raise ValueError("Choose the shared template to update.")
+        # Reserve a stable identity for a named publication from this canvas so a retry is safe.
+        identity = json.dumps([graph["id"], name], ensure_ascii=False)
+        template_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+    else:
+        _require_pipeline_revision(expected_revision)
+    path = _shared_template_path(template_id)
+    graph = {**graph, "name": name}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with (path.parent / ".templates.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            current = get_shared_pipeline_template(template_id)
+        except LookupError:
+            current = None
+        if current:
+            graph["id"] = current["graph"]["id"]
+        revision = _template_revision(graph)
+        if current and revision == current["revision"]:
+            return current
+        if expected_revision != (current and current["revision"]):
+            raise PipelineDraftConflictError("The shared template has changed. Open the latest template and apply your changes again.")
+        record = {"id": template_id, "name": name, "revision": revision, "graph": graph,
+                  "saved_at": datetime.now(timezone.utc).isoformat()}
+        if current and "description" in current:
+            record["description"] = current["description"]
+        atomic_json(path, record)
+    return record
+
+
+def save_pipeline_template(owner_id: str, project_id: str, pipeline_id: str, *,
+                           name: str, expected_revision: str) -> dict:
+    """Publish a reusable shared template from a saved project pipeline."""
+    _require_pipeline_revision(expected_revision)
     current = _read_saved_pipeline(_pipeline_draft_path(owner_id, project_id, pipeline_id))
     _require_editable_pipeline(current)
     if current["revision"] != expected_revision:
         raise PipelineDraftConflictError("The saved pipeline has changed. Open the latest revision.")
-    # Identical publish retries resolve to the same immutable snapshot.
-    identity = json.dumps([pipeline_id, expected_revision, name], ensure_ascii=False)
-    identifier = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
-    root = scope_root(owner_id, project_id) / "templates"
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / f"{identifier}.json"
-    with (root / ".templates.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if path.is_file():
-            return _template_summary(json.loads(path.read_text(encoding="utf-8")))
-        record = {"id": identifier, "name": name, "created_at": datetime.now(timezone.utc).isoformat(),
-                  "source_pipeline_id": pipeline_id, "source_revision": expected_revision,
-                  "graph": clean_graph(current["graph"])}
-        atomic_json(path, record)
-    return _template_summary(record)
+    return _template_summary(save_shared_pipeline_template(current["graph"], name=name))
+
+
+def use_shared_pipeline_template(template_id: str) -> dict:
+    graph = get_shared_pipeline_template(template_id)["graph"]
+    return clean_graph({**graph, "id": uuid.uuid4().hex})
 
 
 def list_pipeline_templates(owner_id: str, project_id: str) -> list[dict]:

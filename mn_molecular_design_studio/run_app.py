@@ -4195,6 +4195,7 @@ def _render_pipelines() -> None:
     from mn_molecular_design_studio.cluster.service import shared_jobs
     importlib.reload(pipeline_node_ui)
     importlib.reload(pipeline_graph_ui)
+    from mn_molecular_design_studio.pipeline_graph import can_edit_shared_templates
     from mn_molecular_design_studio.project_lifecycle import project_writable
     read_only = {project["id"] for project in _studio_projects(include_archived=True) if not project_writable(project)}
 
@@ -4205,6 +4206,7 @@ def _render_pipelines() -> None:
         project_selector=lambda key: _render_project_selector(key, include_archived=True),
         save_project_selector=lambda key: _render_project_selector(key, allow_create=False),
         submit_api=_post_local_api, search_jobs=search_jobs, read_only_projects=read_only,
+        can_edit_templates=can_edit_shared_templates(CURRENT_USER),
         search_cluster_runs=search_pipeline_cluster_runs if cluster_config.enabled() else None)
 
 

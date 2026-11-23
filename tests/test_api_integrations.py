@@ -275,14 +275,14 @@ def api_data(tmp_path, monkeypatch):
     workspace.ensure_studio_workspace()
     config.save({"mode": "disabled"})
     monkeypatch.setattr(molecular_database_api, "sync_workspace_async", lambda *a, **k: [])
-    admin = auth.create_initial_admin("instructor", "Instructor", "instructor-password-42")
+    admin = auth.create_initial_admin("research_instructor", "Instructor", "instructor-password-42")
     project = workspace.create_project("API course", owner_id=admin["id"])
     student = auth.create_user("student", "Student", "temporary-password-42", actor=admin)
     auth.change_password(student["id"], "student-password-42", forced=True)
     auth.grant_project_access(project["id"], student["id"], actor=admin)
     other = auth.create_user("otherstudent", "Other", "temporary-password-42", actor=admin)
     auth.change_password(other["id"], "otherstudent-password-42", forced=True)
-    admin_token = auth.authenticate("instructor", "instructor-password-42")[1]
+    admin_token = auth.authenticate("research_instructor", "instructor-password-42")[1]
     student_token = auth.authenticate("student", "student-password-42")[1]
     other_token = auth.authenticate("otherstudent", "otherstudent-password-42")[1]
     with TestClient(api.app) as client:
@@ -611,7 +611,7 @@ def test_codex_pairing_expires_but_redeemed_access_survives_browser_session(api_
     auth.revoke_session(data["admin_token"])
     assert client.post(redeem, json={"code": unredeemed}).status_code == 401
     assert client.get("/api/v1/auth/me", headers=paired).status_code == 200
-    auth.reset_admin_password("instructor", "new-password-42")
+    auth.reset_admin_password("research_instructor", "new-password-42")
     assert client.get("/api/v1/auth/me", headers=paired).status_code == 401
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_AUTH_MODE", "development")
     assert client.post(pair).status_code == 403

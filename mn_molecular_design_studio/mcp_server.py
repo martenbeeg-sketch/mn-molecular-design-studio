@@ -371,9 +371,32 @@ def create_server(client=None):
     @server.tool(annotations=write)
     async def save_pipeline_template(project_id: str, pipeline_id: str, expected_revision: str,
                                      name: str, ctx: Context) -> dict[str, Any]:
-        """Save a specific saved pipeline revision as a reusable template in its project."""
+        """Publish a saved pipeline revision as a shared template. Requires research_instructor."""
         return await call(ctx, "POST", f"/api/v1/pipelines/{segment(pipeline_id)}/template", body={
             "project_id": project_id, "expected_revision": expected_revision, "name": name})
+
+    @server.tool(annotations=read)
+    async def list_shared_pipeline_templates(ctx: Context) -> dict[str, Any]:
+        """List templates available to every signed-in user, across projects."""
+        return await call(ctx, "GET", "/api/v1/pipelines/shared-templates")
+
+    @server.tool(annotations=read)
+    async def get_shared_pipeline_template(template_id: str, ctx: Context) -> dict[str, Any]:
+        """Open a shared template and its current revision."""
+        return await call(ctx, "GET", f"/api/v1/pipelines/shared-templates/{segment(template_id)}")
+
+    @server.tool(annotations=read)
+    async def use_shared_pipeline_template(template_id: str, ctx: Context) -> dict[str, Any]:
+        """Start an independent pipeline graph from a shared template."""
+        return await call(ctx, "POST", f"/api/v1/pipelines/shared-templates/{segment(template_id)}/use")
+
+    @server.tool(annotations=write)
+    async def save_shared_pipeline_template(graph: dict, ctx: Context, name: str | None = None,
+                                            template_id: str | None = None,
+                                            expected_revision: str | None = None) -> dict[str, Any]:
+        """Publish a shared template, or update its ID and last opened revision. Requires research_instructor."""
+        return await call(ctx, "POST", "/api/v1/pipelines/shared-templates/save", body={
+            "graph": graph, "name": name, "template_id": template_id, "expected_revision": expected_revision})
 
     @server.tool(annotations=read)
     async def list_saved_pipeline_templates(project_id: str, ctx: Context) -> dict[str, Any]:
