@@ -356,25 +356,46 @@ def test_shared_starter_update_is_visible_without_project_access(api_data):
     assert (seed["sample_size"], seed["library_id"], seed["centroid_manifest"]) == (137, "", "")
 
 
-def test_pipeline_page_keeps_legacy_recipe_selector_and_canvas_as_main_builder(monkeypatch, tmp_path):
+def test_pipeline_templates_and_guided_setup_open_separate_canvases(monkeypatch, tmp_path):
     from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import pipeline_graph_ui
+
     monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
-    app = AppTest.from_string('''
+
+    def canvas(**args):
+        action = pipeline_graph_ui.st.session_state.pop("canvas-test-action", None)
+        if action:
+            assert args["guided_setup"]
+            return {"graph": args["graph"], "action": {"type": action, "id": "guided-setup"}}
+
+    monkeypatch.setattr(pipeline_graph_ui, "_component", lambda: canvas)
+    app = AppTest.from_string("""
 from mn_molecular_design_studio.pipeline_graph_ui import render_pipeline_builder
 render_pipeline_builder(owner_id="test-user", project_selector=lambda _:None,
-    submit_api=lambda *a:{}, search_jobs=lambda **k:{"items":[]})
-''').run()
-    assert not app.exception
+    submit_api=lambda *a: (_ for _ in ()).throw(AssertionError("No request expected")),
+    search_jobs=lambda **k: {"items": []})
+""").run()
     prefix = "visual-pipeline-unassigned"
     app.segmented_control(key=prefix + "-library-section").set_value("Templates").run()
-    app.selectbox(key=prefix + "-task-category").set_value("advanced").run()
-    app.selectbox(key=prefix + "-advanced-recipe").set_value("legacy").run()
-    app.selectbox(key=prefix + "-legacy").set_value("Foundry · RFD3 → MPNN → RF3").run()
     assert not app.exception
-    assert prefix + "-graph" not in app.session_state
-    app.button(key=prefix + "-open-legacy").click().run()
+    assert not app.selectbox
+    assert app.button(key=prefix + "-template-unidock_active_learning").label == "Large-library screen"
+    app.button(key=prefix + "-new").click().run()
+    blank = app.session_state[prefix + "-graph"]
+    assert not blank["nodes"]
+    app.session_state["canvas-test-action"] = "guided_setup"
+    app.run()
     assert not app.exception
-    assert kinds(app.session_state[prefix + "-graph"]) == ["target", "binder_context", "rfd3", "foundry_mpnn", "rf3", "results"]
+    guided = prefix + "-guided-" + blank["id"]
+    assert app.selectbox(key=guided + "-task").value is None
+    app.selectbox(key=guided + "-task").set_value("advanced").run()
+    app.selectbox(key=guided + "-advanced-advanced-recipe").set_value("legacy").run()
+    app.selectbox(key=guided + "-advanced-legacy").set_value("Foundry · RFD3 → MPNN → RF3").run()
+    app.button(key=guided + "-advanced-open-legacy").click().run()
+    assert not app.exception
+    composed = app.session_state[prefix + "-graph"]
+    assert composed["id"] == blank["id"]
+    assert kinds(composed) == ["target", "binder_context", "rfd3", "foundry_mpnn", "rf3", "results"]
 
 
 def test_task_ui_creates_every_task_and_blank_without_starting_jobs():

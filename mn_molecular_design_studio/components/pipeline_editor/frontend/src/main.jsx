@@ -469,8 +469,9 @@ function Editor({args}){
           <Background gap={24} size={1.2} color="#cad6cf"/><Controls showInteractive={false} fitViewOptions={{padding:fitPadding,maxZoom:1}}/>{showMap&&<MiniMap style={{pointerEvents:'none'}} nodeColor={n=>catalog[n.data.kind]?.color||'#799687'} maskColor="rgba(246,249,246,.72)"/>}
         </ReactFlow>
         {!nodes.length&&<div className="canvas-empty"><h2>Your pipeline starts here</h2>
-          <p>Choose a tool from the palette or drag it onto the canvas.</p>
+          <p>Add tools from the library{args.guided_setup?' or start with a connected workflow.':'.'}</p>
           {!palette&&<button onClick={()=>setPalette(true)}>Show tools</button>}
+          {args.guided_setup&&<button onClick={()=>emit('guided_setup')}>Guided setup</button>}
         </div>}
         {notice&&<div className="canvas-notice" role="status">{notice}</div>}
       </main>

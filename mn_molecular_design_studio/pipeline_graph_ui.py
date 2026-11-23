@@ -671,7 +671,45 @@ def _activate_graph(prefix, graph, revision=None):
     st.session_state.pop(prefix + "-draft-conflict", None)
     st.session_state.pop(prefix + "-run-check", None)
     st.session_state[prefix+"-reset"] = uuid.uuid4().hex
+    st.session_state.pop(prefix + "-guided-open", None)
     _close_node_editor(prefix)
+
+
+def _show_guided_pipeline_setup(prefix, graph, project_id, submit_api):
+    open_key = prefix + "-guided-open"
+    if st.session_state.get(open_key) != graph["id"] or graph["nodes"]:
+        return
+
+    from mn_molecular_design_studio.pipeline_graph import MAIN_STARTERS
+    from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
+
+    @st.dialog("Guided pipeline setup", width="medium", on_dismiss=lambda: st.session_state.pop(open_key, None))
+    def dialog():
+        st.caption("Choose a workflow to add connected steps to your canvas.")
+        categories = {value: name for name, value in MAIN_STARTERS.items()}
+        categories["advanced"] = "Advanced workflows"
+        key = prefix + "-guided-" + graph["id"]
+        task = st.selectbox("Workflow type", list(categories), format_func=categories.get, index=None, key=key + "-task")
+        if task is None:
+            return
+        created = render_task_setup(key + "-" + task, task=task, compact=True)
+        if created is None:
+            return
+        created["id"] = graph["id"]
+        if graph["name"] != "Untitled pipeline":
+            created["name"] = graph["name"]
+        revision = _draft_revision(prefix, graph)
+        if project_id and revision:
+            try:
+                saved = _save_draft(prefix, project_id, created, submit_api)
+                created, revision = saved["graph"], saved["revision"]
+            except (ValueError, RuntimeError, OSError, KeyError) as exc:
+                st.error(str(exc))
+                return
+        _activate_graph(prefix, created, revision)
+        st.rerun()
+
+    dialog()
 
 
 def _show_pipeline_save_project(prefix, graph, project_selector, submit_api, read_only_projects):
@@ -1156,8 +1194,6 @@ def _change_pipeline_trash(prefix, pipeline, project_id, submit_api, *, trashed)
 def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived, trashed,
                              submit_api, search_jobs, search_cluster_runs, *, can_edit_templates=False):
     from mn_molecular_design_studio.pipeline_blocks import blank_program
-    from mn_molecular_design_studio.pipeline_graph import MAIN_STARTERS
-    from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
 
     with st.container(key="pipeline-library"):
         section_key = prefix + "-library-section"
@@ -1225,14 +1261,6 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
                                 st.rerun()
                             except (ValueError, RuntimeError, OSError, LookupError, KeyError) as exc:
                                 st.error(str(exc))
-            categories = {value: name for name, value in MAIN_STARTERS.items()}
-            categories["advanced"] = "Advanced and legacy"
-            task = st.selectbox("Configure a template", [None, *categories], format_func=lambda item: categories.get(item, "Choose a category"), key=prefix + "-task-category")
-            if task:
-                created = render_task_setup(prefix, task=task)
-                if created is not None:
-                    _activate_graph(prefix, created)
-                    st.rerun()
             return
 
         if not project_id:
@@ -1619,6 +1647,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                          draft_saved=bool(_draft_revision(prefix, graph)),
                          shared_template=bool(opened_template), template_read_only=template_read_only,
                          can_edit_templates=can_edit_templates,
+                         guided_setup=not opened_template and not graph["nodes"],
                          restore_viewport=bool(_draft_revision(prefix, graph) or st.session_state.get(prefix + "-restore-viewport")),
                          execution=execution, settings_update=st.session_state.get(prefix+"-settings-update"),
                          key=f"{prefix}-canvas-{reset_token}", default=None)
@@ -1680,6 +1709,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                                 st.session_state[destination + "-view"] = "library"
                                 st.session_state[destination + "-library-next-section"] = "Templates"
                             st.rerun()
+                    elif action_type == "guided_setup" and not graph["nodes"]:
+                        st.session_state[prefix + "-guided-open"] = graph["id"]
                     elif action["type"] == "campaign":
                         st.session_state[prefix + "-campaign-open"] = True
                     elif action["type"] == "resources":
@@ -1741,6 +1772,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             st.caption(f"Last submission · {last_job.get('job_code') or reference}")
             if st.button("Open run results", key=prefix + "-open-latest-result"):
                 _navigate_to_job_details(reference, final_results=graph.get("template_id") == "unidock_active_learning")
+    _show_guided_pipeline_setup(prefix, graph, project_id, submit_api)
     _show_pipeline_campaign(prefix, project_id, submit_api)
     _show_pipeline_resources(prefix, owner_id, project_id, submit_api)
     _show_pipeline_versions(prefix, owner_id, project_id, graph, saved_draft, submit_api)

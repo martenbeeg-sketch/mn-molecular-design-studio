@@ -32,7 +32,7 @@ def _prediction_sampling(kind, key, *, seed_default=0):
     return values
 
 
-def render_task_setup(prefix, *, task=None):
+def render_task_setup(prefix, *, task=None, compact=False):
     """Configure a starter selected in the browser or through the task menu."""
     from mn_molecular_design_studio.workflow_modes import MODES
 
@@ -40,7 +40,7 @@ def render_task_setup(prefix, *, task=None):
     categories["advanced"] = "Advanced"
     if task is None:
         task = st.selectbox("Start from", list(categories), format_func=categories.get, key=prefix + "-task")
-    else:
+    elif not compact:
         st.subheader(categories[task])
     if task == "advanced":
         advanced = {
@@ -55,7 +55,7 @@ def render_task_setup(prefix, *, task=None):
         recipe = st.selectbox("Advanced recipe", list(advanced), format_func=advanced.get,
                               key=prefix + "-advanced-recipe")
         if recipe in TASKS:
-            return _render_task_recipe(prefix, recipe)
+            return _render_task_recipe(prefix, recipe, compact=compact)
         if recipe == "legacy":
             label = st.selectbox("Legacy recipe", list(LEGACY_STARTER_TEMPLATES), key=prefix + "-legacy")
             return new_graph(LEGACY_STARTER_TEMPLATES[label]) if st.button(
@@ -71,50 +71,58 @@ def render_task_setup(prefix, *, task=None):
         st.caption("Choose saved designs in the pipeline. For BinderScope, open the design or batch in the Data Browser.")
         return new_graph(task) if st.button("Create editable pipeline", key=prefix + "-create-task") else None
     if task == "targeted_protein_binder":
-        modes = {"guided": "Choose a method", **MODES}
-        mode = st.selectbox("Binder workflow", list(modes), format_func=modes.get,
+        modes = {"guided": "Standard workflow", **MODES}
+        mode = st.selectbox("Workflow layout", list(modes), format_func=modes.get,
                             key=prefix + "-workflow-mode")
         if mode != "guided":
             return _render_workflow_mode(prefix, mode)
-    return _render_task_recipe(prefix, task)
+    return _render_task_recipe(prefix, task, compact=compact)
 
 
-def _render_task_recipe(prefix, task):
+def _render_task_recipe(prefix, task, *, compact=False):
     spec = TASKS[task]
     st.caption(spec["description"])
     inputs, config = {}, {}
     mode, binder_format = "protein", "protein"
-    st.markdown("**Molecular inputs**")
     if task == "molecular_structure_prediction":
         mode = st.selectbox("Molecular mode", list(PREDICTION_MODES), format_func=PREDICTION_MODES.get, key=prefix + "-mode")
-        inputs["target_protein_sequences"] = st.text_area("Target protein sequence(s)", key=prefix + "-target-sequences")
-        if mode in {"protein_protein", "protein_macrocyclic"}:
-            inputs["partner_protein_sequences"] = st.text_area("Partner protein sequence(s)", key=prefix + "-partner-sequences")
-        elif mode == "protein_ligand":
-            notation = st.selectbox("Ligand notation", ["smiles", "ccd"], key=prefix + "-notation")
-            inputs["ligand_input_type"] = notation
-            inputs["ligand_smiles" if notation == "smiles" else "ligand_ccd_codes"] = st.text_area("Ligand " + notation.upper(), key=prefix + "-ligand")
-        elif mode in {"protein_dna", "protein_rna"}:
-            key = "dna_sequences" if mode == "protein_dna" else "rna_sequences"
-            inputs[key] = st.text_area("DNA sequence(s)" if mode == "protein_dna" else "RNA sequence(s)", key=prefix + "-" + key)
-        inputs["target_pdb"] = st.text_input("Optional target PDB path", key=prefix + "-prediction-target")
         config["mode"] = mode
-    elif task == "antibody_cdr_redesign":
-        st.caption("Select existing designs here or use the source node's project candidate picker after graph creation.")
-        inputs["source_run_dir"] = st.text_input("Parent design run directory", key=prefix + "-source")
-        inputs["selected_candidate_ids"] = [v.strip() for v in st.text_area("Parent candidate IDs (one per line)", key=prefix + "-candidate-ids").splitlines() if v.strip()]
-    elif task == "template_peptide_idr":
-        inputs["target_sequence"] = st.text_area("Target peptide / IDR fragment sequence", key=prefix + "-fragment")
-    elif task != "new_protein_fold":
-        inputs["target_pdb"] = st.text_input("Target / conditioning structure path", key=prefix + "-design-target")
-        if task == "targeted_protein_binder":
-            inputs["target_chains"] = st.text_input("Target chains", value="A", key=prefix + "-target-chains")
-            inputs["hotspots"] = st.text_input("Hotspots (blank = exploratory site)", key=prefix + "-hotspots")
-            inputs["coldspots"] = st.text_input("Coldspots", key=prefix + "-coldspots")
-            binder_format = st.selectbox("Binder format", ["protein", "vhh"], key=prefix + "-format")
-            config["binder_format"] = binder_format
-    else:
+    elif task == "targeted_protein_binder":
+        binder_format = st.selectbox("Binder format", ["protein", "vhh"], key=prefix + "-format")
+        config["binder_format"] = binder_format
+
+    if task == "new_protein_fold":
         st.caption("Unconditional generation. Set length/topology and protected motifs in the generator controls.")
+    else:
+        with st.expander("Molecular inputs") if compact else st.container():
+            if compact:
+                st.caption("You can choose inputs on the canvas after the steps are created.")
+            else:
+                st.markdown("**Molecular inputs**")
+            if task == "molecular_structure_prediction":
+                inputs["target_protein_sequences"] = st.text_area("Target protein sequence(s)", key=prefix + "-target-sequences")
+                if mode in {"protein_protein", "protein_macrocyclic"}:
+                    inputs["partner_protein_sequences"] = st.text_area("Partner protein sequence(s)", key=prefix + "-partner-sequences")
+                elif mode == "protein_ligand":
+                    notation = st.selectbox("Ligand notation", ["smiles", "ccd"], key=prefix + "-notation")
+                    inputs["ligand_input_type"] = notation
+                    inputs["ligand_smiles" if notation == "smiles" else "ligand_ccd_codes"] = st.text_area("Ligand " + notation.upper(), key=prefix + "-ligand")
+                elif mode in {"protein_dna", "protein_rna"}:
+                    key = "dna_sequences" if mode == "protein_dna" else "rna_sequences"
+                    inputs[key] = st.text_area("DNA sequence(s)" if mode == "protein_dna" else "RNA sequence(s)", key=prefix + "-" + key)
+                inputs["target_pdb"] = st.text_input("Optional target PDB path", key=prefix + "-prediction-target")
+            elif task == "antibody_cdr_redesign":
+                st.caption("Use the source node’s project candidate picker to browse designs on the canvas.")
+                inputs["source_run_dir"] = st.text_input("Parent design run directory", key=prefix + "-source")
+                inputs["selected_candidate_ids"] = [v.strip() for v in st.text_area("Parent candidate IDs (one per line)", key=prefix + "-candidate-ids").splitlines() if v.strip()]
+            elif task == "template_peptide_idr":
+                inputs["target_sequence"] = st.text_area("Target peptide / IDR fragment sequence", key=prefix + "-fragment")
+            else:
+                inputs["target_pdb"] = st.text_input("Target / conditioning structure path", key=prefix + "-design-target")
+                if task == "targeted_protein_binder":
+                    inputs["target_chains"] = st.text_input("Target chains", value="A", key=prefix + "-target-chains")
+                    inputs["hotspots"] = st.text_input("Hotspots (blank = exploratory site)", key=prefix + "-hotspots")
+                    inputs["coldspots"] = st.text_input("Coldspots", key=prefix + "-coldspots")
     allowed = task_methods(task, mode=mode, binder_format=binder_format, inputs=inputs)
     comparison = len(allowed) > 1 and st.checkbox("Compare selected methods independently", key=prefix + "-comparison")
     label = lambda value: NODE_CATALOG.get(value, {}).get("label", value)
