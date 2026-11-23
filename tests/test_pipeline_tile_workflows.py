@@ -60,6 +60,49 @@ def test_rosetta_ligand_reference_is_a_separate_canvas_input():
     assert "reference_ligand_sdf" not in request["parameters"]
 
 
+def test_ligand_sdf_wires_use_the_workflows_registered_input_fields():
+    from mn_molecular_design_studio.pipeline_graph import capability_contract
+
+    ligand = {"tile_artifact": {"path": "/test/ligand.sdf"}}
+    complex_ = {"tile_artifact": {"path": "/test/complex.pdb"}}
+    for kind in ("tile_md_openmm", "tile_md_gromacs"):
+        assert connection_compatibility("ligand_sdf_input", kind, target_handle="ligand")["compatible"]
+        assert [port["id"] for port in capability_contract(kind)["inputs"]] == ["complex", "ligand"]
+        config = {"ligand_key": "LIG"}
+        tiles.validate_parameters(tiles.TILES[kind], config, {"complex", "ligand"}, runnable=True)
+        request = node_request(kind, {"workflow_parameters": config},
+                               {"workflow_inputs": {"complex": complex_, "ligand": ligand}}, "MD")
+        assert request["parameters"]["complex_pdb"] == "/test/complex.pdb"
+        assert request["parameters"]["ligand_sdf"] == "/test/ligand.sdf"
+    kind = "tile_generation_lddm"
+    assert connection_compatibility("ligand_sdf_input", kind, target_handle="reference_ligand")["compatible"]
+    assert tiles.connected_parameter_names(tiles.TILES[kind], "reference_ligand") == {"reference_ligand_sdf"}
+
+
+def test_canvas_workflow_form_reads_the_registry_and_keeps_wired_fallbacks():
+    from streamlit.testing.v1 import AppTest
+
+    app = AppTest.from_string("""
+import streamlit as st
+from mn_molecular_design_studio.pipeline_node_ui import _render_tile_workflow_settings
+from mn_molecular_design_studio.pipeline_tile_workflows import TILES
+target = {"id": "target", "data": {"label": "Receptor"}}
+node = {"id": "docking", "data": {"label": "Vina"}}
+graph = {"nodes": [target, node], "edges": [{"source": "target", "target": "docking", "targetHandle": "target"}]}
+settings = {"target_pdb": "/test/fallback.pdb", "center_x": 0.0}
+st.session_state["values"], st.session_state["ready"] = _render_tile_workflow_settings(
+    TILES["tile_docking_vina"], settings, node, graph, "tool")
+""").run()
+    assert not app.exception
+    assert app.number_input(key="tool-center_x").value == 0.0
+    assert app.number_input(key="tool-center_y").value is None
+    assert not any(widget.key == "tool-target_pdb" for widget in app.text_input)
+    assert app.session_state["values"] == {"target_pdb": "/test/fallback.pdb", "center_x": 0.0}
+    app.number_input(key="tool-center_y").set_value(2.5).run()
+    assert not app.exception
+    assert app.session_state["values"]["center_y"] == 2.5
+
+
 def test_manifest_handoff_requires_real_artifact_and_checks_its_digest(tmp_path):
     run = tmp_path / "ligand-generation" / "fixture"
     run.mkdir(parents=True)

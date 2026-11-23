@@ -676,9 +676,10 @@ def _prediction_profile_fields(engine: str, profile: dict[str, Any]) -> list[dic
             field('target_chain_id', 'Target PDB chain ID', 'A', kind='text', section='basic'),
         ])
 
+    declared = {item["name"] for item in fields}
     for setting in profile.get('settings', ()):
         key = setting['key']
-        if key in {'use_msa', 'use_msa_server'}:
+        if key in declared or key in {'use_msa', 'use_msa_server'}:
             continue
         kind = setting.get('type')
         if kind == 'bool':
@@ -2973,8 +2974,8 @@ for _kind, _tile in tile_workflows.TILES.items():
         _kind, _tile.label, _tile.category, "Run the registered Studio tool and retain its native Results.",
         output=_tile.output, workflow=_tile.workflow, formats=("pdb", "cif")
         if _tile.output in {"candidates", "prediction"} else (),
-        fields=[field("workflow_parameters", "Tool parameters (JSON)", {}, kind="object", section="basic",
-                      help="Use the workflow parameters shown below. Connected inputs supply their corresponding fields.")],
+        fields=[field("workflow_parameters", "Tool settings", {}, kind="object", section="basic",
+                      help="Settings from the registered workflow. Connected inputs supply their corresponding fields.")],
     )
     _node["fields"][0]["workflow"] = _tile.workflow
     _node["inputs"] = [

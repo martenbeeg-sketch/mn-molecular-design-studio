@@ -1154,6 +1154,7 @@ def test_workflow_json_schemas_are_valid_and_never_evaluate_type_text():
     from mn_molecular_design_studio.workflow_json_schema import type_schema, parameters_schema
     assert type_schema("list[pathlib.Path] | None") == {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]}
     assert type_schema("__import__('os').system('must-not-run')") == {}
+    assert type_schema("one of 'fast', 'slow'") == {"enum": ["fast", "slow"]}
     schema = parameters_schema([{"name": "counts", "type": "tuple[int, int]", "required": True}])
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate({"counts": [1, 2]})

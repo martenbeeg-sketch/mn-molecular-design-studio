@@ -21,6 +21,7 @@ TARGET = (("target", "target"),)
 CANDIDATES = (("candidates", "candidates"),)
 COMPOUNDS = (("compounds", "compound_set"),)
 REFERENCE_LIGAND = (("reference_ligand", "ligand_sdf"),)
+LIGAND = (("ligand", "ligand_sdf"),)
 TILES = {
     **{
         "tile_docking_" + engine: TileWorkflow(label, "ligand.docking." + engine, "Docking",
@@ -33,7 +34,7 @@ TILES = {
     },
     **{
         "tile_generation_" + engine: TileWorkflow(label, "ligand.generation." + engine,
-            "Ligand generation", "compound_set", TARGET)
+            "Ligand generation", "compound_set", TARGET + (REFERENCE_LIGAND if engine == "lddm" else ()))
         for engine, label in (
             ("conditar", "conDitar"), ("drugrpg", "DrugRPG"), ("flowr_root", "FLOWR.root"),
             ("lddm", "LDDM"), ("omtra", "OMTRA"), ("paopt", "paOPT"), ("pfm", "PFM"),
@@ -62,9 +63,9 @@ TILES = {
     "tile_complex_prepare": TileWorkflow("Complex Preparation", "ligand.complex.prepare", "Molecular dynamics",
                                          "prepared_complex", cpu=True),
     "tile_md_openmm": TileWorkflow("OpenMM", "ligand.md.openmm", "Molecular dynamics", "md_trajectory",
-                                   (("complex", "prepared_complex"),)),
+                                   (("complex", "prepared_complex"),) + LIGAND),
     "tile_md_gromacs": TileWorkflow("GROMACS", "ligand.md.gromacs", "Molecular dynamics", "md_trajectory",
-                                    (("complex", "prepared_complex"),)),
+                                    (("complex", "prepared_complex"),) + LIGAND),
     "tile_bioemu2": TileWorkflow("BioEmu-2", "simulation.bioemu2", "Molecular dynamics", inputs=CANDIDATES),
     "tile_af3_jax": TileWorkflow("ColabFold 2.0 preview", "refolding.af3_jax_cofolding", "Structure prediction",
                                  "prediction"),
@@ -87,14 +88,30 @@ PORT_LABELS = {
     "ligand_sdf": "Reference ligand (SDF)",
 }
 ARTIFACT_INPUT_FIELDS = {"compounds": "compound_set_file", "features": "feature_manifest",
-                         "complex": "complex_pdb", "reference_ligand": "reference_ligand_sdf"}
+                         "complex": "complex_pdb", "reference_ligand": "reference_ligand_sdf",
+                         "ligand": "ligand_sdf"}
+
+
+@lru_cache(maxsize=None)
+def parameter_descriptors(workflow: str) -> tuple[dict, ...]:
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import workflow_catalog
+
+    return tuple(workflow_catalog(workflow_id=workflow)[0]["parameters"])
 
 
 @lru_cache(maxsize=None)
 def parameters_for(workflow: str) -> tuple[tuple[str, bool], ...]:
-    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import workflow_catalog
+    return tuple((p["name"], p["required"]) for p in parameter_descriptors(workflow))
 
-    return tuple((p["name"], bool(p["required"])) for p in workflow_catalog(workflow_id=workflow)[0]["parameters"])
+
+def connected_parameter_names(tile: TileWorkflow, port: str) -> set[str]:
+    """Fields supplied by a connection without a manual override."""
+    names = {
+        "target": {"target_pdb", "target_chains", "chain_ids"},
+        "candidates": {"source_run_dir", "candidates_jsonl"},
+        "features": {"feature_manifest", "library_id"},
+    }.get(port, {ARTIFACT_INPUT_FIELDS.get(port)})
+    return names.intersection(dict(parameters_for(tile.workflow)))
 
 
 def validate_parameters(tile: TileWorkflow, settings: dict, connected_ports: set[str], *, runnable: bool) -> None:
@@ -105,15 +122,11 @@ def validate_parameters(tile: TileWorkflow, settings: dict, connected_ports: set
     supplied = {
         name for name, value in settings.items()
         if value is not None and (not isinstance(value, str) or value.strip())
-    } | {
-        ARTIFACT_INPUT_FIELDS[port] for port in connected_ports if port in ARTIFACT_INPUT_FIELDS
     }
+    for port in connected_ports:
+        supplied.update(connected_parameter_names(tile, port))
     if "target" in connected_ports:
-        supplied.update(("target_pdb", "chain_ids", "chain_id"))
-    if "candidates" in connected_ports:
-        supplied.update(("source_run_dir", "candidates_jsonl"))
-    if "features" in connected_ports:
-        supplied.add("library_id")
+        supplied.add("chain_id")  # A single connected chain can fill this optional override.
     missing = [name for name, required in parameters.items() if required and name not in supplied]
     if runnable and missing:
         raise ValueError(f"{tile.label} needs {', '.join(missing)}.")

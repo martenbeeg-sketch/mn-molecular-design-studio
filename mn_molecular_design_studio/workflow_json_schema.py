@@ -45,8 +45,11 @@ def type_schema(descriptor):
                 return {"type": "array", "prefixItems": [convert(a) for a in arguments],
                         "minItems": len(arguments), "maxItems": len(arguments)}
         return {}
+    text = str(descriptor)
     try:
-        return convert(ast.parse(str(descriptor), mode="eval").body)
+        if text.startswith("one of "):
+            return {"enum": ast.literal_eval("[" + text.removeprefix("one of ") + "]")}
+        return convert(ast.parse(text, mode="eval").body)
     except (SyntaxError, TypeError, ValueError):
         return {}
 

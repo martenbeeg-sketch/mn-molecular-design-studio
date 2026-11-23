@@ -5,6 +5,8 @@ from mn_molecular_design_studio.tool_connections import connection_catalog, edit
 def test_registered_nodes_expose_one_uniform_contract():
     required = {"operation", "category", "inputs", "outputs", "parameters", "constraints"}
     for kind, spec in pipeline_graph.NODE_CATALOG.items():
+        names = [field["name"] for field in spec["fields"]]
+        assert len(names) == len(set(names)), kind
         contract = pipeline_graph.capability_contract(kind, spec)
         assert required <= set(contract)
         assert len(contract["inputs"]) == len(spec.get("inputs") or [])
@@ -44,6 +46,28 @@ def test_new_registered_metric_tool_automatically_connects_and_populates_filter(
          "metrics": {"runtime_metric": 0.5}, "raw_metadata": {}}
     ])
     assert any(item["field"] == "runtime_metric" and item["availability"] == "observed" for item in observed)
+
+
+
+def test_localfold_canvas_form_preserves_numeric_choices():
+    from streamlit.testing.v1 import AppTest
+
+    app = AppTest.from_string("""
+import streamlit as st
+from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
+from mn_molecular_design_studio.pipeline_node_ui import render_node_form
+
+spec = NODE_CATALOG["prediction_localfold"]
+node = {"id": "step", "data": {"kind": "prediction_localfold", "label": spec["label"], "params": {}}}
+st.session_state["settings"] = render_node_form(
+    node, {"nodes": [node], "edges": []}, key="test", render_input=lambda: {}, owner_id="qa"
+)[0]
+""").run()
+    assert not app.exception
+    assert app.selectbox(key="test-af2_num_models").value == 1
+    app.selectbox(key="test-af2_num_models").select(3).run()
+    assert not app.exception
+    assert app.session_state["settings"]["af2_num_models"] == 3
 
 
 def test_connection_catalog_matches_canvas_for_every_registered_port_pair():

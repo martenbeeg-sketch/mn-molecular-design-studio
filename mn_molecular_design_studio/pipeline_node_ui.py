@@ -422,12 +422,6 @@ def _render_field(field, values, key):
         return st.multiselect(label, list(SCAFFOLDS), default=list(value or []),
                               format_func=lambda item: SCAFFOLDS[item]["label"], **kwargs)
     if field["type"] in {"json", "object"}:
-        if field["type"] == "object":
-            from mn_molecular_design_studio.pipeline_tile_workflows import parameters_for
-            if field.get("workflow"):
-                parameters = parameters_for(field["workflow"])
-                with st.expander("Workflow parameter names"):
-                    st.table([{"Parameter": name, "Required": required} for name, required in parameters])
         text = st.text_area(label, value=json.dumps(value, indent=2), **kwargs)
         try:
             parsed = json.loads(text)
@@ -464,7 +458,7 @@ def _render_field(field, values, key):
                   "boltz2":"Boltz-2 weights", "protenix2":"Protenix V2", "rosettafold3":"RosettaFold3",
                   "intellifold2":"IntelliFold2", "opendde":"OpenDDE"}
         return st.selectbox(label, options, index=options.index(value) if value in options else 0,
-                            format_func=lambda v:labels.get(v,v), **kwargs)
+                            format_func=lambda v: labels.get(v, str(v)), **kwargs)
     if field["type"] == "number":
         integer = isinstance(field["default"], int)
         convert = int if integer else float
@@ -478,6 +472,91 @@ def _render_field(field, values, key):
             return st.text_area(label, value=None, height=height, **kwargs)
         return st.text_area(label, value=str(value), height=height, **kwargs)
     return st.text_input(label, value=str(value), **kwargs)
+
+
+def _render_workflow_parameter(parameter, value, key):
+    from mn_molecular_design_studio.workflow_json_schema import type_schema
+
+    name = parameter["name"]
+    label = name.replace("_", " ").capitalize() + (" *" if parameter["required"] else "")
+    schema = type_schema(parameter["type"])
+    variants = [item for item in schema.get("anyOf", [schema]) if item.get("type") != "null"]
+    schema = variants[0] if len(variants) == 1 else {}
+    kwargs = {"key": key + "-" + name, "help": f"Workflow field: {name} ({parameter['type']})"}
+    if options := schema.get("enum"):
+        return st.selectbox(label, options, index=options.index(value) if value in options else None,
+                            format_func=str, **kwargs)
+    kind = schema.get("type")
+    if kind == "boolean":
+        return st.checkbox(label, value=value if type(value) is bool else False, **kwargs)
+    if kind == "integer":
+        return st.number_input(label, value=value if type(value) is int else None, step=1, **kwargs)
+    if kind == "number":
+        initial = float(value) if type(value) in {int, float} else None
+        return st.number_input(label, value=initial, step=0.1, **kwargs)
+    if kind == "string":
+        widget = st.text_area if name.endswith(("_text", "_json", "_sequences")) else st.text_input
+        return widget(label, value="" if value is None else str(value), **kwargs)
+    initial = "" if value is None else json.dumps(value, indent=2)
+    text = st.text_area(label, value=initial, placeholder="JSON value", **kwargs)
+    if not text.strip():
+        return None
+    parsed = json.loads(text)
+    expected = {"array": list, "object": dict}.get(kind)
+    if expected is not None and not isinstance(parsed, expected):
+        raise ValueError(f"Enter a JSON {kind} for {label.rstrip(' *')}.")
+    return parsed
+
+
+def _render_tile_workflow_settings(tile, settings, node, graph, key):
+    from mn_molecular_design_studio.pipeline_tile_workflows import connected_parameter_names, parameter_descriptors
+
+    parents = {item["id"]: item["data"]["label"] for item in graph["nodes"]}
+    sources = {}
+    for edge in graph["edges"]:
+        if edge["target"] == node["id"] and edge["source"] in parents:
+            for name in connected_parameter_names(tile, edge.get("targetHandle", "in")):
+                sources[name] = parents[edge["source"]]
+    if sources:
+        with st.container(border=True):
+            st.markdown("**Supplied by connections**")
+            for name, label in sorted(sources.items()):
+                st.caption(f"{name.replace('_', ' ').capitalize()} · {label}")
+
+    descriptors = [dict(parameter) for parameter in parameter_descriptors(tile.workflow)
+                   if parameter["name"] not in sources]
+    if tile.workflow == "analysis.binderscope":
+        st.caption("Use Data browser to analyze saved designs. This step accepts native campaign folders.")
+        for parameter in descriptors:
+            if parameter["name"] in {"native_run_dirs", "target_pdb"}:
+                parameter["required"] = True
+
+    values = dict(settings)
+    ready = True
+    for required in (True, False):
+        fields = [parameter for parameter in descriptors if parameter["required"] == required]
+        if not fields:
+            continue
+        container = st.container(border=True) if required else st.expander("Optional settings")
+        with container:
+            if required:
+                st.markdown("**Required settings**")
+            columns = st.columns(2)
+            for index, parameter in enumerate(fields):
+                name = parameter["name"]
+                default = parameter.get("default")
+                with columns[index % 2]:
+                    try:
+                        value = _render_workflow_parameter(parameter, settings.get(name, default), key)
+                    except ValueError as exc:
+                        st.error(str(exc))
+                        ready = False
+                        continue
+                if value is None or isinstance(value, str) and not value.strip():
+                    values.pop(name, None)
+                elif required or name in settings or value != default:
+                    values[name] = value
+    return values, ready
 
 
 def _centroid_manifest_row_count(path):
@@ -523,6 +602,8 @@ def _available_docking_machines(gpu_engine):
 
 
 def render_node_form(node, graph, *, key, render_input, owner_id, project_id="", include_node_updates=False, observed_candidates=()):
+    from mn_molecular_design_studio.pipeline_tile_workflows import TILES
+
     kind = node["data"]["kind"]
     spec = NODE_CATALOG[kind]
     values = {f["name"]:copy.deepcopy(node["data"]["params"].get(f["name"],f["default"])) for f in spec["fields"]}
@@ -582,7 +663,14 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
             st.caption("This engine does not accept coldspots. Connected Target or Binder Design Context coldspots are ignored for this step.")
         label = st.text_input("Step name", value=node["data"]["label"], key=key+"-label").strip() or spec["label"]
         ready = True
-        if kind == "binder_context":
+        if kind in TILES:
+            values["workflow_parameters"], ready = _render_tile_workflow_settings(
+                TILES[kind], values["workflow_parameters"], node, graph, key,
+            )
+        elif kind == "active_results":
+            _render_connection_card(node, graph)
+            st.caption("Review the retained compounds and import selected records from the Results page.")
+        elif kind == "binder_context":
             _render_connection_card(node, graph)
             values["clear_unselected"] = st.checkbox(
                 "Clear inherited annotations when overrides are empty",
