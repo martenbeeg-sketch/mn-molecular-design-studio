@@ -2689,10 +2689,73 @@ def _template_summary(template):
 
 
 SHARED_TEMPLATE_STARTERS = {
+    "protein_design": ("Protein design", "Start with a target, design a new fold, or redesign a saved structure."),
     "unidock_active_learning": ("Large-library screen", "Screen a registered compound library over successive rounds."),
     "md_simulation": ("OpenMM simulation", "Prepare a complex, run a simulation, and analyze the trajectory."),
     "md_analysis": ("Analyze an MD run", "Open a saved production segment and summarize its trajectory."),
 }
+
+PROTEIN_DESIGN_STARTING_POINTS = (
+    {"label": "Design against a target", "routes": (
+        {"id": "protein_design", "label": "Folded target · separate evaluation"},
+        {"id": "protein_design_native", "label": "Folded target · native evaluation"},
+        {"id": "protein_design_comparison", "label": "Folded target · compare methods"},
+        {"id": "protein_design_idr", "label": "Peptide / IDR · template-based recognition"},
+    )},
+    {"label": "Design a new fold", "routes": (
+        {"id": "protein_design_new_fold", "label": "Design a new fold"},
+    )},
+    {"label": "Redesign an existing structure", "routes": (
+        {"id": "protein_design_redesign", "label": "Redesign an existing structure"},
+    )},
+)
+_PROTEIN_DESIGN_NAMES = {route["id"]: route["label"] for point in PROTEIN_DESIGN_STARTING_POINTS for route in point["routes"]}
+
+
+def shared_template_starting_points(template_id):
+    if template_id in _PROTEIN_DESIGN_NAMES:
+        return copy.deepcopy(PROTEIN_DESIGN_STARTING_POINTS)
+    return ()
+
+
+def _protein_design_starter(template_id):
+    from mn_molecular_design_studio.scientific_tasks import new_task_graph
+
+    if template_id == "protein_design_redesign":
+        # The Target Structure picker already supports saved structures and uploads.
+        kinds = ("target", "esm_if1", "esmfold", "results")
+        graph = new_graph("blank")
+        graph["nodes"] = [
+            {"id": kind, "position": {"x": 50 + 340 * index, "y": 160},
+             "data": {"kind": kind, "label": label, "params": {}}}
+            for index, (kind, label) in enumerate(zip(kinds, (
+                "Starting structure", "ESM-IF1 sequence redesign", "ESMFold structure check", "Results",
+            )))
+        ]
+        graph["edges"] = [
+            {"id": f"{source}-to-{target}", "source": source, "target": target,
+             "sourceHandle": "out", "targetHandle": "in"}
+            for source, target in zip(kinds, kinds[1:])
+        ]
+        return graph
+    if template_id == "protein_design_new_fold":
+        graph = new_task_graph("new_protein_fold")
+    elif template_id == "protein_design_idr":
+        graph = new_task_graph("template_peptide_idr")
+    elif template_id == "protein_design_native":
+        graph = new_task_graph("targeted_protein_binder", {"methods": ["bindcraft2"]})
+    elif template_id == "protein_design_comparison":
+        from mn_molecular_design_studio.candidate_pipeline import new_pipeline
+
+        graph = new_pipeline(generators=["bindcraft2", "rfd4"], predictors=["boltz2"], mode="modular_design")
+    else:
+        graph = new_task_graph("targeted_protein_binder")
+    for node in graph["nodes"]:
+        if node["data"]["kind"] == "results":
+            node["data"]["label"] = "Results"
+        elif node["data"]["kind"] == "esmfold":
+            node["data"]["label"] = "ESMFold structure check"
+    return graph
 
 
 def can_edit_shared_templates(user):
@@ -2704,7 +2767,8 @@ def _shared_template_root():
 
 
 def _shared_template_path(template_id):
-    if template_id not in SHARED_TEMPLATE_STARTERS and not re.fullmatch(r"[a-f0-9]{32}", template_id):
+    if (template_id not in SHARED_TEMPLATE_STARTERS and template_id not in _PROTEIN_DESIGN_NAMES
+            and not re.fullmatch(r"[a-f0-9]{32}", template_id)):
         raise ValueError("Invalid template ID.")
     return _shared_template_root() / f"{template_id}.json"
 
@@ -2715,22 +2779,31 @@ def _template_revision(graph):
 
 def get_shared_pipeline_template(template_id: str) -> dict:
     path = _shared_template_path(template_id)
+    points = shared_template_starting_points(template_id)
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        if template_id not in SHARED_TEMPLATE_STARTERS:
+        if template_id in SHARED_TEMPLATE_STARTERS:
+            name, description = SHARED_TEMPLATE_STARTERS[template_id]
+        elif points:
+            name = _PROTEIN_DESIGN_NAMES[template_id]
+            description = SHARED_TEMPLATE_STARTERS["protein_design"][1]
+        else:
             raise LookupError("Shared pipeline template not found.") from None
-    name, description = SHARED_TEMPLATE_STARTERS[template_id]
-    graph_id = hashlib.sha256(template_id.encode("utf-8")).hexdigest()[:32]
-    graph = clean_graph({**new_graph(template_id), "id": graph_id, "name": name})
-    return {"id": template_id, "name": name, "description": description,
-            "revision": _template_revision(graph), "graph": graph}
+        graph_id = hashlib.sha256(template_id.encode("utf-8")).hexdigest()[:32]
+        starter = _protein_design_starter(template_id) if points else new_graph(template_id)
+        graph = clean_graph({**starter, "id": graph_id, "name": name})
+        record = {"id": template_id, "name": name, "description": description,
+                  "revision": _template_revision(graph), "graph": graph}
+    if points:
+        record["starting_points"] = points
+    return record
 
 
 def list_shared_pipeline_templates() -> list[dict]:
     saved = []
     for path in _shared_template_root().glob("*.json"):
-        if path.stem in SHARED_TEMPLATE_STARTERS:
+        if path.stem in SHARED_TEMPLATE_STARTERS or path.stem in _PROTEIN_DESIGN_NAMES:
             continue
         saved.append(_template_summary(get_shared_pipeline_template(path.stem)))
     starters = [_template_summary(get_shared_pipeline_template(key)) for key in SHARED_TEMPLATE_STARTERS]
@@ -2832,6 +2905,8 @@ def save_shared_pipeline_template(graph: dict, *, template_id: str | None = None
         if current and "description" in current:
             record["description"] = current["description"]
         atomic_json(path, record)
+        if (points := shared_template_starting_points(template_id)):
+            record["starting_points"] = points
     return record
 
 

@@ -65,6 +65,9 @@
 .editor-heading .pipeline-name-input{flex:0 1 470px;min-width:95px;width:auto}
 .library-back{flex:none;color:#356550;font-weight:600}
 .editor-heading .run-button:disabled{background:#ecf0ed;border-color:#e0e9e2;color:#6c7e71}
+.template-starting-points{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;padding:8px 14px;border-bottom:1px solid #e9eeea}
+.template-starting-points label{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600}
+.template-starting-points select{max-width:100%;padding:6px 8px;border:1px solid #dce6df;border-radius:6px;background:#fff;color:#365c49;font-weight:400}
 .canvas-actions{justify-content:flex-start;padding:7px 14px;background:#f8faf8}
 .canvas-spacer{flex:1}
 .canvas-empty{position:absolute;top:45%;left:50%;transform:translate(-50%,-50%);width:min(90%,420px);padding:30px;text-align:center;border:1px solid #dbe7df;border-radius:16px;background:#fff;color:#244c3a}

@@ -78,6 +78,8 @@ function Editor({args}){
   catalog=args.catalog;
   const initial=args.graph;
   const readOnly=Boolean(args.template_read_only);
+  const startingPoints=args.starting_points||[];
+  const startingPoint=startingPoints.find(point=>point.routes.some(route=>route.id===args.template_id));
   const matrix=args.connections || matrixEmpty;
   const feedback = (source, output, target, input) => matrix.screening_feedback?.join('/') === [source, output, target, input].join('/');
   const fitPadding=.4;
@@ -95,7 +97,8 @@ function Editor({args}){
   const rf=useReactFlow(), initialized=useNodesInitialized(), fitPending=useRef(!args.restore_viewport); state.current={nodes,edges,groups};
   const snapshot=useCallback(()=>authored(state.current.nodes,state.current.edges,{...base.current,name:pipelineNameRef.current,layout_groups:pruneGroups(state.current.groups,state.current.nodes)},viewport.current),[]);
   const emit=useCallback((action=null)=>{
-    if(['save','save_as','save_template','use_template'].includes(action))viewport.current=rf.getViewport();
+    const actionType=typeof action==='string'?action:action?.type;
+    if(['save','save_as','save_template','use_template','template_route'].includes(actionType))viewport.current=rf.getViewport();
     const graph=snapshot();
     lastSent.current=JSON.stringify(graph);
     post('streamlit:setComponentValue',{value:{graph,...(action?{action:{...(typeof action==='string'?{type:action}:action),id:uid()}}:{})}});
@@ -418,6 +421,19 @@ function Editor({args}){
             </>}
         </div>
       </div>
+      {startingPoint && <div className="template-starting-points">
+        <label>Starting point
+          <select value={startingPoint.routes[0].id}
+            onChange={event=>emit({type:'template_route',template_id:event.target.value})}>
+            {startingPoints.map(point=><option key={point.routes[0].id} value={point.routes[0].id}>{point.label}</option>)}
+          </select>
+        </label>
+        {startingPoint.routes.length>1 && <label>Target workflow
+          <select value={args.template_id} onChange={event=>emit({type:'template_route',template_id:event.target.value})}>
+            {startingPoint.routes.map(route=><option key={route.id} value={route.id}>{route.label}</option>)}
+          </select>
+        </label>}
+      </div>}
       <div className="toolbar-actions canvas-actions">
         {!readOnly && <>
         <button title="Undo (Ctrl+Z)" disabled={!history.current.past.length} onClick={undo}>↶</button>

@@ -356,6 +356,46 @@ def test_shared_starter_update_is_visible_without_project_access(api_data):
     assert (seed["sample_size"], seed["library_id"], seed["centroid_manifest"]) == (137, "", "")
 
 
+def test_shared_protein_design_routes_open_and_save_independently(api_data):
+    client = api_data["client"]
+    reader = headers(api_data, "other")
+    base = "/api/v1/pipelines/shared-templates"
+    items = client.get(base, headers=reader).json()["items"]
+    protein, = [item for item in items if item["id"].startswith("protein_design")]
+    assert protein["name"] == "Protein design"
+    assert [point["label"] for point in protein["starting_points"]] == [
+        "Design against a target", "Design a new fold", "Redesign an existing structure",
+    ]
+    previews = {}
+    for point in protein["starting_points"]:
+        for route in point["routes"]:
+            template_id = route["id"]
+            preview = client.get(f"{base}/{template_id}", headers=reader).json()
+            previews[template_id] = preview
+            graph.validate_graph(preview["graph"])
+            assert kinds(preview["graph"]).count("results") == 1
+            assert client.get(f"{base}/{template_id}", headers=reader).json()["revision"] == preview["revision"]
+            used = client.post(f"{base}/{template_id}/use", headers=reader).json()["graph"]
+            assert used["id"] != preview["graph"]["id"]
+            assert used["nodes"] == preview["graph"]["nodes"]
+
+    assert kinds(previews["protein_design_native"]["graph"]) == ["target", "binder_context", "bindcraft2", "results"]
+    comparison = kinds(previews["protein_design_comparison"]["graph"])
+    assert comparison.count("target") == 1 and "bindcraft2" in comparison and "rfd4" in comparison
+    assert kinds(previews["protein_design_new_fold"]["graph"]) == ["protpardelle", "ligandmpnn", "esmfold", "results"]
+    redesign = previews["protein_design_redesign"]
+    assert kinds(redesign["graph"]) == ["target", "esm_if1", "esmfold", "results"]
+    edited = copy.deepcopy(redesign["graph"])
+    edited["nodes"][0]["position"]["y"] += 24
+    request = {"template_id": redesign["id"], "expected_revision": redesign["revision"], "graph": edited}
+    assert client.post(f"{base}/save", json=request, headers=reader).status_code == 403
+    saved = client.post(f"{base}/save", json=request)
+    assert saved.status_code == 200, saved.text
+    assert client.get(f"{base}/{redesign['id']}", headers=reader).json() == saved.json()
+    assert client.get(f"{base}/protein_design", headers=reader).json() == previews["protein_design"]
+    assert client.get(base, headers=reader).json()["items"] == items
+
+
 def test_pipeline_templates_and_guided_setup_open_separate_canvases(monkeypatch, tmp_path):
     from streamlit.testing.v1 import AppTest
     from mn_molecular_design_studio import pipeline_graph_ui

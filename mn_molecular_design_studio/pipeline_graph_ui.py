@@ -16,7 +16,7 @@ from mn_molecular_design_studio.pipeline_graph import (
     ACTIVE_LEARNING_LAYOUT, NODE_CATALOG, PipelineInputError, clean_graph, fingerprint, is_screening_graph,
     get_shared_pipeline_template, list_definitions, list_pipeline_templates, list_shared_pipeline_templates,
     list_versions, migrate_template_graph, new_graph, screening_graph_issues,
-    validate_graph,
+    shared_template_starting_points, validate_graph,
 )
 from mn_molecular_design_studio.api_client import StudioAPIConflictError
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
@@ -1137,13 +1137,16 @@ def _open_saved_pipeline(prefix, draft):
 _TEMPLATE_VIEW_PREFIX = "visual-pipeline-shared-template"
 
 
-def _open_template_view(template_id, return_prefix, project_id):
-    template = get_shared_pipeline_template(template_id)
+def _open_template_view(template_id, return_prefix, project_id, *, working_routes=None):
+    working_routes = {} if working_routes is None else working_routes
+    template = working_routes.get(template_id) or get_shared_pipeline_template(template_id)
     _activate_graph(_TEMPLATE_VIEW_PREFIX, template["graph"])
-    st.session_state[_TEMPLATE_VIEW_PREFIX + "-restore-viewport"] = bool(template.get("saved_at"))
+    st.session_state[_TEMPLATE_VIEW_PREFIX + "-restore-viewport"] = bool(
+        template.get("restore_viewport", template.get("saved_at"))
+    )
     st.session_state[_TEMPLATE_VIEW_PREFIX + "-open"] = {
         "id": template_id, "revision": template["revision"], "return_prefix": return_prefix,
-        "return_project": project_id,
+        "return_project": project_id, "working_routes": working_routes,
     }
 
 
@@ -1511,6 +1514,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     template_key = _TEMPLATE_VIEW_PREFIX + "-open"
     opened_template = st.session_state.get(template_key)
     template_read_only = bool(opened_template and not can_edit_templates)
+    starting_points = shared_template_starting_points(opened_template["id"]) if opened_template else ()
     project_id = None if opened_template else project_selector("visual-pipeline")
     prefix = _TEMPLATE_VIEW_PREFIX if opened_template else f"visual-pipeline-{project_id or 'unassigned'}"
     state_key = prefix + "-graph"
@@ -1604,8 +1608,11 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     settings = candidate_execution.policy(graph.get("candidate_execution"))
     graph["candidate_execution"] = settings
     if opened_template:
-        st.caption("Saving updates the shared template for everyone." if can_edit_templates
-                   else "Choose Use template to create an editable pipeline.")
+        if can_edit_templates:
+            st.caption("Saving updates the open route for everyone." if starting_points
+                       else "Saving updates the shared template for everyone.")
+        else:
+            st.caption("Choose Use template to create an editable pipeline.")
         if notice := st.session_state.pop(prefix + "-save-notice", None):
             st.success(notice)
     elif not project_id:
@@ -1646,6 +1653,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                          reset_token=reset_token, input_contexts={},
                          draft_saved=bool(_draft_revision(prefix, graph)),
                          shared_template=bool(opened_template), template_read_only=template_read_only,
+                         template_id=opened_template["id"] if opened_template else None,
+                         starting_points=starting_points,
                          can_edit_templates=can_edit_templates,
                          guided_setup=not opened_template and not graph["nodes"],
                          restore_viewport=bool(_draft_revision(prefix, graph) or st.session_state.get(prefix + "-restore-viewport")),
@@ -1684,6 +1693,18 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     if action_type == "edit_node" and not template_read_only:
                         _open_node_editor(prefix, action.get("node_id"))
                     elif opened_template:
+                        if action_type == "template_route":
+                            requested = action.get("template_id")
+                            allowed = {route["id"] for point in starting_points for route in point["routes"]}
+                            if requested in allowed and requested != opened_template["id"]:
+                                working_routes = opened_template["working_routes"]
+                                working_routes[opened_template["id"]] = {
+                                    "graph": graph, "revision": opened_template["revision"],
+                                    "restore_viewport": can_edit_templates or st.session_state.get(prefix + "-restore-viewport"),
+                                }
+                                _open_template_view(requested, opened_template["return_prefix"],
+                                                    opened_template["return_project"], working_routes=working_routes)
+                                st.rerun()
                         if action_type == "save" and can_edit_templates:
                             saved = submit_api("/api/v1/pipelines/shared-templates/save", {
                                 "graph": graph, "template_id": opened_template["id"],
