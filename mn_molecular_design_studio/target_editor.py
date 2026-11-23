@@ -329,62 +329,136 @@ def _mmcif_sequence_entries_by_chain(path: Path) -> dict[str, list[tuple[int, st
     }
 
 
-def saved_protein_structure_options(database, user, *, project_id="", query="", limit=100):
-    """Return accessible saved protein structures for a reusable target picker."""
-    requests = []
-    if project_id:
-        requests.append({"scope": "all", "project_id": project_id, "collection": "all"})
-    # Include targets from other projects the user can access as well as their
-    # personal records. MolecularDatabase enforces project and ownership access.
-    requests.append({"scope": "all", "collection": "all"})
-    records_by_id = {}
-    for request in requests:
-        result = database.list_molecules(
-            user, molecule_type="protein", query=query, limit=limit, **request,
-        )
-        for record in result.get("items", []):
-            records_by_id.setdefault(str(record.get("id") or ""), record)
+def _saved_protein_inputs(database, user, *, project_id="", query="", sequences=False, limit=100):
+    """Read each representation from its own authorized input membership."""
+    from mn_molecular_design_studio.datasets import is_input_dataset, project_references
+    from mn_molecular_design_studio.entity_names import resolve_record, visible_records
 
-    options = []
-    seen_structures = set()
-    for record in records_by_id.values():
-        protein_chains = [str(component.get("chain") or "?")
-                          for component in record.get("components", [])
-                          if component.get("type") == "protein"]
-        if not protein_chains:
+    groups = {
+        group["id"]: group for group in database.groups(user, scope="all", collection="all")
+        if (group["collection_kind"] in {"curated", "reference", "inputs"} or is_input_dataset(group))
+        and ((not group["project_id"] and group["owner_id"] == user["id"]) or project_id in project_references(group))
+        and (group["import_method"] in {"user_uploads", "tool_inputs", "agent_inputs"} or is_input_dataset(group))
+    }
+    if not groups:
+        return []
+    with database.connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT mm.molecule_id, mm.group_id, mm.name, mm.components, mm.metadata,
+                   s.id AS structure_id, s.label AS structure_label, s.format, s.path, s.context,
+                   EXISTS (SELECT 1 FROM molecule_sources source
+                     WHERE source.molecule_id=mm.molecule_id AND source.group_id=mm.group_id
+                       AND json_extract(source.provenance,'$.input_role') IN
+                         ('target','receptor','modeled_target','sequence_defined_target')) AS used_as_target
+            FROM molecule_members mm JOIN molecules m ON m.id=mm.molecule_id
+            LEFT JOIN molecule_structures s ON s.molecule_id=mm.molecule_id AND s.group_id=mm.group_id
+            WHERE m.type='protein' AND mm.group_id IN (SELECT value FROM json_each(?))
+            ORDER BY mm.added_at DESC, s.id
+            """, (json.dumps(list(groups)),),
+        ).fetchall()
+        names = visible_records(connection, groups)
+
+    options = {}
+    for row in rows:
+        group = groups[row["group_id"]]
+        components = json.loads(row["components"])
+        metadata = json.loads(row["metadata"])
+        proteins = [item for item in components if item.get("type") == "protein"]
+        roles = {str(item.get("role") or "").casefold() for item in proteins}
+        if (not proteins or roles & {"binder", "designed_binder", "design", "partner"}
+                or metadata.get("generating_engine") or metadata.get("output_kind")):
             continue
-        groups = [str(group.get("name") or "") for group in record.get("groups", [])]
-        group_label = ", ".join(dict.fromkeys(name for name in groups if name))
-        for structure in record.get("structures", []):
-            structure_id = str(structure.get("id") or "")
-            structure_format = str(structure.get("format") or "").lower()
-            if not structure_id or structure_id in seen_structures or structure_format not in {"pdb", "ent", "cif", "mmcif"}:
+        imported = group["import_method"] in {"user_uploads", "agent_inputs"} or is_input_dataset(group)
+        target = bool(row["used_as_target"] or roles & {"target", "receptor"} or metadata.get("target_identity_type"))
+        context = json.loads(row["context"]) if row["context"] else {}
+        recorded_input = context.get("input_role") in {"target", "receptor"}
+        if not (imported or target or recorded_input):
+            continue
+        sequence_only = (metadata.get("target_identity_type") == "sequence_only"
+                         or metadata.get("structural_reference") is False)
+        record = {"name": row["name"], "components": components, "metadata": metadata,
+                  "groups": [{"id": row["group_id"]}]}
+        resolve_record(record, names, groups)
+        name = record["name"]
+        group_label = group["name"]
+        source_path = str(row["path"] or "")
+        reference_label = str(row["structure_label"] or "")
+        if name.casefold() in {"content", "target", "structure", "source reference structure"} and reference_label:
+            name = reference_label
+        chains = [str(item.get("chain") or "?") for item in proteins]
+        chain_sequences = [str(item.get("sequence") or "") for item in proteins]
+        searchable = " ".join([name, group_label, reference_label, *record.get("name_aliases", []), *chain_sequences])
+        if not all(term in searchable.casefold() for term in query.casefold().split()):
+            continue
+        if sequences:
+            if not (sequence_only or (imported and not source_path)) or not all(chain_sequences):
                 continue
-            seen_structures.add(structure_id)
-            name = str(record.get("name") or "Saved protein")
-            chain_text = ", ".join(protein_chains)
-            label = f"{name} · chain{'s' if len(protein_chains) != 1 else ''} {chain_text} · {structure_format.upper()}"
-            if group_label:
-                label += f" · {group_label}"
-            options.append({
-                "molecule_id": str(record["id"]), "structure_id": structure_id,
-                "name": name, "label": label, "format": structure_format,
-                "chains": protein_chains,
-            })
-    return sorted(options, key=lambda item: item["label"].casefold())
+            identity = tuple(chain_sequences)
+            label = f"{name} · {' + '.join(str(len(value)) for value in identity)} aa · {group_label}"
+            item = {"molecule_id": row["molecule_id"], "label": label, "sequence": ":".join(identity)}
+        else:
+            fmt = str(row["format"] or "").lower()
+            if (sequence_only or context.get("structural_reference") is False or not row["structure_id"]
+                    or fmt not in {"pdb", "ent", "cif", "mmcif"}
+                    or "idr_sequence_carrier" in source_path.casefold()
+                    or not (source_path.startswith("cluster-library://") or Path(source_path).is_file())):
+                continue
+            identity = (row["molecule_id"], fmt, context.get("content_sha256") or source_path)
+            label = f"{name} · chain{'s' if len(chains) != 1 else ''} {', '.join(chains)} · {fmt.upper()}"
+            if reference_label and reference_label != name:
+                label += f" · {reference_label}"
+            item = {"molecule_id": row["molecule_id"], "structure_id": row["structure_id"],
+                    "name": name, "label": f"{label} · {group_label}", "format": fmt, "chains": chains}
+        priority = (0 if project_id and group["project_id"] == project_id else 1,
+                    int(sequences and group["collection_kind"] == "inputs"), item["label"].casefold())
+        if identity not in options or priority < options[identity][0]:
+            options[identity] = (priority, item)
+    ranked = sorted(options.values(), key=lambda pair: pair[0])
+    if sequences and not query.strip():
+        preferred_scopes = {priority[0] for priority, _ in ranked if priority[1] == 0}
+        ranked = [(priority, item) for priority, item in ranked
+                  if priority[1] == 0 or priority[0] not in preferred_scopes]
+    return [item for _, item in ranked[:limit]]
 
 
-def _saved_target_options(owner_id, project_id, query):
+def saved_protein_structure_options(database, user, *, project_id="", query="", limit=100):
+    return _saved_protein_inputs(database, user, project_id=project_id, query=query, limit=limit)
+
+
+def _saved_target_options(owner_id, project_id, query, *, sequences=False):
     user = st.session_state.get("_molecular_database_user")
     if not isinstance(user, dict) or str(user.get("id") or "") != str(owner_id or ""):
         return []
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
     try:
-        return saved_protein_structure_options(
-            MolecularDatabase(), user, project_id=project_id, query=query, limit=100,
-        )
+        database = MolecularDatabase()
+        if sequences:
+            return _saved_protein_inputs(database, user, project_id=project_id, query=query, sequences=True)
+        return saved_protein_structure_options(database, user, project_id=project_id, query=query)
     except (OSError, ValueError, PermissionError, sqlite3.Error):
         return []
+
+
+def render_saved_target_sequence(*, owner_id, project_id, key, destination_key=None):
+    caption = "Choose a sequence for this input." if destination_key else "View and copy sequences for sequence-based steps."
+    with st.expander("Saved target sequences"):
+        st.caption(caption)
+        query = st.text_input("Search saved target sequences", placeholder="Search by name, fragment or sequence",
+                              key=f"{key}-sequence-query").strip()
+        options = {row["molecule_id"]: row for row in _saved_target_options(owner_id, project_id, query, sequences=True)}
+        if not options:
+            st.caption("No saved target sequences match.")
+            return
+        selected = st.selectbox(
+            "Saved target sequence", ["", *options], key=f"{key}-sequence-option-{_hash(query)}",
+            format_func=lambda value: options[value]["label"] if value else "Choose a sequence",
+        )
+        if selected and destination_key:
+            st.button("Use this sequence", key=f"{key}-use-sequence",
+                      on_click=st.session_state.update, args=({destination_key: options[selected]["sequence"]},))
+        elif selected:
+            st.code(options[selected]["sequence"], language=None)
 
 
 def render_target_source(
@@ -412,8 +486,8 @@ def render_target_source(
 ) -> TargetSource:
     """Render reusable PDB accession and structure upload controls."""
     if allow_saved_targets:
-        with st.expander("Select from My targets", expanded=True):
-            st.caption("Search your saved protein structures and structures in the selected project. Selecting one makes a local input copy; the Database record is unchanged.")
+        with st.expander("Select a saved target structure", expanded=True):
+            st.caption("Choose a registered project target or a reusable input structure.")
             query = st.text_input(
                 "Search saved protein targets",
                 placeholder="Search by target name or sequence",
@@ -426,13 +500,13 @@ def render_target_source(
             choice_key = f"{key_prefix}-saved-target-choice-{query_key}"
             if choice_key not in st.session_state:
                 preferred = str(initial_structure_id or "")
-                if preferred not in option_by_id:
+                if not preferred:
                     preferred = next((item["structure_id"] for item in saved_options
                                       if item["molecule_id"] == str(initial_molecule_id or "")), "")
                 st.session_state[choice_key] = preferred if preferred in option_by_id else ""
             selected_structure_id = st.selectbox(
                 "Saved protein structure", choices,
-                format_func=lambda value: "Use PDB code or upload instead" if not value else option_by_id[value]["label"],
+                format_func=lambda value: "Choose a saved structure" if not value else option_by_id[value]["label"],
                 key=choice_key,
             )
             if not saved_options:
@@ -452,7 +526,7 @@ def render_target_source(
                     except (OSError, ValueError, PermissionError, sqlite3.Error) as exc:
                         st.error(f"Could not open this saved target structure: {exc}")
                         return TargetSource(owner_id=owner_id)
-                st.caption("Using the saved database structure. Studio materializes a local input copy; the database record is unchanged.")
+                st.caption("Using a local copy of the saved target structure.")
                 return TargetSource(
                     materialized_path, selected["name"], owner_id,
                     molecule_id=selected["molecule_id"], structure_id=selected_structure_id,
@@ -678,7 +752,17 @@ def render_target_editor(
         target.source_path = None
         return target
 
-    st.success(f"{source.name or label} loaded · {source.path.name}")
+    sequence_carrier = (is_mmcif and ("idr_sequence_carrier" in source.path.stem.casefold()
+                                    or target.source_text.lstrip().startswith("data_idr_sequence_carrier")))
+    if sequence_carrier:
+        st.info("Sequence-only target. The saved mmCIF carries residue positions for this workflow.")
+        with st.expander("Target sequence", expanded=True):
+            for chain, entries in target.sequence_by_chain.items():
+                sequence = "".join(PDB_RESIDUE_CODES.get(residue.upper(), residue if len(residue) == 1 else "X")
+                                   for _, residue in entries)
+                st.code(f">{chain} · {len(sequence)} aa\n{sequence}", language=None)
+    else:
+        st.success(f"{source.name or label} loaded · {source.path.name}")
     chain_suffix = "-prefer-target-chain-b" if prefer_chain_b else ""
     chain_key = f"{key_prefix}-chains-" + _hash(str(source.path) + chain_suffix)
     preferred = "B" if prefer_chain_b and "B" in chain_options else chain_options[0]
@@ -695,7 +779,8 @@ def render_target_editor(
     target.chains = st.multiselect(chain_selection_label or f"{label} chains", chain_options, key=chain_key, disabled=chain_selection_disabled)
 
     if is_mmcif:
-        st.info("mmCIF structure loaded. Chain and residue selections use the author IDs in the file; terminal trimming is available for PDB files.")
+        if not sequence_carrier:
+            st.info("mmCIF structure loaded. Chain and residue selections use the author IDs in the file; terminal trimming is available for PDB files.")
         retained_ranges: dict[str, tuple[int, int]] = {}
     else:
         protein_residues_by_chain = _protein_residue_ids_by_chain(target.source_text)

@@ -474,6 +474,8 @@ def _render_field(field, values, key):
                                disabled=name=="cfg_scale" and not values.get("classifier_free_guidance"), **kwargs)
     if name in {"target_sequence", "target_protein_sequences", "partner_protein_sequences", "dna_sequences", "rna_sequences", "ligand_smiles", "options_json", "engine_overrides_json", "condition_spec"}:
         height = 170 if name == "options_json" else 220 if name == "condition_spec" else 110 if "sequence" in name else 85
+        if name == "target_protein_sequences" and kwargs["key"] in st.session_state:
+            return st.text_area(label, value=None, height=height, **kwargs)
         return st.text_area(label, value=str(value), height=height, **kwargs)
     return st.text_input(label, value=str(value), **kwargs)
 
@@ -520,7 +522,7 @@ def _available_docking_machines(gpu_engine):
     return machines
 
 
-def render_node_form(node, graph, *, key, render_input, owner_id, include_node_updates=False, observed_candidates=()):
+def render_node_form(node, graph, *, key, render_input, owner_id, project_id="", include_node_updates=False, observed_candidates=()):
     kind = node["data"]["kind"]
     spec = NODE_CATALOG[kind]
     values = {f["name"]:copy.deepcopy(node["data"]["params"].get(f["name"],f["default"])) for f in spec["fields"]}
@@ -734,10 +736,13 @@ def render_node_form(node, graph, *, key, render_input, owner_id, include_node_u
             if kind in {"design_source","generation_source","backbone_source","project_design_source"}:
                 ready = ready and bool(values.get("selected_candidate_ids"))
         elif kind == "cofold_input":
+            from mn_molecular_design_studio.target_editor import render_saved_target_sequence
+
             values["task_type"] = _render_field(next(f for f in spec["fields"] if f["name"] == "task_type"), values, key)
             task_type = values["task_type"]
             st.caption("Provide sequence inputs for this task. A target PDB path is optional for most models and required by AlphaFold2 Initial Guess and BoltzGen Fold.")
-            st.caption("Choose compatible prediction nodes for this molecule type and ligand notation. Task setup defaults to one engine; comparisons are explicit.")
+            render_saved_target_sequence(owner_id=owner_id, project_id=project_id, key=key,
+                                         destination_key=key + "-target_protein_sequences")
             visible = {"target_protein_sequences", "target_pdb", "target_chain_id", "sequence_file"}
             if task_type in {"protein_protein", "protein_macrocyclic"}:
                 visible.add("partner_protein_sequences")

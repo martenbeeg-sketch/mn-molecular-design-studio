@@ -374,7 +374,10 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
                 "selected_docking_poses": choice.get("selected_docking_poses"),
             }}
         return {}
-    from mn_molecular_design_studio.target_editor import TargetSource, _hash, _target_widget_keys, render_target_coldspots, render_target_editor, render_target_source
+    from mn_molecular_design_studio.target_editor import (
+        TargetSource, _hash, _target_widget_keys, render_saved_target_sequence, render_target_coldspots,
+        render_target_editor, render_target_source,
+    )
     from mn_molecular_design_studio.design_validation import design_candidates
     from mn_molecular_design_studio.generation_io import generated_candidates
     contexts = {}
@@ -386,11 +389,14 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
             key_prefix=key, label="Target Structure", example_code="7QF4",
             allow_cif=True, upload_in_expander=True, owner_id=owner_id,
             allow_saved_targets=True, project_id=project_id,
-            initial_molecule_id=params.get("target_source_molecule_id", ""),
+            initial_molecule_id=params.get("target_source_molecule_id", "") if not path else "",
             initial_structure_id=params.get("target_source_structure_id", ""),
         )
         if not source.path and path:
-            source = TargetSource(path=path, name=path.stem, owner_id=owner_id)
+            source = TargetSource(path=path, name=path.stem, owner_id=owner_id,
+                                  molecule_id=params.get("target_source_molecule_id", ""),
+                                  structure_id=params.get("target_source_structure_id", ""))
+        render_saved_target_sequence(owner_id=owner_id, project_id=project_id, key=key)
         if source.path:
             chain_key = f"{key}-chains-" + _hash(str(source.path))
             st.session_state.setdefault(chain_key, [c.strip() for c in params.get("target_chains", "A").split(",") if c.strip()])
@@ -570,7 +576,7 @@ def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs, 
             )
         values, label, action, replacement_kind, node_updates = render_node_form(
             working, graph, key=key, render_input=render_input, owner_id=owner_id,
-            include_node_updates=True, observed_candidates=observed_candidates,
+            project_id=project_id, include_node_updates=True, observed_candidates=observed_candidates,
         )
         if action == "replace":
             try:

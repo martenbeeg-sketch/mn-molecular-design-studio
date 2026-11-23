@@ -89,44 +89,39 @@ def test_shared_filter_preview_resolves_effective_rfd4_reference_thresholds():
     }
 
 
-def test_target_tile_can_use_saved_database_protein_structures_from_my_targets_and_project():
-    from mn_molecular_design_studio.target_editor import saved_protein_structure_options
+def test_target_picker_uses_input_memberships_and_separates_sequence_targets(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import auth
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    from mn_molecular_design_studio.target_editor import _saved_protein_inputs
 
-    mine = {
-        "id": "protein-1", "name": "Saved PD-L1", "groups": [{"name": "My targets"}],
-        "components": [{"type": "protein", "chain": "A", "role": "target"}],
-        "structures": [
-            {"id": "structure-1", "format": "cif"},
-            {"id": "invalid-format", "format": "pdbqt"},
-        ],
-    }
-    project = {
-        "id": "protein-2", "name": "Project target", "groups": [{"name": "PD-L1 Benchmark"}],
-        "components": [{"type": "protein", "chain": "B", "role": "target"}],
-        "structures": [{"id": "structure-2", "format": "pdb"}],
-    }
+    monkeypatch.setattr(auth, "require_project_access", lambda *_: None)
+    user = {"id": "owner", "role": "admin"}
+    database = MolecularDatabase(tmp_path)
 
-    class FakeDatabase:
-        def __init__(self):
-            self.requests = []
+    def add(group, name, sequence, *, project="", kind="user_uploads", role="", sequence_only=False, block=None):
+        group_id = database.create_group(user, group, project_id=project, import_method=kind)
+        files = [{"name": "target.cif", "content": block}] if block else []
+        with database.connection() as connection:
+            return database._put(connection, group_id, {
+                "name": name, "components": [{"type": "protein", "chain": "A", "sequence": sequence, "role": role}],
+                "metadata": {"target_identity_type": "sequence_only"} if sequence_only else {}, "files": files,
+            }, source_key=group, origin={"input_role": "target"} if role == "target" and kind == "tool_inputs" else {})
 
-        def list_molecules(self, _user, **kwargs):
-            self.requests.append(kwargs)
-            if kwargs.get("project_id"):
-                return {"items": [project]}
-            return {"items": [mine, project]}
+    reusable = add("My targets", "Reusable target", "ACDEFG", block=b"data_reusable\n")
+    project_input = add("Campaign inputs", "Used target", "ACDEFA", project="selected", kind="tool_inputs",
+                        role="target", block=b"data_used\n")
+    add("Repeat import", "Used target", "ACDEFA", project="selected", role="target", block=b"data_used\n")
+    add("Workflow outputs", "Output", "ACDEFA", project="selected", kind="tool_output", block=b"data_output\n")
+    add("Imported designs", "Binder", "ACDEFC", project="selected", role="binder", block=b"data_binder\n")
+    add("Validation", "Other project", "ACDEFD", project="validation", block=b"data_other\n")
+    sequence = add("Sequence references", "Sequence target", "ACDEFE", project="selected", kind="tool_inputs",
+                   role="target", sequence_only=True, block=b"data_idr_sequence_carrier\n")
 
-    database = FakeDatabase()
-    options = saved_protein_structure_options(
-        database, {"id": "user-1"}, project_id="project-1", query="PD-L1", limit=100,
-    )
-
-    assert {item["structure_id"] for item in options} == {"structure-1", "structure-2"}
-    assert any("Saved PD-L1" in item["label"] and "chain A" in item["label"] for item in options)
-    assert [request["scope"] for request in database.requests] == ["all", "all"]
-    assert database.requests[0]["project_id"] == "project-1"
-    assert all(request["query"] == "PD-L1" and request["molecule_type"] == "protein"
-               for request in database.requests)
+    options = _saved_protein_inputs(database, user, project_id="selected")
+    assert [item["molecule_id"] for item in options] == [project_input, reusable]
+    assert [item["molecule_id"] for item in _saved_protein_inputs(database, user, project_id="selected", query="ACDEFA")] == [project_input]
+    sequences = _saved_protein_inputs(database, user, project_id="selected", sequences=True)
+    assert [(row["molecule_id"], row["sequence"]) for row in sequences] == [(sequence, "ACDEFE")]
 
 
 def test_target_source_materializes_selected_database_structure_without_reimport(tmp_path, monkeypatch):
