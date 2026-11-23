@@ -344,12 +344,13 @@ def create_server(client=None):
 
     @server.tool(annotations=read)
     async def list_saved_pipelines(project_id: str, ctx: Context, pipeline_id: str | None = None,
-                                   include_archived: bool = False) -> dict[str, Any]:
-        """Read saved drafts or, with a pipeline ID, its immutable versions. Archived projects can be read."""
+                                   include_archived: bool = False, include_trashed: bool = False) -> dict[str, Any]:
+        """Read saved pipelines or, with a pipeline ID, its immutable versions."""
         path = "/api/v1/pipelines" + ("/" + segment(pipeline_id) + "/versions" if pipeline_id else "")
         query = {"project_id": project_id}
         if not pipeline_id:
             query["include_archived"] = include_archived
+            query["include_trashed"] = include_trashed
         result = await call(ctx, "GET", path, query=query)
         return result if isinstance(result, dict) else {"items": result}
 
@@ -359,6 +360,31 @@ def create_server(client=None):
         """Archive or restore a saved draft. Use the current revision from list_saved_pipelines."""
         return await call(ctx, "POST", f"/api/v1/pipelines/{segment(pipeline_id)}/archive", body={
             "project_id": project_id, "archived": archived, "expected_revision": expected_revision})
+
+    @server.tool(annotations=write)
+    async def trash_saved_pipeline(project_id: str, pipeline_id: str, expected_revision: str, ctx: Context,
+                                   trashed: bool = True) -> dict[str, Any]:
+        """Move a saved pipeline to Trash or restore it with trashed=false. Use its current revision."""
+        return await call(ctx, "POST", f"/api/v1/pipelines/{segment(pipeline_id)}/trash", body={
+            "project_id": project_id, "trashed": trashed, "expected_revision": expected_revision})
+
+    @server.tool(annotations=write)
+    async def save_pipeline_template(project_id: str, pipeline_id: str, expected_revision: str,
+                                     name: str, ctx: Context) -> dict[str, Any]:
+        """Save a specific saved pipeline revision as a reusable template in its project."""
+        return await call(ctx, "POST", f"/api/v1/pipelines/{segment(pipeline_id)}/template", body={
+            "project_id": project_id, "expected_revision": expected_revision, "name": name})
+
+    @server.tool(annotations=read)
+    async def list_saved_pipeline_templates(project_id: str, ctx: Context) -> dict[str, Any]:
+        """List reusable templates saved in the selected project."""
+        return await call(ctx, "GET", "/api/v1/pipelines/saved-templates", query={"project_id": project_id})
+
+    @server.tool(annotations=read)
+    async def use_saved_pipeline_template(project_id: str, template_id: str, ctx: Context) -> dict[str, Any]:
+        """Create an unsaved, independent pipeline graph from a saved project template."""
+        return await call(ctx, "POST", f"/api/v1/pipelines/saved-templates/{segment(template_id)}/use",
+                          body={"project_id": project_id})
 
     @server.tool(annotations=write)
     async def save_pipeline_draft(project_id: str, graph: dict, ctx: Context, expected_revision: str | None = None,

@@ -1370,7 +1370,7 @@ render_pipeline_builder(owner_id="test-user",project_selector=lambda _:None,
     assert any("Choose a project" in c.value for c in app.info)
 
 
-def test_starter_opens_the_required_input_editor(monkeypatch, tmp_path):
+def test_screen_run_setup_opens_each_required_input_editor(monkeypatch, tmp_path):
     from streamlit.testing.v1 import AppTest
     from mn_molecular_design_studio import pipeline_graph_ui
 
@@ -1382,19 +1382,31 @@ render_pipeline_builder(owner_id="test-user", project_selector=lambda _: "projec
     submit_api=lambda *a: (_ for _ in ()).throw(AssertionError("No request expected")),
     search_jobs=lambda **k: {"items": []})
 """).run()
+    prefix = "visual-pipeline-project"
+    app.segmented_control(key=prefix + "-library-section").set_value("Templates").run()
+    app.button(key=prefix + "-template-unidock_active_learning").click().run()
+    app.session_state[prefix + "-view"] = "run-setup"
+    app.run()
     assert not app.exception
-    app.button(key="visual-pipeline-project-configure-required").click().run()
+    assert {row.value for row in app.warning} >= {
+        "Choose a prepared compound library and fingerprint dataset.",
+        "Choose a registered centroid dataset.",
+        "Choose a receptor structure and review its docking box.",
+        "Select at least one docking workstation.",
+    }
+    assert app.button(key=prefix + "-submit-run").disabled
+    draft = app.session_state[prefix + "-graph"]
+    target = next(node for node in draft["nodes"] if node["data"]["kind"] == "active_target")
+    app.button(key=prefix + "-run-input-" + target["id"]).click().run()
     assert not app.exception
-    draft = app.session_state["visual-pipeline-project-graph"]
-    target = next(node for node in draft["nodes"] if node["data"]["kind"] == "target")
-    assert app.session_state["visual-pipeline-project-editor"]["node_id"] == target["id"]
+    assert app.session_state[prefix + "-editor"]["node_id"] == target["id"]
 
 
 @pytest.mark.parametrize(("job", "reference"), [
     ({"run_id": "pipeline-1", "task_group": "campaign"}, "campaign/pipeline-1"),
     ({"cluster_job_id": "pipeline-1", "status": "waiting_for_workstation"}, "cluster:pipeline-1"),
 ])
-def test_canvas_submission_opens_exact_run_in_same_session(monkeypatch, tmp_path, job, reference):
+def test_canvas_reviews_before_submitting_and_opens_exact_run(monkeypatch, tmp_path, job, reference):
     from streamlit.testing.v1 import AppTest
     from mn_molecular_design_studio import pipeline_graph_ui
 
@@ -1406,15 +1418,27 @@ def test_canvas_submission_opens_exact_run_in_same_session(monkeypatch, tmp_path
 
     def submit(path, payload):
         sent.append(path)
-        return {"job": job} if path.endswith("/run") else {"revision": "revision"}
+        if path.endswith("/validate"):
+            return {"valid": True, "ready_to_run": "run_id" in job}
+        return {"job": job}
 
+    prefix = "visual-pipeline-project"
     app = AppTest.from_function(_render_test_pipeline, args=(submit,)).run()
     assert not app.exception
-    app.button(key="visual-pipeline-project-open-latest-result").click().run()
+    assert sent == []
+    assert app.button(key=prefix + "-submit-run").disabled
+    app.button(key=prefix + "-preflight").click().run()
+    assert not app.exception
+    assert sent == ["/api/v1/pipelines/validate"]
+    assert not app.button(key=prefix + "-submit-run").disabled
+    app.button(key=prefix + "-submit-run").click().run()
+    assert not app.exception
+    assert app.session_state[prefix + "-view"] == "runs"
+    app.button(key=prefix + "-results-" + reference).click().run()
     assert not app.exception
     assert app.session_state["selected-job-reference"] == reference
     assert app.session_state["page"] == "Job details"
-    assert sent == ["/api/v1/pipelines/save", "/api/v1/pipelines/run"]
+    assert sent == ["/api/v1/pipelines/validate", "/api/v1/pipelines/run"]
 
 
 def _render_test_pipeline(submit):
@@ -1462,72 +1486,67 @@ def test_api_address_persists_when_saving_other_workspace_settings(tmp_path):
         save_settings({**settings,"api_base_url":"https://user:password@example.org/path"},home=tmp_path)
 
 
-def test_canvas_restores_and_opens_saved_graph_with_name_in_canvas(monkeypatch,tmp_path):
+def test_canvas_restores_saved_version_in_place(monkeypatch, tmp_path):
     from streamlit.testing.v1 import AppTest
-    monkeypatch.setattr(graph,"app_home",lambda:tmp_path)
-    original=graph.new_graph();original["name"]="Saved pipeline"
-    graph.save_definition(original,"test-user","test-project",version=True)
-    app=AppTest.from_string('''
+    monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
+    original = graph.new_graph()
+    original["name"] = "Saved pipeline"
+    saved = graph.save_definition(original, "test-user", "test-project", version=True)
+    graph.save_definition(dict(original, name="Updated draft"), "test-user", "test-project",
+                          expected_revision=saved["revision"])
+    app = AppTest.from_string("""
+from mn_molecular_design_studio.pipeline_graph import save_definition
 from mn_molecular_design_studio.pipeline_graph_ui import render_pipeline_builder
-render_pipeline_builder(owner_id="test-user",project_selector=lambda _:"test-project",
-    submit_api=lambda *a:{},search_jobs=lambda **k:{"items":[]})
-''').run()
+def submit(path, request):
+    return save_definition(request["graph"], "test-user", request["project_id"],
+                           expected_revision=request["expected_revision"])
+render_pipeline_builder(owner_id="test-user", project_selector=lambda _:"test-project",
+    submit_api=submit, search_jobs=lambda **k:{"items":[]})
+""").run()
+    prefix = "visual-pipeline-test-project"
+    app.button(key=prefix + "-open-" + original["id"]).click().run()
     assert not app.exception
-    assert not any(widget.label == "Pipeline name" for widget in app.text_input)
-    app.button(key="visual-pipeline-test-project-restore").click().run()
+    assert app.session_state[prefix + "-graph"]["name"] == "Updated draft"
+    app.session_state[prefix + "-versions-open"] = True
+    app.run()
+    app.button(key=prefix + "-restore").click().run()
     assert not app.exception
-    assert app.session_state["visual-pipeline-test-project-graph"]["name"] == "Saved pipeline"
-    app.button(key="visual-pipeline-test-project-open").click().run()
-    assert not app.exception
-    assert app.session_state["visual-pipeline-test-project-graph"]["name"] == "Saved pipeline"
+    assert app.session_state[prefix + "-graph"]["name"] == "Saved pipeline"
+    assert graph.list_definitions("test-user", "test-project")[0]["graph"]["name"] == "Saved pipeline"
 
 
-def test_pipeline_browser_previews_drafts_and_starters_without_replacing_the_canvas(monkeypatch, tmp_path):
+def test_pipeline_library_opens_a_saved_pipeline_or_a_blank_canvas(monkeypatch, tmp_path):
     from streamlit.testing.v1 import AppTest
-    from mn_molecular_design_studio import folder_tree
+    from mn_molecular_design_studio import pipeline_graph_ui
 
     monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
-    target = graph.new_graph("md_simulation")
-    target["name"] = "Earlier draft"
-    current = graph.new_graph("targeted_protein_binder")
-    graph.save_definition(target, "test-user", "project", version=True)
-    graph.save_definition(current, "test-user", "project", version=True)
-    selected = {}
-    menu = []
-
-    def choose(nodes, **kwargs):
-        menu[:] = nodes
-        return selected or None
-
-    monkeypatch.setattr(folder_tree, "render_tree", choose)
+    draft = graph.new_graph("md_simulation")
+    draft["name"] = "Existing pipeline"
+    graph.save_definition(draft, "test-user", "project", version=True)
+    monkeypatch.setattr(pipeline_graph_ui, "_component", lambda: lambda **props: {
+        "graph": dict(props["graph"], viewport={"x": 12, "y": 34, "zoom": 1}),
+    })
     app = AppTest.from_string("""
 from mn_molecular_design_studio.pipeline_graph_ui import render_pipeline_builder
 render_pipeline_builder(owner_id="test-user", project_selector=lambda _: "project",
     submit_api=lambda *a: (_ for _ in ()).throw(AssertionError("Browsing must not submit a request")),
     search_jobs=lambda **kwargs: {"items": []})
 """).run()
+    prefix = "visual-pipeline-project"
+    key = prefix + "-graph"
     assert not app.exception
-    assert [node["label"] for node in menu[0]["children"]] == [*graph.MAIN_STARTERS, "Advanced"]
-    assert menu[1]["count"] == 2
-    key = "visual-pipeline-project-graph"
-    assert app.session_state[key]["id"] == current["id"]
+    assert key not in app.session_state
+    app.button(key=prefix + "-open-" + draft["id"]).click().run()
+    assert not app.exception
+    assert app.session_state[key]["id"] == draft["id"]
 
-    selected.update(selectedId=f"draft/{target['id']}", token="draft-selection")
+    app.session_state[prefix + "-view"] = "library"
     app.run()
+    app.button(key=prefix + "-new").click().run()
     assert not app.exception
-    assert app.session_state[key]["id"] == current["id"]
-    assert any(widget.value == "Earlier draft" for widget in app.subheader)
-    app.button(key="visual-pipeline-project-open").click().run()
-    assert not app.exception
-    assert app.session_state[key]["id"] == target["id"]
-
-    selected.update(selectedId="starter/md_analysis", token="starter-selection")
-    app.run()
-    assert not app.exception
-    assert app.session_state[key]["id"] == target["id"]
-    app.button(key="visual-pipeline-project-create-task").click().run()
-    assert not app.exception
-    assert app.session_state[key]["template_id"] == "md_analysis"
+    assert app.session_state[key]["nodes"] == []
+    assert app.session_state[key]["id"] != draft["id"]
+    assert len(graph.list_definitions("test-user", "project")) == 1
 
 
 def test_canvas_save_as_creates_a_separate_named_draft():
@@ -1603,6 +1622,8 @@ render_pipeline_builder(owner_id="test-user", project_selector=lambda _: "test-p
 '''
     first = AppTest.from_string(script).run()
     second = AppTest.from_string(script).run()
+    for tab in (first, second):
+        tab.button(key="visual-pipeline-test-project-open-" + original["graph"]["id"]).click().run()
     first.session_state["canvas-event"] = {"graph": dict(original["graph"], name="First tab")}
     first.run()
     second.session_state["canvas-event"] = {"graph": dict(original["graph"], name="Second tab")}
@@ -1932,13 +1953,15 @@ render_pipeline_builder(owner_id="test-user", project_selector=lambda _: "test-p
 '''
     app = AppTest.from_string(script).run()
     prefix = "visual-pipeline-test-project"
+    app.button(key=prefix + "-open-" + original["id"]).click().run()
     assert app.session_state[prefix + "-graph"]["id"] == original["id"]
+    app.session_state[prefix + "-versions-open"] = True
+    app.run()
     app.button(key=prefix + "-archive").click().run()
     assert not app.exception
-    assert app.session_state[prefix + "-graph"]["id"] != original["id"]
+    assert app.session_state[prefix + "-view"] == "library"
     assert graph.list_definitions("test-user", "test-project") == []
     app.button(key=prefix + "-unarchive").click().run()
     assert not app.exception
     assert graph.list_definitions("test-user", "test-project")[0]["versions"] == 1
-    app.button(key=prefix + "-open").click().run()
     assert app.session_state[prefix + "-graph"]["id"] == original["id"]

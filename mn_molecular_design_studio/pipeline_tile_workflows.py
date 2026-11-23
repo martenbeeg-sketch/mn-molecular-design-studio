@@ -20,10 +20,12 @@ class TileWorkflow:
 TARGET = (("target", "target"),)
 CANDIDATES = (("candidates", "candidates"),)
 COMPOUNDS = (("compounds", "compound_set"),)
+REFERENCE_LIGAND = (("reference_ligand", "ligand_sdf"),)
 TILES = {
     **{
         "tile_docking_" + engine: TileWorkflow(label, "ligand.docking." + engine, "Docking",
-            "docking_result", (*TARGET, *COMPOUNDS), cpu=engine in {"vina", "rosetta_ligand"})
+            "docking_result", TARGET + COMPOUNDS + (REFERENCE_LIGAND if engine == "rosetta_ligand" else ()),
+            cpu=engine in {"vina", "rosetta_ligand"})
         for engine, label in (
             ("vina", "AutoDock Vina"), ("autodock_gpu", "AutoDock-GPU"), ("gnina", "GNINA"),
             ("rosetta_ligand", "RosettaLigand"), ("unidock_pro", "Uni-Dock Pro"),
@@ -82,7 +84,10 @@ PORT_LABELS = {
     "fingerprint_manifest": "Fingerprint manifest", "centroid_manifest": "Centroid manifest",
     "prepared_complex": "Prepared complex", "md_trajectory": "Trajectory + topology", "tool_result": "Saved Results",
     "analysis": "Analysis results", "prediction": "Predicted structures", "docking_result": "Docking results",
+    "ligand_sdf": "Reference ligand (SDF)",
 }
+ARTIFACT_INPUT_FIELDS = {"compounds": "compound_set_file", "features": "feature_manifest",
+                         "complex": "complex_pdb", "reference_ligand": "reference_ligand_sdf"}
 
 
 @lru_cache(maxsize=None)
@@ -101,13 +106,14 @@ def validate_parameters(tile: TileWorkflow, settings: dict, connected_ports: set
         name for name, value in settings.items()
         if value is not None and (not isinstance(value, str) or value.strip())
     } | {
-        name for names, port in ((("target_pdb", "chain_ids", "chain_id"), "target"),
-                                  (("source_run_dir", "candidates_jsonl"), "candidates"),
-                                  (("compound_set_file",), "compounds"),
-                                  (("feature_manifest", "library_id"), "features"),
-                                  (("complex_pdb",), "complex"))
-        if port in connected_ports for name in names
+        ARTIFACT_INPUT_FIELDS[port] for port in connected_ports if port in ARTIFACT_INPUT_FIELDS
     }
+    if "target" in connected_ports:
+        supplied.update(("target_pdb", "chain_ids", "chain_id"))
+    if "candidates" in connected_ports:
+        supplied.update(("source_run_dir", "candidates_jsonl"))
+    if "features" in connected_ports:
+        supplied.add("library_id")
     missing = [name for name, required in parameters.items() if required and name not in supplied]
     if runnable and missing:
         raise ValueError(f"{tile.label} needs {', '.join(missing)}.")
@@ -145,7 +151,7 @@ def workflow_request(tile: TileWorkflow, settings: dict, inputs: dict, name: str
             artifact = source.get("tile_artifact") or {}
             if not artifact.get("path"):
                 raise ValueError(f"The upstream workflow produced no {handle} artifact.")
-            key = {"compounds": "compound_set_file", "features": "feature_manifest", "complex": "complex_pdb"}[handle]
+            key = ARTIFACT_INPUT_FIELDS[handle]
             parameters[key] = artifact["path"]
             if handle == "features" and artifact.get("library_id"):
                 parameters["library_id"] = artifact["library_id"]

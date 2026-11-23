@@ -785,7 +785,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
     set_run_policy(campaign, "manual")
     mark_studio_job({"job": {"run_dir": str(campaign)}}, owner_id=owner_id, project_id=project_id)
     graph_path = campaign / "graph_snapshot.json"
-    if graph_path.exists() and read_json(graph_path) != graph:
+    if graph_path.exists() and validate_graph(read_json(graph_path))["graph"] != graph:
         raise ValueError("The submitted active-learning graph snapshot cannot be changed.")
     if not graph_path.exists():
         graph_path.write_text(json.dumps(graph, indent=2) + "\n", encoding="utf-8")

@@ -1173,25 +1173,75 @@ def save_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] = De
 
 
 @app.get("/api/v1/pipelines")
-def list_saved_pipelines(project_id: str, include_archived: bool = False, user: dict[str, Any] = Depends(_current_user)):
+def list_saved_pipelines(project_id: str, include_archived: bool = False, include_trashed: bool = False,
+                        user: dict[str, Any] = Depends(_current_user)):
     from mn_molecular_design_studio.pipeline_graph import list_definitions
     _require_pipeline_history_access(project_id, user)
-    return _call(list_definitions, str(user["id"]), project_id, include_archived=include_archived)
+    return _call(list_definitions, str(user["id"]), project_id,
+                 include_archived=include_archived, include_trashed=include_trashed)
 
 
 @app.post("/api/v1/pipelines/{pipeline_id}/archive")
 def archive_pipeline(pipeline_id: str, payload: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(_current_user)):
-    from mn_molecular_design_studio.pipeline_graph import PipelineDraftConflictError, set_draft_archived
+    from mn_molecular_design_studio.pipeline_graph import set_draft_archived
 
     request, project_id = _request_payload_and_project(payload, user)
     if set(request) != {"archived", "expected_revision"}:
         raise HTTPException(422, "Provide archived and the last opened draft revision.")
+    return _change_saved_pipeline(set_draft_archived, user, project_id, pipeline_id, request)
+
+
+def _change_saved_pipeline(operation, user, project_id, pipeline_id, request):
+    from mn_molecular_design_studio.pipeline_graph import PipelineDraftConflictError
     try:
-        return set_draft_archived(str(user["id"]), project_id, pipeline_id, **request)
+        return operation(str(user["id"]), project_id, pipeline_id, **request)
     except PipelineDraftConflictError as exc:
         raise HTTPException(409, str(exc)) from exc
     except (OSError, TypeError, ValueError, LookupError) as exc:
         raise _http_error(exc) from exc
+
+
+@app.post("/api/v1/pipelines/{pipeline_id}/trash")
+def trash_pipeline(pipeline_id: str, payload: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(_current_user)):
+    """Move a saved pipeline to Trash or restore it."""
+    from mn_molecular_design_studio.pipeline_graph import set_draft_trashed
+
+    request, project_id = _request_payload_and_project(payload, user)
+    if set(request) != {"trashed", "expected_revision"}:
+        raise HTTPException(422, "Provide trashed and the current pipeline revision.")
+    return _change_saved_pipeline(set_draft_trashed, user, project_id, pipeline_id, request)
+
+
+@app.post("/api/v1/pipelines/{pipeline_id}/template")
+def publish_pipeline_template(pipeline_id: str, payload: dict[str, Any] = Body(...),
+                              user: dict[str, Any] = Depends(_current_user)):
+    """Save a reusable template from a specific saved pipeline revision."""
+    from mn_molecular_design_studio.pipeline_graph import save_pipeline_template
+
+    request, project_id = _request_payload_and_project(payload, user)
+    if set(request) != {"name", "expected_revision"}:
+        raise HTTPException(422, "Provide a template name and the current pipeline revision.")
+    return _change_saved_pipeline(save_pipeline_template, user, project_id, pipeline_id, request)
+
+
+@app.get("/api/v1/pipelines/saved-templates")
+def saved_pipeline_templates(project_id: str, user: dict[str, Any] = Depends(_current_user)):
+    from mn_molecular_design_studio.pipeline_graph import list_pipeline_templates
+
+    _require_pipeline_history_access(project_id, user)
+    return {"items": _call(list_pipeline_templates, str(user["id"]), project_id)}
+
+
+@app.post("/api/v1/pipelines/saved-templates/{template_id}/use")
+def use_saved_pipeline_template(template_id: str, payload: dict[str, Any] = Body(...),
+                                user: dict[str, Any] = Depends(_current_user)):
+    """Create a separate editable pipeline from a saved project template."""
+    from mn_molecular_design_studio.pipeline_graph import new_pipeline_from_template
+
+    request, project_id = _request_payload_and_project(payload, user)
+    if request:
+        raise HTTPException(422, "Provide the template's project ID.")
+    return {"graph": _call(new_pipeline_from_template, str(user["id"]), project_id, template_id)}
 
 
 def _require_pipeline_history_access(project_id, user):

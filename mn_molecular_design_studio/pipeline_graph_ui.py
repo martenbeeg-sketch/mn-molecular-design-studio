@@ -5,12 +5,18 @@ import copy
 import hashlib
 import json
 import uuid
+from collections import Counter
 from pathlib import Path
+from urllib.parse import urlencode
 
 import streamlit as st
 import streamlit.components.v1 as components
 
-from mn_molecular_design_studio.pipeline_graph import ACTIVE_LEARNING_LAYOUT, NODE_CATALOG, PipelineInputError, clean_graph, fingerprint, list_definitions, list_versions, migrate_template_graph, new_graph, validate_graph
+from mn_molecular_design_studio.pipeline_graph import (
+    ACTIVE_LEARNING_LAYOUT, NODE_CATALOG, PipelineInputError, clean_graph, fingerprint, is_screening_graph,
+    list_definitions, list_pipeline_templates, list_versions, migrate_template_graph, new_graph,
+    screening_graph_issues, validate_graph,
+)
 from mn_molecular_design_studio.api_client import StudioAPIConflictError
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
@@ -131,10 +137,13 @@ def _centroid_preparation_label(item):
             f"{threshold_label}{date_label}")
 
 
-def _render_active_library(params, key):
+def _render_active_library(params, key, *, library_catalog_available=True):
+    if not library_catalog_available:
+        st.info("The live library catalog is unavailable in this development preview. Open the pipeline in Studio to choose prepared fingerprints.")
+        return None
     libraries = [row for row in _active_library_options() if row[1]]
     if not libraries:
-        st.info("No registered compound library has prepared fingerprints. Prepare a library first in the Library tools.")
+        st.info("No registered fingerprint manifests are accessible on this workstation. Check the library registration and preparation files in Library tools.")
         return None
     ids = [record["id"] for record, _features, _centroids in libraries]
     current_id = params.get("library_id")
@@ -156,10 +165,13 @@ def _render_active_library(params, key):
     return {"library_id": selected_id, "feature_manifest": feature_path}
 
 
-def _render_active_centroids(params, key):
+def _render_active_centroids(params, key, *, library_catalog_available=True):
+    if not library_catalog_available:
+        st.info("The live library catalog is unavailable in this development preview. Open the pipeline in Studio to choose an existing centroid set.")
+        return None
     libraries = [row for row in _active_library_options() if row[2]]
     if not libraries:
-        st.info("No registered centroid datasets were found. Create centroids first in the Library tools.")
+        st.info("No registered centroid manifests are accessible on this workstation. Check the library registration and preparation files in Library tools.")
         return None
     ids = [record["id"] for record, _features, _centroids in libraries]
     selected_id = params.get("library_id") if params.get("library_id") in ids else ids[0]
@@ -289,7 +301,24 @@ def _render_active_target(params, key):
     return result
 
 
-def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, graph=None):
+def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, graph=None, *, library_catalog_available=True):
+    if selected["data"]["kind"] == "ligand_sdf_input":
+        from mn_molecular_design_studio.ligand_tools_ui import _save_reference_ligand_upload
+
+        params = selected["data"]["params"]
+        path = resolve_stored_path(params.get("ligand_sdf"), must_exist=True)
+        upload = st.file_uploader("Ligand structure", type=["sdf"], key=prefix + "-ligand-sdf")
+        if upload is not None:
+            try:
+                path = _save_reference_ligand_upload(owner_id, upload.name, upload.getvalue())
+            except (OSError, ValueError) as exc:
+                st.error(str(exc))
+                return {}
+        if path:
+            st.caption(f"Selected {upload.name if upload else path.name}")
+            params["ligand_sdf"] = str(path)
+            return {selected["id"]: {"ligand_sdf": str(path)}}
+        return {}
     if selected["data"]["kind"] == "md_source":
         from mn_molecular_design_studio.md_analysis_ui import _cached_source_options_for_job
 
@@ -383,12 +412,12 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
             }
             params.update(contexts[node_id])
     elif selected["data"]["kind"] == "active_library":
-        chosen = _render_active_library(params, key)
+        chosen = _render_active_library(params, key, library_catalog_available=library_catalog_available)
         if chosen:
             contexts[node_id] = chosen
             params.update(chosen)
     elif selected["data"]["kind"] == "active_seed":
-        chosen = _render_active_centroids(params, key)
+        chosen = _render_active_centroids(params, key, library_catalog_available=library_catalog_available)
         if chosen:
             contexts[node_id] = chosen
             params.update(chosen)
@@ -514,7 +543,8 @@ def _filter_observed_candidates(graph, node_id, run_dir):
         return []
 
 
-def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs, stage_edits=False):
+def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs, stage_edits=False,
+                      library_catalog_available=True):
     from mn_molecular_design_studio.pipeline_node_ui import render_node_form
     editor = st.session_state.get(prefix+"-editor")
     if not editor:
@@ -534,7 +564,10 @@ def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs, 
         observed_candidates = (_filter_observed_candidates(graph, working["id"], last_job.get("run_dir"))
                               if working["data"]["kind"] == "filter" and last_job.get("run_dir") else [])
         def render_input():
-            return _render_node_input(working, owner_id, project_id, search_jobs, key, graph)
+            return _render_node_input(
+                working, owner_id, project_id, search_jobs, key, graph,
+                library_catalog_available=library_catalog_available,
+            )
         values, label, action, replacement_kind, node_updates = render_node_form(
             working, graph, key=key, render_input=render_input, owner_id=owner_id,
             include_node_updates=True, observed_candidates=observed_candidates,
@@ -626,7 +659,9 @@ def _activate_graph(prefix, graph, revision=None):
     """Widget callback: replace the draft before its widgets are instantiated."""
     st.session_state[prefix+"-graph"] = copy.deepcopy(graph)
     st.session_state[prefix + "-draft-base"] = (graph["id"], revision)
+    st.session_state[prefix + "-view"] = "editor"
     st.session_state.pop(prefix + "-draft-conflict", None)
+    st.session_state.pop(prefix + "-run-check", None)
     st.session_state[prefix+"-reset"] = uuid.uuid4().hex
     _close_node_editor(prefix)
 
@@ -667,13 +702,6 @@ def _show_pipeline_save_as(prefix, project_id, submit_api):
                 st.error(str(exc))
 
     dialog()
-
-
-def _activate_selected_template(prefix, templates):
-    """Load the selected starter graph before rendering the canvas again."""
-    selected = st.session_state.get(prefix + "-template")
-    if selected in templates:
-        _activate_graph(prefix, new_graph(templates[selected]))
 
 
 def _show_pipeline_resources(prefix, owner_id, project_id, submit_api):
@@ -1029,97 +1057,399 @@ def _change_archive_status(draft, project_id, submit_api, *, archived):
         return False
 
 
-def _pipeline_browser_selection(prefix, definitions, archived):
-    from mn_molecular_design_studio.folder_tree import render_tree
-    from mn_molecular_design_studio.pipeline_graph import MAIN_STARTERS
-
-    categories = {**MAIN_STARTERS, "Advanced": "advanced"}
-    starters = [{"id": f"starter/{key}", "label": label} for label, key in categories.items()]
-    drafts = [{"id": f"draft/{draft['graph']['id']}", "label": draft["graph"]["name"]} for draft in definitions]
-    roots = [
-        {"id": "starters", "label": "Starter pipelines", "children": starters},
-        {"id": "drafts", "label": "Saved drafts", "children": drafts,
-         "count": len(drafts), "countLabel": "saved drafts"},
-    ]
-    options = {node["id"] for node in [*roots, *starters, *drafts]}
-    selection_key = prefix + "-browser-selection"
-    selection = st.session_state.get(selection_key)
-    if selection not in options:
-        selection = "drafts" if definitions or archived else "starters"
-    event = render_tree(roots, selected_id=selection, expanded_ids=["starters", "drafts"],
-                        key=prefix + "-browser-tree", label="Pipeline starters and saved drafts")
-    event_key = prefix + "-browser-event"
-    if event and event.get("token") != st.session_state.get(event_key):
-        st.session_state[event_key] = event.get("token")
-        chosen = event.get("selectedId")
-        if chosen in options and chosen != selection:
-            st.session_state[selection_key] = chosen
-            st.rerun()
-    return selection
-
-
-def _render_saved_pipeline_browser(prefix, owner_id, project_id, graph, definitions, archived, submit_api, selection):
-    if definitions:
-        saved = next((item for item in definitions if selection == f"draft/{item['graph']['id']}"), None)
-        if saved is None:
-            saved = st.selectbox("Saved draft", definitions, format_func=lambda item: item["graph"]["name"], key=prefix + "-saved")
-        else:
-            st.subheader(saved["graph"]["name"])
-        snapshot = saved["graph"]
-        st.caption(f"{len(snapshot['nodes'])} steps · {saved['versions']} saved versions")
-        with st.expander("Pipeline steps"):
-            st.dataframe([{"Step": node["data"]["label"]} for node in snapshot["nodes"]], hide_index=True)
-        try:
-            validate_graph(snapshot, require_inputs=True, require_files=False)
-        except ValueError as exc:
-            st.caption(f"Needs attention · {exc}")
-        else:
-            st.caption("Inputs configured. Studio checks saved files when you run.")
-        open_col, archive_col = st.columns(2)
-        open_col.button("Open in canvas", type="primary", key=prefix + "-open", on_click=_activate_graph,
-                        args=(prefix, snapshot, saved["revision"]))
-        if archive_col.button("Archive draft", key=prefix + "-archive"):
-            if _change_archive_status(saved, project_id, submit_api, archived=True):
-                if saved["graph"]["id"] == graph["id"]:
-                    replacement = next((item for item in definitions if item["graph"]["id"] != graph["id"]), None)
-                    if replacement:
-                        _activate_graph(prefix, replacement["graph"], replacement["revision"])
-                    else:
-                        _activate_graph(prefix, new_graph("targeted_protein_binder"))
-                st.rerun()
-        versions = list_versions(owner_id, project_id, snapshot["id"])
-        if versions:
-            version = st.selectbox("Version history", versions,
-                format_func=lambda item: f"{item['saved_at'][:19].replace('T', ' ')} UTC · {item['revision'][:10]}",
-                key=prefix + "-version-" + snapshot["id"])
-            st.button("Restore version into draft", key=prefix + "-restore", on_click=_activate_graph,
-                      args=(prefix, version["graph"], saved["revision"]))
+def _open_saved_pipeline(prefix, draft):
+    current = st.session_state.get(prefix + "-graph")
+    if current and current["id"] == draft["graph"]["id"] and _draft_revision(prefix, current) == draft["revision"]:
+        st.session_state[prefix + "-view"] = "editor"
     else:
-        st.caption("No active drafts in this project." if project_id else "Choose a project to view its saved drafts.")
-    if archived:
-        with st.expander("Archived drafts"):
-            selected = st.selectbox("Archived draft", archived, format_func=lambda item: item["graph"]["name"],
-                                    key=prefix + "-archived-pipeline")
-            if st.button("Restore draft", key=prefix + "-unarchive"):
-                if _change_archive_status(selected, project_id, submit_api, archived=False):
-                    st.rerun()
+        _activate_graph(prefix, draft["graph"], draft["revision"])
 
-def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs, read_only_projects=()):
-    st.markdown("<style>.block-container{max-width:1900px;padding-top:1.35rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
+
+def _show_save_pipeline_template(prefix, project_id, submit_api):
+    key = prefix + "-template-source"
+    source = st.session_state.get(key)
+    if not source:
+        return
+
+    @st.dialog("Save as template", on_dismiss=lambda: st.session_state.pop(key, None))
+    def dialog():
+        name = st.text_input("Template name", value=source["graph"]["name"], max_chars=160,
+                             key=key + "-name-" + source["graph"]["id"]).strip()
+        st.caption("The template uses this saved revision and is available in the selected project.")
+        if st.button("Save template", type="primary", disabled=not name, key=prefix + "-publish-template"):
+            try:
+                submit_api(f"/api/v1/pipelines/{source['graph']['id']}/template", {
+                    "project_id": project_id, "name": name, "expected_revision": source["revision"],
+                })
+            except (ValueError, RuntimeError, OSError, LookupError) as exc:
+                st.error(str(exc))
+                return
+            st.session_state.pop(key, None)
+            st.session_state[prefix + "-view"] = "library"
+            st.session_state[prefix + "-library-next-section"] = "Templates"
+            st.session_state[prefix + "-library-notice"] = f"Saved template {name}."
+            st.rerun()
+
+    dialog()
+
+
+def _change_pipeline_trash(prefix, pipeline, project_id, submit_api, *, trashed):
+    graph = pipeline["graph"]
+    try:
+        submit_api(f"/api/v1/pipelines/{graph['id']}/trash", {
+            "project_id": project_id, "trashed": trashed, "expected_revision": pipeline["revision"],
+        })
+    except (ValueError, RuntimeError, OSError, LookupError) as exc:
+        st.error(str(exc))
+        return
+    if trashed and (st.session_state.get(prefix + "-graph") or {}).get("id") == graph["id"]:
+        for suffix in ("-graph", "-draft-base", "-draft-conflict"):
+            st.session_state.pop(prefix + suffix, None)
+    message = f"Moved {graph['name']} to Trash." if trashed else f"Restored {graph['name']}."
+    st.session_state[prefix + "-library-notice"] = message
+    st.session_state[prefix + "-library-next-section"] = "Saved pipelines"
+    st.rerun()
+
+
+def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived, trashed,
+                             submit_api, search_jobs, search_cluster_runs):
+    from mn_molecular_design_studio.pipeline_blocks import blank_program
+    from mn_molecular_design_studio.pipeline_graph import MAIN_STARTERS
+    from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
+
+    with st.container(key="pipeline-library"):
+        section_key = prefix + "-library-section"
+        if next_section := st.session_state.pop(prefix + "-library-next-section", None):
+            st.session_state[section_key] = next_section
+        st.session_state.setdefault(section_key, "Saved pipelines")
+        title, create = st.columns([3, 1], vertical_alignment="bottom")
+        title.title("Pipeline library")
+        if create.button("New pipeline", type="primary", icon=":material/add:", width="stretch", key=prefix + "-new"):
+            _activate_graph(prefix, blank_program())
+            st.rerun()
+        section = st.segmented_control(
+            "Pipeline library view", ["Saved pipelines", "Templates", "Runs", "Trash"],
+            selection_mode="single", label_visibility="collapsed", key=section_key,
+        ) or "Saved pipelines"
+        if notice := st.session_state.pop(prefix + "-library-notice", None):
+            st.success(notice)
+        if section == "Runs":
+            _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs)
+            return
+        if section == "Trash":
+            st.subheader("Trashed pipelines")
+            if not trashed:
+                st.caption("Trash is empty." if project_id else "Choose a project to open its Trash.")
+            for item in trashed:
+                graph = item["graph"]
+                desc, restore = st.columns([3, 1], vertical_alignment="center")
+                desc.write(graph["name"])
+                desc.caption(f"Moved to Trash {item['trashed_at'][:10]} · {graph['id'][:8]}")
+                if restore.button("Restore pipeline", key=prefix + "-restore-trash-" + graph["id"]):
+                    _change_pipeline_trash(prefix, item, project_id, submit_api, trashed=False)
+            return
+        if section == "Templates":
+            saved_templates = list_pipeline_templates(owner_id, project_id) if project_id else []
+            if saved_templates:
+                st.subheader("Project templates")
+                columns = st.columns(3)
+                for index, item in enumerate(saved_templates):
+                    with columns[index % len(columns)], st.container(border=True):
+                        st.write(item["name"])
+                        st.caption(f"{item['steps']} {'step' if item['steps'] == 1 else 'steps'} · Saved {item['created_at'][:10]}")
+                        if st.button("Create from template", key=prefix + "-use-saved-template-" + item["id"], width="stretch"):
+                            try:
+                                result = submit_api(f"/api/v1/pipelines/saved-templates/{item['id']}/use",
+                                                    {"project_id": project_id})
+                                _activate_graph(prefix, result["graph"])
+                                st.rerun()
+                            except (ValueError, RuntimeError, OSError, LookupError, KeyError) as exc:
+                                st.error(str(exc))
+                st.subheader("Built-in templates")
+            templates = [
+                ("unidock_active_learning", "Large-library screen", "Screen a registered compound library over successive rounds."),
+                ("md_simulation", "OpenMM simulation", "Prepare a complex, run a simulation, and analyze the trajectory."),
+                ("md_analysis", "Analyze an MD run", "Open a saved production segment and summarize its trajectory."),
+            ]
+            for column, (template, name, description) in zip(st.columns(3), templates):
+                with column, st.container(border=True):
+                    st.markdown(f"**{name}**")
+                    st.caption(description)
+                    if st.button("Use template", key=prefix + "-template-" + template, width="stretch",
+                                 help=f"Open {name}"):
+                        recipe = new_graph(template)
+                        recipe["name"] = name
+                        _activate_graph(prefix, recipe)
+                        st.rerun()
+            categories = {value: name for name, value in MAIN_STARTERS.items()}
+            categories["advanced"] = "Advanced and legacy"
+            task = st.selectbox("Configure a template", [None, *categories], format_func=lambda item: categories.get(item, "Choose a category"), key=prefix + "-task-category")
+            if task:
+                created = render_task_setup(prefix, task=task)
+                if created is not None:
+                    _activate_graph(prefix, created)
+                    st.rerun()
+            return
+
+        if not project_id:
+            st.info("Choose a project to access saved pipelines and run history.")
+        elif not definitions:
+            st.info("No saved pipelines in this project. Start a new canvas or choose a template.")
+        current = st.session_state.get(prefix + "-graph")
+        if current and not any(item["graph"]["id"] == current["id"] for item in (*definitions, *archived, *trashed)):
+            if st.button(f"Continue editing {current['name']}", key=prefix + "-resume"):
+                st.session_state[prefix + "-view"] = "editor"
+                st.rerun()
+        if definitions:
+            names = Counter(row["graph"]["name"].casefold() for row in definitions)
+            query = st.text_input("Search saved pipelines", placeholder="Search by pipeline name",
+                                  key=prefix + "-library-search").strip().casefold()
+            visible = [row for row in definitions if query in row["graph"]["name"].casefold()]
+            if not visible:
+                st.caption("No pipelines match this search.")
+            cards = st.columns(3)
+            for index, draft in enumerate(visible):
+                graph = draft["graph"]
+                steps = len(graph["nodes"])
+                versions = draft["versions"]
+                with cards[index % len(cards)], st.container(border=True):
+                    if st.button(graph["name"], key=prefix + "-open-" + graph["id"], width="stretch"):
+                        _open_saved_pipeline(prefix, draft)
+                        st.rerun()
+                    details, actions = st.columns([2, 1], vertical_alignment="center")
+                    details.caption(f"{steps} {'step' if steps == 1 else 'steps'} · {versions} saved {'version' if versions == 1 else 'versions'}")
+                    updated = draft["saved_at"][:19].replace("T", " ")
+                    identifier = f" · {graph['id'][:8]}" if names[graph["name"].casefold()] > 1 else ""
+                    details.caption(f"Updated {updated} UTC{identifier}")
+                    with actions.popover("Actions", width="stretch"):
+                        if st.button("Save as template", key=prefix + "-save-template-" + graph["id"]):
+                            st.session_state[prefix + "-template-source"] = draft
+                        if st.button("Move to Trash", key=prefix + "-trash-" + graph["id"]):
+                            _change_pipeline_trash(prefix, draft, project_id, submit_api, trashed=True)
+
+        if archived:
+            with st.expander("Archived pipelines"):
+                selected = st.selectbox("Archived pipeline", archived, format_func=lambda row: row["graph"]["name"],
+                                        key=prefix + "-archived-pipeline")
+                if st.button("Restore pipeline", key=prefix + "-unarchive"):
+                    if _change_archive_status(selected, project_id, submit_api, archived=False):
+                        _activate_graph(prefix, selected["graph"], selected["revision"])
+                        st.rerun()
+        _show_save_pipeline_template(prefix, project_id, submit_api)
+
+
+def _show_pipeline_versions(prefix, owner_id, project_id, graph, draft, submit_api):
+    open_key = prefix + "-versions-open"
+    if not st.session_state.get(open_key):
+        return
+
+    @st.dialog("Pipeline versions", width="medium", on_dismiss=lambda: st.session_state.pop(open_key, None))
+    def dialog():
+        st.write(graph["name"])
+        if not project_id:
+            st.info("Choose a project before saving a version.")
+            return
+        if st.button("Save a version", type="primary", key=prefix + "-version-save"):
+            try:
+                _save_draft(prefix, project_id, graph, submit_api, version=True)
+            except StudioAPIConflictError:
+                st.session_state.pop(open_key, None)
+                st.rerun()
+            except (ValueError, OSError, RuntimeError) as exc:
+                st.error(str(exc))
+            else:
+                st.success("Version saved.")
+        versions = list_versions(owner_id, project_id, graph["id"])
+        if versions:
+            version = st.selectbox("Saved version", versions, key=prefix + "-version-" + graph["id"],
+                format_func=lambda row: f"{row['saved_at'][:19].replace('T', ' ')} UTC · {row['revision'][:10]}")
+            if st.button("Restore to editor", key=prefix + "-restore"):
+                try:
+                    _save_draft(prefix, project_id, version["graph"], submit_api)
+                except StudioAPIConflictError:
+                    st.session_state.pop(open_key, None)
+                    st.rerun()
+                except (ValueError, OSError, RuntimeError) as exc:
+                    st.error(str(exc))
+                else:
+                    _activate_graph(prefix, version["graph"], _draft_revision(prefix, graph))
+                    st.session_state.pop(open_key, None)
+                    st.rerun()
+        else:
+            st.caption("No saved versions yet.")
+        if draft and st.button("Archive pipeline", key=prefix + "-archive"):
+            current = dict(draft, revision=_draft_revision(prefix, graph) or draft["revision"])
+            if _change_archive_status(current, project_id, submit_api, archived=True):
+                for suffix in ("-graph", "-draft-base", "-draft-conflict", "-versions-open"):
+                    st.session_state.pop(prefix + suffix, None)
+                st.session_state[prefix + "-view"] = "library"
+                st.rerun()
+
+    dialog()
+
+
+def _screen_run_requirements(graph):
+    fields = {
+        "active_library": ("Screening library", ("library_id", "feature_manifest"),
+                           "Choose a prepared compound library and fingerprint dataset."),
+        "active_seed": ("Initial centroids", ("library_id", "centroid_manifest"),
+                        "Choose a registered centroid dataset."),
+        "active_target": ("Receptor", ("target_pdb",), "Choose a receptor structure and review its docking box."),
+        "active_docking": ("Docking workstations", ("worker_nodes",), "Select at least one docking workstation."),
+    }
+    nodes = {node["data"]["kind"]: node for node in graph["nodes"]}
+    for kind, (label, required, missing) in fields.items():
+        node = nodes.get(kind)
+        if node is None:
+            yield label, None, "Restore the " + label.lower() + " step.", True
+            continue
+        params = node["data"]["params"]
+        if not all(params.get(field) for field in required):
+            yield label, node["id"], missing, True
+            continue
+        detail = str(params.get("target_name") or "") if kind == "active_target" else ""
+        if kind == "active_docking":
+            count = len(params["worker_nodes"])
+            detail = f"{params['engine']} · {count} {'workstation' if count == 1 else 'workstations'}"
+        if not detail:
+            detail = Path(params[required[-1]]).name
+        yield label, node["id"], detail, False
+
+
+def _render_pipeline_run_setup(prefix, project_id, graph, submit_api, execution_available):
+    from mn_molecular_design_studio.cluster.ui import _job_details_reference
+
+    view_key = prefix + "-view"
+    st.button("Back to canvas", icon=":material/arrow_back:", key=prefix + "-run-back",
+              on_click=st.session_state.update, args=({view_key: "editor"},))
+    st.title("Run setup")
+    st.caption(graph["name"])
+    screen = is_screening_graph(graph)
+    inputs = list(_screen_run_requirements(graph)) if screen else []
+    blocked = any(row[3] for row in inputs)
+    graph_problem = ""
+    try:
+        plan = validate_graph(graph, require_inputs=True, require_files=False)
+    except PipelineInputError as exc:
+        blocked = True
+        if exc.node_id not in {row[1] for row in inputs if row[3]}:
+            node = next((node for node in graph["nodes"] if node["id"] == exc.node_id), None)
+            inputs.append((node["data"]["label"] if node else "Input", exc.node_id, str(exc), True))
+    except ValueError as exc:
+        blocked = True
+        graph_problem = str(exc)
+
+    input_column, execution_column = st.columns([1.5, 1], gap="large")
+    with input_column, st.container(border=True):
+        st.subheader("Inputs")
+        if graph_problem:
+            st.warning(graph_problem)
+        if not blocked and not inputs:
+            st.write(f"{len(plan['order'])} steps configured")
+        for label, node_id, detail, missing in inputs:
+            text, action = st.columns([3, 1], vertical_alignment="center")
+            text.write(label)
+            (text.warning if missing else text.caption)(detail)
+            if node_id:
+                action.button("Configure", key=prefix + "-run-input-" + node_id,
+                              help=f"Configure {label}", on_click=_open_node_editor, args=(prefix, node_id))
+    with execution_column, st.container(border=True):
+        st.subheader("Execution")
+        if screen:
+            reuse = False
+            st.write("Start a new screening campaign")
+            if execution_available:
+                from mn_molecular_design_studio.pipeline_node_ui import _available_docking_machines
+
+                docking = next((node["data"]["params"] for node in graph["nodes"]
+                                if node["data"]["kind"] == "active_docking"), {})
+                gpu_engine = docking.get("engine") in {"UniDock Pro", "GNINA", "AutoDock-GPU"}
+                try:
+                    machines = _available_docking_machines(gpu_engine)
+                except (OSError, ValueError, KeyError, TypeError):
+                    st.caption("Could not read the workstation snapshot. Open Docking workstations to check compute.")
+                else:
+                    if machines:
+                        with st.expander("Workstation snapshot"):
+                            st.dataframe([{"Workstation": machine["name"], "Free CPUs": machine["cpu_free"],
+                                           "Reported GPUs": len(machine["gpus"]),
+                                           "Heartbeat": "Stale" if machine["heartbeat_stale"] else "Online"}
+                                          for machine in machines], hide_index=True, width="stretch")
+                    else:
+                        st.caption("The latest snapshot shows no available workstation for this docking engine.")
+        else:
+            reuse = st.checkbox("Reuse unchanged completed steps", value=st.session_state.get(prefix + "-reuse", True),
+                                key=prefix + "-run-reuse-" + graph["id"],
+                                help="Clear this option to compute every step fresh.")
+            st.session_state[prefix + "-reuse"] = reuse
+            st.button("Workstation settings", key=prefix + "-run-resources", on_click=st.session_state.update,
+                      args=({prefix + "-resources-open": True},))
+        if not project_id:
+            st.info("Choose a project to submit this run.")
+        if not execution_available:
+            st.info("Job submission is unavailable in this development preview.")
+
+    with execution_column:
+        request = {"project_id": project_id, "graph": graph, "reuse_completed": reuse, "gpu_device": "all"}
+        check_key = prefix + "-run-check"
+        signature = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
+        saved_check = st.session_state.get(check_key) or {}
+        check = saved_check.get("result", {}) if saved_check.get("signature") == signature else {}
+        available = bool(project_id and execution_available and not blocked and not st.session_state.get(prefix + "-draft-conflict"))
+        checks, queue = st.columns([1, 1])
+        if checks.button("Check readiness", key=prefix + "-preflight", disabled=not available, width="stretch"):
+            st.session_state.pop(check_key, None)
+            check = {}
+            try:
+                with st.spinner("Checking saved inputs…"):
+                    result = submit_api("/api/v1/pipelines/validate", request)
+                if result.get("valid") is not True:
+                    raise ValueError("The pipeline did not pass validation.")
+                check = result
+                st.session_state[check_key] = {"signature": signature, "result": check}
+            except (ValueError, OSError, RuntimeError, TypeError) as exc:
+                st.error(str(exc))
+        if check.get("valid"):
+            if check.get("ready_to_run"):
+                st.success("Inputs verified. The scheduler will allocate compute when the run is queued.")
+            else:
+                st.info(check.get("file_validation") or "The assigned workstation will check saved files and compute before starting.")
+        if queue.button("Submit run", key=prefix + "-submit-run", type="primary",
+                        disabled=not (available and check.get("valid")), width="stretch"):
+            try:
+                with st.spinner("Submitting pipeline…"):
+                    job = submit_api("/api/v1/pipelines/run", request)["job"]
+                st.session_state[prefix + "-last-job"] = job
+                st.session_state[prefix + "-last-job-graph"] = graph["id"]
+                st.session_state["last_submitted_job"] = job
+                st.session_state.pop(check_key, None)
+                st.session_state[view_key] = "runs"
+                st.session_state[prefix + "-run-notice"] = job.get("job_code") or _job_details_reference(job)
+                st.rerun()
+            except (ValueError, OSError, RuntimeError, TypeError, KeyError) as exc:
+                st.error(str(exc))
+
+
+def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs,
+                            read_only_projects=(), execution_available=True, search_cluster_runs=None,
+                            library_catalog_available=True):
+    st.markdown("<style>.block-container{max-width:1900px;padding-top:3.75rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
     project_id = project_selector("visual-pipeline")
     prefix = f"visual-pipeline-{project_id or 'unassigned'}"
     state_key = prefix + "-graph"
-    saved_drafts = list_definitions(owner_id, project_id, include_archived=True) if project_id else []
-    definitions = [item for item in saved_drafts if not item.get("archived_at")]
+    saved_drafts = list_definitions(owner_id, project_id, include_archived=True, include_trashed=True) if project_id else []
+    definitions = [item for item in saved_drafts if not (item.get("archived_at") or item.get("trashed_at"))]
     archived = [item for item in saved_drafts if item.get("archived_at")]
+    trashed = [item for item in saved_drafts if item.get("trashed_at")]
     if project_id in read_only_projects:
+        st.title("Pipeline library")
         st.info("This project is read-only. You can inspect and download its saved pipeline graphs.")
         if saved_drafts:
             draft = st.selectbox("Saved pipeline", saved_drafts, format_func=lambda item: item["graph"]["name"],
                                  key=prefix + "-archived-draft")
             versions = list_versions(owner_id, project_id, draft["graph"]["id"])
             snapshot = st.selectbox("Revision", [draft, *versions], key=prefix + "-archived-revision",
-                format_func=lambda item: ("Draft" if "versions" in item else "Saved version")
+                format_func=lambda item: ("Saved pipeline" if "versions" in item else "Saved version")
                 + " · " + item["saved_at"][:19] + " · " + item["revision"][:10])
             st.download_button("Download pipeline graph", json.dumps(snapshot["graph"], indent=2),
                                file_name=f"pipeline-{snapshot['revision'][:10]}.json", mime="application/json")
@@ -1128,63 +1458,68 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         else:
             st.caption("No saved pipelines in this project.")
         return
+    requested_pipeline = st.query_params.get("pipeline")
+    request_key = prefix + "-linked-pipeline"
+    if requested_pipeline and st.session_state.get(request_key) != requested_pipeline:
+        st.session_state[request_key] = requested_pipeline
+        linked = next((draft for draft in definitions if draft["graph"]["id"] == requested_pipeline), None)
+        if linked:
+            _open_saved_pipeline(prefix, linked)
+        else:
+            st.info("This saved pipeline is unavailable in the selected project.")
     if state_key not in st.session_state:
         preview_prefix = f"pipeline-blocks-{project_id or 'unassigned'}"
         from_preview = st.session_state.get(preview_prefix + "-graph")
         if from_preview:
             _activate_graph(prefix, from_preview, _draft_revision(preview_prefix, from_preview))
-        elif definitions:
-            _activate_graph(prefix, definitions[0]["graph"], definitions[0]["revision"])
-        else:
-            _activate_graph(prefix, new_graph("targeted_protein_binder"))
     reuse_key = prefix + "-reuse"
     st.session_state.setdefault(reuse_key, True)
     pending = st.session_state.get("pipeline-pending-draft")
     if pending and pending["project_id"] == project_id:
         _activate_graph(prefix, pending["graph"])
         st.session_state.pop("pipeline-pending-draft", None)
-    current_graph = st.session_state[state_key]
+    current_graph = st.session_state.get(state_key)
+    view_key = prefix + "-view"
+    view = st.session_state.get(view_key, "editor" if current_graph else "library")
+    if view == "library" or current_graph is None:
+        _render_pipeline_library(prefix, owner_id, project_id, definitions, archived, trashed,
+                                 submit_api, search_jobs, search_cluster_runs)
+        return
+    if view == "runs":
+        _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs, graph=current_graph)
+        return
     migrated_graph = migrate_template_graph(current_graph)
     if migrated_graph is not current_graph:
         _activate_graph(prefix, migrated_graph, _draft_revision(prefix, current_graph))
 
     graph = st.session_state[state_key]
-    from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
-    with st.expander("Pipeline browser", expanded=True):
-        navigation, details = st.columns([1, 2.7], gap="large")
-        with navigation:
-            selection = _pipeline_browser_selection(prefix, definitions, archived)
-        with details:
-            if selection == "drafts" or selection.startswith("draft/"):
-                _render_saved_pipeline_browser(prefix, owner_id, project_id, graph, definitions, archived, submit_api, selection)
-            else:
-                task = selection.removeprefix("starter/") if selection != "starters" else None
-                created = render_task_setup(prefix, task=task)
-                if created is not None:
-                    _activate_graph(prefix, created)
-    graph = st.session_state[state_key]
-    reuse = bool(st.session_state.get(reuse_key, True))
+    saved_draft = next((item for item in definitions if item["graph"]["id"] == graph["id"]), None)
+    in_trash = any(item["graph"]["id"] == graph["id"] for item in trashed)
+    if in_trash:
+        st.warning("This saved pipeline is in Trash. Restore it to edit or run it.")
+        if view == "run-setup":
+            if st.button("Back to pipeline library", key=prefix + "-trashed-run-back"):
+                st.session_state[view_key] = "library"
+                st.session_state[prefix + "-library-next-section"] = "Trash"
+                st.rerun()
+            return
+    if view == "run-setup":
+        _render_pipeline_run_setup(prefix, project_id, graph, submit_api, execution_available)
+        _show_pipeline_resources(prefix, owner_id, project_id, submit_api)
+        _show_node_editor(prefix, owner_id=owner_id, project_id=project_id, submit_api=submit_api,
+                          search_jobs=search_jobs, library_catalog_available=library_catalog_available)
+        return
     if st.session_state.get(prefix + "-draft-conflict") == graph["id"]:
-        st.warning("The saved draft has changed. Your edits are still in this tab. Open the latest draft or save your edits as a copy.")
-        latest = next((item for item in definitions if item["graph"]["id"] == graph["id"]), None)
-        if latest:
-            st.button("Open latest draft", key=prefix + "-open-latest", on_click=_activate_graph,
-                args=(prefix, latest["graph"], latest["revision"]))
+        st.warning("The saved pipeline has changed. Your edits are still in this tab. Open the latest saved pipeline or save your edits as a copy.")
+        if saved_draft:
+            st.button("Open latest saved pipeline", key=prefix + "-open-latest", on_click=_activate_graph,
+                args=(prefix, saved_draft["graph"], saved_draft["revision"]))
         if st.button("Save edits as a copy", key=prefix + "-copy-edits"):
             st.session_state[prefix + "-save-as-open"] = True
 
     from mn_molecular_design_studio import candidate_execution
-    from mn_molecular_design_studio.cluster import config as cluster_config
     settings = candidate_execution.policy(graph.get("candidate_execution"))
     graph["candidate_execution"] = settings
-    nodes = []
-    try:
-        if cluster_config.load()["mode"] in {"peer", "coordinator"}:
-            from mn_molecular_design_studio.cluster.store import Store
-            nodes = Store().nodes()
-    except (OSError, ValueError, KeyError, TypeError):
-        nodes = []
-    contexts = {}
     if not project_id:
         st.info("Choose a project before saving a pipeline version or running it. Each pipeline run is recorded under its selected project.")
     launch_panel = st.container()
@@ -1196,13 +1531,13 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         last_path = Path(last_job["run_dir"])
         execution = _matching_execution(graph, read_json(last_path/"graph_snapshot.json"), read_json(last_path/"graph_execution.json"))
     reset_token = st.session_state[prefix + "-reset"]
-    from mn_molecular_design_studio.tool_connections import editor_connections
+    from mn_molecular_design_studio.tool_connections import editor_connections, editor_tool_catalog
     round_outline = None
     if graph.get("template_id") == "unidock_active_learning":
         from mn_molecular_design_studio.pipeline_blocks import program
         try:
             round_outline = program(graph)
-        except ValueError:
+        except (KeyError, ValueError):
             from mn_molecular_design_studio.pipeline_graph import restore_screening_connections
             try:
                 restored = restore_screening_connections(graph)
@@ -1213,11 +1548,10 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 if restored != graph and st.button("Restore screening recipe connections", key=prefix + "-restore-screen"):
                     _activate_graph(prefix, restored, _draft_revision(prefix, graph))
                     st.rerun()
-    value = _component()(graph=graph, catalog=NODE_CATALOG, active_study_layout=ACTIVE_LEARNING_LAYOUT,
+    value = _component()(graph=graph, catalog=editor_tool_catalog(), active_study_layout=ACTIVE_LEARNING_LAYOUT,
                          connections=editor_connections(), round_outline=round_outline,
-                         active_execution_ready=graph.get("template_id") == "unidock_active_learning",
-                         reuse_completed=reuse,
-                         reset_token=reset_token, input_contexts=contexts,
+                         reset_token=reset_token, input_contexts={},
+                         draft_saved=bool(_draft_revision(prefix, graph)),
                          execution=execution, settings_update=st.session_state.get(prefix+"-settings-update"),
                          key=f"{prefix}-canvas-{reset_token}", default=None)
     if value and (value.get("graph") or {}).get("id") == graph["id"]:
@@ -1225,10 +1559,6 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         if signature != st.session_state.get(prefix+"-last-value"):
             st.session_state[prefix+"-last-value"] = signature
             try:
-                component_reuse = value.get("reuse_completed", reuse)
-                if type(component_reuse) is bool:
-                    st.session_state[reuse_key] = component_reuse
-                reuse = bool(st.session_state.get(reuse_key, True))
                 component_graph = copy.deepcopy(value["graph"])
                 component_graph["candidate_execution"] = copy.deepcopy(graph["candidate_execution"])
                 for component_node in component_graph.get("nodes", []):
@@ -1248,10 +1578,9 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 action=value.get("action") or {}
                 new_action = action.get("id") and action["id"] != st.session_state.get(prefix+"-handled-action")
                 action_type = action.get("type") if new_action else None
-                saved = None
-                if project_id and action_type != "save_as":
-                    saved = _save_draft(prefix, project_id, updated, submit_api,
-                                        version=action_type == "save_version", from_canvas=True)
+                changed = dict(updated, viewport=graph.get("viewport")) != graph
+                if project_id and action_type != "save_as" and (changed or action_type in {"save", "save_template"}):
+                    _save_draft(prefix, project_id, updated, submit_api, from_canvas=True)
                 st.session_state[state_key] = graph = updated
                 if new_action:
                     st.session_state[prefix+"-handled-action"] = action["id"]
@@ -1261,32 +1590,43 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                         st.session_state[prefix + "-campaign-open"] = True
                     elif action["type"] == "resources":
                         st.session_state[prefix + "-resources-open"] = True
+                    elif action["type"] == "versions":
+                        st.session_state[prefix + "-versions-open"] = True
+                    elif action["type"] in {"library", "runs", "run"}:
+                        if not st.session_state.get(prefix + "-draft-conflict"):
+                            st.session_state[view_key] = "run-setup" if action["type"] == "run" else action["type"]
+                            st.rerun()
                     elif action["type"] == "save":
                         if not project_id:
                             st.warning("Choose a project before saving a pipeline.")
                         else:
                             st.success(f"Saved {graph['name']}.")
+                            link = urlencode({"pipeline": graph["id"], "pipeline_project": project_id})
+                            st.markdown(f"[Open saved pipeline](?{link})")
+                    elif action["type"] == "save_template":
+                        if revision := _draft_revision(prefix, graph):
+                            st.session_state[prefix + "-template-source"] = {"graph": graph, "revision": revision}
+                        else:
+                            st.warning("Choose a project before saving a template.")
                     elif action["type"] == "save_as":
                         if not project_id:
                             st.warning("Choose a project before saving a pipeline.")
                         else:
                             st.session_state[prefix + "-save-as-open"] = True
-                    elif not project_id:
-                        st.warning("Select a project before saving a version or running the pipeline.")
-                    elif action["type"] == "save_version":
-                        st.success(f"Version {saved['revision'][:10]} saved.")
-                    elif action["type"] == "run":
-                        result=submit_api("/api/v1/pipelines/run", {"project_id":project_id,"graph":graph,"reuse_completed":reuse,"gpu_device":"all"})
-                        last_job = result["job"]
-                        st.session_state[prefix+"-last-job"] = last_job
-                        st.session_state[prefix+"-last-job-graph"] = graph["id"]
-                        st.session_state["last_submitted_job"] = last_job
             except StudioAPIConflictError:
                 st.rerun()
             except (ValueError, OSError, TypeError, KeyError) as exc:
-                st.error(str(exc))
+                launch_panel.error(str(exc))
     from mn_molecular_design_studio.cluster.ui import _job_details_reference, _navigate_to_job_details
     with launch_panel:
+        if is_screening_graph(graph) and graph.get("template_id") != "unidock_active_learning":
+            issues = screening_graph_issues(graph)
+            if issues:
+                with st.expander("Screening graph checklist"):
+                    for issue in issues:
+                        st.write(issue)
+            else:
+                st.caption("Screening graph complete · includes next-round feedback")
         try:
             plan = validate_graph(graph, require_inputs=True, require_files=False)
         except PipelineInputError as exc:
@@ -1298,7 +1638,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             st.info(f"Before running · {exc}")
         else:
             if project_id:
-                st.caption(f"{len(plan['order'])} steps configured. Choose Run pipeline to validate and submit.")
+                st.caption(f"{len(plan['order'])} steps configured")
         if last_job:
             reference = _job_details_reference(last_job)
             st.caption(f"Last submission · {last_job.get('job_code') or reference}")
@@ -1306,95 +1646,165 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 _navigate_to_job_details(reference, final_results=graph.get("template_id") == "unidock_active_learning")
     _show_pipeline_campaign(prefix, project_id, submit_api)
     _show_pipeline_resources(prefix, owner_id, project_id, submit_api)
+    _show_pipeline_versions(prefix, owner_id, project_id, graph, saved_draft, submit_api)
+    _show_save_pipeline_template(prefix, project_id, submit_api)
     _show_pipeline_save_as(prefix, project_id, submit_api)
-    _show_node_editor(prefix, owner_id=owner_id, project_id=project_id, submit_api=submit_api, search_jobs=search_jobs)
-    if project_id:
-        with st.expander("Pipeline runs", expanded=bool(last_job)):
-            if st.button("Refresh run status", key=prefix+"-refresh"):
-                st.rerun()
-            from mn_molecular_design_studio.workflow_modes import gpu_monitor_rows
-            from mn_molecular_design_studio.cluster.capabilities import resources as scheduler_resources
-            online, local_resources = scheduler_resources()
-            inventory = list(nodes)
-            if not any(n['id'] == cluster_config.identity() for n in inventory):
-                inventory.append(dict(id=cluster_config.identity(), name='This workstation', availability='online' if online else 'unknown', snapshot={'resources': local_resources}))
-            gpu_rows = gpu_monitor_rows(inventory)
-            if gpu_rows:
-                st.caption('GPU availability from scheduler/heartbeat snapshots. Model, image, checkpoint and memory eligibility is checked separately for every job. Queued work has no GPU allocation until leased.')
-                st.dataframe(gpu_rows, hide_index=True)
-            rows=search_jobs(project_id=project_id, task_group="campaign", tools=["visual_pipeline"], limit=25)["items"]
-            if not rows:
-                st.caption("No runs yet. Editing and saving the canvas does not start any jobs.")
-            for row in rows[:10]:
-                run_dir=Path(row["run_dir"])
-                snapshot=read_json(run_dir/"graph_snapshot.json")
-                if snapshot and snapshot.get("id") != graph["id"]:
-                    continue
-                columns=st.columns([2,1,1])
-                columns[0].write(f"{row.get('job_code')} · {row.get('campaign_name') or graph['name']}")
-                columns[1].write(row.get("status", "queued"))
-                if columns[2].button("Open results", key=prefix + "-open-run-" + row["run_id"]):
-                    _navigate_to_job_details(_job_details_reference(row),
-                                             final_results=snapshot.get("template_id") == "unidock_active_learning")
-                execution=read_json(run_dir/"graph_execution.json")
-                if execution.get("comparison_status") == "partial":
-                    st.warning("Comparison partially completed: successful branches are available in Results. Failed branches and their errors are listed below.")
-                shared_progress = execution.get('shared_campaign')
-                if isinstance(shared_progress, dict):
-                    objective_type = shared_progress.get('objective_type', 'accepted')
-                    target = max(1, int(shared_progress.get('objective_target') or shared_progress.get('accepted_target') or shared_progress.get('generated_target') or 1))
-                    count = int(shared_progress.get('generated_designs') or 0) if objective_type == 'generated' else int(shared_progress.get('unique_accepted') or 0)
-                    count_label = 'generated designs' if objective_type == 'generated' else 'unique passing designs'
-                    if objective_type == 'time':
-                        remaining = shared_progress.get('remaining_seconds')
-                        st.caption(f"Timed campaign · {shared_progress.get('generated_designs', 0)} generated · "
-                                   + (f"{remaining / 60:.1f} minutes remaining" if remaining is not None else str(shared_progress.get('status'))))
-                    else:
-                        st.progress(min(1.0, count / target), text=f"Shared objective · {count}/{target} {count_label} · {shared_progress.get('status', 'running')}")
-                    if objective_type == 'generated':
-                        scheduler_text = (f"Scheduler generation jobs {shared_progress.get('scheduler_jobs_active', 0)}/"
-                                          f"{shared_progress.get('max_concurrent_generation_jobs', 0)} active · "
-                                          f"scientifically passing {shared_progress.get('scientifically_passing_designs', 0)} · "
-                                          f"scientific rejects {shared_progress.get('scientifically_rejected_designs', 0)}")
-                    else:
-                        scheduler_text = (f"Attempts {shared_progress.get('attempts_authorized', 0)}/{shared_progress.get('max_attempts', 0)} · "
-                                          f"active {shared_progress.get('attempts_active', 0)} generation and {shared_progress.get('validations_active', 0)} validation jobs · "
-                                          f"scientific rejections {shared_progress.get('unique_rejected', 0)} · "
-                                          f"duplicate sequences {shared_progress.get('duplicate_candidates', 0)}")
-                    compute_seconds = shared_progress.get('compute_seconds')
-                    compute_text = f"GPU compute {float(compute_seconds):.1f}s" if compute_seconds is not None else 'GPU compute unavailable for this native route'
-                    st.caption(scheduler_text + ' · '
-                        f"native rejections {shared_progress.get('native_rejected_unique', 0) + shared_progress.get('generated_native_rejected', 0)} · "
-                        f"native pass {shared_progress.get('generated_native_pass', 0)} · "
-                        f"native filter unavailable {shared_progress.get('generated_native_filter_unavailable', 0)} · "
-                        + compute_text)
-                    if shared_progress.get('per_generator'):
-                        st.dataframe([
-                            {'Generator branch': branch, **counts}
-                            for branch, counts in shared_progress['per_generator'].items()
-                        ], hide_index=True, use_container_width=True)
-                batch_rows = []
-                for node_id, step in execution.get('nodes', {}).items():
-                    for batch in step.get('batches', []):
-                        attempt = (batch.get('attempts') or [{}])[-1]
-                        batch_rows.append({'Step': node_id, 'Batch': batch['batch_id'], 'Status': batch['status'],
-                            'Worker': attempt.get('worker', batch.get('worker', '')),
-                            'GPU': str((attempt.get('allocation') or {}).get('gpu_device', '')),
-                            'Completed inputs': batch.get('completed_units', 0), 'Total inputs': batch['unit_count'],
-                            'Retries': max(0, len(batch.get('attempts', []))-1), 'Detail': batch.get('error') or batch.get('wait_reason', '')})
-                queued_steps = sum(step.get('status') in {'queued', 'pending'} for step in execution.get('nodes', {}).values())
-                queued_chunks = sum(batch['Status'] in {'queued', 'pending', 'retrying', 'submitting'} for batch in batch_rows)
-                st.caption(f'Queued/pending stages: {queued_steps} · Queued/pending processing jobs: {queued_chunks}')
-                if batch_rows:
-                    completed = sum(b['Completed inputs'] for b in batch_rows)
-                    total = sum(b['Total inputs'] for b in batch_rows)
-                    st.progress(completed / total if total else 0, text=f'{completed}/{total} candidate-stage inputs completed')
-                    st.dataframe(batch_rows, hide_index=True, use_container_width=True)
-                if execution.get("nodes"):
-                    st.dataframe([{"Step": next((n["data"]["label"] for n in snapshot.get("nodes", []) if n["id"]==nid),nid), "Status": state.get("status"), "Job":state.get("job_code", ""), "Candidates":state.get("candidate_count"),
-                        **{key: state.get('native_execution', {}).get(key) for key in ('collection_chunks', 'native_invocations', 'docker_processes', 'gpu_allocation_events', 'gpu_slots', 'prediction_outputs')},
-                        "Detail":state.get("error", "")} for nid,state in execution["nodes"].items()], hide_index=True, use_container_width=True)
-                    stage_rows = [{'Step': nid, 'Stage count': name, 'Count': count} for nid, step in execution['nodes'].items()
-                                  for name, count in step.get('stage_counts', {}).items()]
-                    if stage_rows:
-                        st.dataframe(stage_rows, hide_index=True, use_container_width=True)
+    _show_node_editor(prefix, owner_id=owner_id, project_id=project_id, submit_api=submit_api,
+                      search_jobs=search_jobs, library_catalog_available=library_catalog_available)
+
+
+def _pipeline_run_graph(row):
+    if not row.get("run_dir"):
+        return {}
+    run_dir = Path(row["run_dir"])
+    snapshot = read_json(run_dir / "graph_snapshot.json")
+    if snapshot:
+        return snapshot
+    params = read_json(run_dir / "input.json").get("params")
+    return (params.get("graph") or {}) if isinstance(params, dict) else {}
+
+
+def _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs, *, graph=None):
+    from mn_molecular_design_studio.cluster import config
+    from mn_molecular_design_studio.cluster.ui import _job_details_reference, _navigate_to_job_details
+
+    if graph:
+        st.button("Back to canvas", icon=":material/arrow_back:", key=prefix + "-runs-back",
+                  on_click=st.session_state.update, args=({prefix + "-view": "editor"},))
+        st.title("Pipeline runs")
+        st.caption(graph["name"])
+    submitted = st.session_state.pop(prefix + "-run-notice", None)
+    if submitted:
+        st.success(f"Run submitted · {submitted}")
+    if not project_id:
+        st.info("Choose a project to view pipeline runs.")
+        return
+    if st.button("Refresh runs", key=prefix + "-refresh-runs", icon=":material/refresh:"):
+        st.rerun()
+
+    def pages(search, **filters):
+        page = search(project_id=project_id, tools=["visual_pipeline"], limit=100, offset=0, **filters)
+        rows = list(page["items"])
+        while len(rows) < page.get("total", len(rows)):
+            more = search(project_id=project_id, tools=["visual_pipeline"], limit=100, offset=len(rows), **filters)["items"]
+            if not more:
+                break
+            rows.extend(more)
+        return rows
+
+    local_rows = pages(search_jobs, task_group="campaign")
+    remote_rows = []
+    if search_cluster_runs:
+        try:
+            remote_rows = [{key: value for key, value in row.items() if key != "run_dir"}
+                           for row in pages(search_cluster_runs)]
+        except (OSError, RuntimeError, ValueError) as exc:
+            st.caption(f"Could not load shared run history. {exc}")
+    local_id = config.identity()
+    local_refs = {_job_details_reference(row) for row in local_rows}
+    rows = local_rows + [row for row in remote_rows
+                         if row.get("node_id") != local_id or _job_details_reference(row) not in local_refs]
+    last_job = st.session_state.get(prefix + "-last-job")
+    if last_job and (not graph or st.session_state.get(prefix + "-last-job-graph") == graph["id"]):
+        recent = _job_details_reference(last_job)
+        if recent not in {_job_details_reference(row) for row in rows}:
+            rows.insert(0, {**last_job, "pipeline_graph_id": st.session_state.get(prefix + "-last-job-graph")})
+
+    if graph:
+        rows = [row for row in rows
+                if (row.get("pipeline_graph_id") or _pipeline_run_graph(row).get("id")) == graph["id"]]
+    if not rows:
+        st.info("No runs recorded for this pipeline." if graph else "No pipeline runs in this project yet.")
+        return
+    rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    page_size = 15
+    page_count = (len(rows) + page_size - 1) // page_size
+    page_number = 1
+    if page_count > 1:
+        page_number = st.number_input("Page", min_value=1, max_value=page_count, value=1,
+                                      key=prefix + "-runs-page-" + (graph["id"] if graph else "all"))
+    st.caption(f"{len(rows)} {'run' if len(rows) == 1 else 'runs'}")
+    rows = rows[(page_number - 1) * page_size:page_number * page_size]
+    for row in rows:
+        reference = _job_details_reference(row)
+        name, status, action = st.columns([3, 1, 1], vertical_alignment="center")
+        name.write(config.display_text(row.get("pipeline_name") or row.get("campaign_name") or (graph or {}).get("name") or "Pipeline run"))
+        job_code = row.get("job_code") or reference
+        name.caption(" · ".join(value for value in (job_code, str(row.get("created_at") or "")[:10], row.get("node_name")) if value))
+        status.write(str(row.get("status") or "submitted").replace("_", " ").capitalize())
+        if action.button("Open results", key=prefix + "-results-" + reference, width="stretch"):
+            snapshot = _pipeline_run_graph(row)
+            _navigate_to_job_details(reference, final_results=(snapshot or graph or {}).get("template_id") == "unidock_active_learning")
+
+    inspectable = [row for row in rows if row.get("run_dir")]
+    if inspectable:
+        selected = st.selectbox("Inspect run progress", inspectable, index=None, placeholder="Choose a run",
+                                format_func=lambda row: row.get("job_code") or _job_details_reference(row),
+                                key=prefix + "-run-progress")
+        if selected:
+            _render_pipeline_run_progress(Path(selected["run_dir"]), _pipeline_run_graph(selected))
+
+
+def _render_pipeline_run_progress(run_dir, snapshot):
+    execution = read_json(run_dir / "graph_execution.json")
+    if execution.get("comparison_status") == "partial":
+        st.warning("Comparison partially completed: successful branches are available in Results. Failed branches and their errors are listed below.")
+    shared_progress = execution.get('shared_campaign')
+    if isinstance(shared_progress, dict):
+        objective_type = shared_progress.get('objective_type', 'accepted')
+        target = max(1, int(shared_progress.get('objective_target') or shared_progress.get('accepted_target') or shared_progress.get('generated_target') or 1))
+        count = int(shared_progress.get('generated_designs') or 0) if objective_type == 'generated' else int(shared_progress.get('unique_accepted') or 0)
+        count_label = 'generated designs' if objective_type == 'generated' else 'unique passing designs'
+        if objective_type == 'time':
+            remaining = shared_progress.get('remaining_seconds')
+            st.caption(f"Timed campaign · {shared_progress.get('generated_designs', 0)} generated · "
+                       + (f"{remaining / 60:.1f} minutes remaining" if remaining is not None else str(shared_progress.get('status'))))
+        else:
+            st.progress(min(1.0, count / target), text=f"Shared objective · {count}/{target} {count_label} · {shared_progress.get('status', 'running')}")
+        if objective_type == 'generated':
+            scheduler_text = (f"Scheduler generation jobs {shared_progress.get('scheduler_jobs_active', 0)}/"
+                              f"{shared_progress.get('max_concurrent_generation_jobs', 0)} active · "
+                              f"scientifically passing {shared_progress.get('scientifically_passing_designs', 0)} · "
+                              f"scientific rejects {shared_progress.get('scientifically_rejected_designs', 0)}")
+        else:
+            scheduler_text = (f"Attempts {shared_progress.get('attempts_authorized', 0)}/{shared_progress.get('max_attempts', 0)} · "
+                              f"active {shared_progress.get('attempts_active', 0)} generation and {shared_progress.get('validations_active', 0)} validation jobs · "
+                              f"scientific rejections {shared_progress.get('unique_rejected', 0)} · "
+                              f"duplicate sequences {shared_progress.get('duplicate_candidates', 0)}")
+        compute_seconds = shared_progress.get('compute_seconds')
+        compute_text = f"GPU compute {float(compute_seconds):.1f}s" if compute_seconds is not None else 'GPU compute unavailable for this native route'
+        st.caption(scheduler_text + ' · '
+            f"native rejections {shared_progress.get('native_rejected_unique', 0) + shared_progress.get('generated_native_rejected', 0)} · "
+            f"native pass {shared_progress.get('generated_native_pass', 0)} · "
+            f"native filter unavailable {shared_progress.get('generated_native_filter_unavailable', 0)} · "
+            + compute_text)
+        if shared_progress.get('per_generator'):
+            st.dataframe([
+                {'Generator branch': branch, **counts}
+                for branch, counts in shared_progress['per_generator'].items()
+            ], hide_index=True, use_container_width=True)
+    batch_rows = []
+    for node_id, step in execution.get('nodes', {}).items():
+        for batch in step.get('batches', []):
+            attempt = (batch.get('attempts') or [{}])[-1]
+            batch_rows.append({'Step': node_id, 'Batch': batch['batch_id'], 'Status': batch['status'],
+                'Worker': attempt.get('worker', batch.get('worker', '')),
+                'GPU': str((attempt.get('allocation') or {}).get('gpu_device', '')),
+                'Completed inputs': batch.get('completed_units', 0), 'Total inputs': batch['unit_count'],
+                'Retries': max(0, len(batch.get('attempts', []))-1), 'Detail': batch.get('error') or batch.get('wait_reason', '')})
+    queued_steps = sum(step.get('status') in {'queued', 'pending'} for step in execution.get('nodes', {}).values())
+    queued_chunks = sum(batch['Status'] in {'queued', 'pending', 'retrying', 'submitting'} for batch in batch_rows)
+    st.caption(f'Queued/pending stages: {queued_steps} · Queued/pending processing jobs: {queued_chunks}')
+    if batch_rows:
+        completed = sum(b['Completed inputs'] for b in batch_rows)
+        total = sum(b['Total inputs'] for b in batch_rows)
+        st.progress(completed / total if total else 0, text=f'{completed}/{total} candidate-stage inputs completed')
+        st.dataframe(batch_rows, hide_index=True, use_container_width=True)
+    if execution.get("nodes"):
+        st.dataframe([{"Step": next((n["data"]["label"] for n in snapshot.get("nodes", []) if n["id"]==nid),nid), "Status": state.get("status"), "Job":state.get("job_code", ""), "Candidates":state.get("candidate_count"),
+            **{key: state.get('native_execution', {}).get(key) for key in ('collection_chunks', 'native_invocations', 'docker_processes', 'gpu_allocation_events', 'gpu_slots', 'prediction_outputs')},
+            "Detail":state.get("error", "")} for nid,state in execution["nodes"].items()], hide_index=True, use_container_width=True)
+        stage_rows = [{'Step': nid, 'Stage count': name, 'Count': count} for nid, step in execution['nodes'].items()
+                      for name, count in step.get('stage_counts', {}).items()]
+        if stage_rows:
+            st.dataframe(stage_rows, hide_index=True, use_container_width=True)

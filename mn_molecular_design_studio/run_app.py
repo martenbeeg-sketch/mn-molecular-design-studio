@@ -424,6 +424,13 @@ if requested_job:
     st.session_state["selected-job-reference"] = str(requested_job)
     st.session_state["page"] = "Job details"
     del st.query_params["job_ref"]
+else:
+    pipeline_link = (st.query_params.get("pipeline"), st.query_params.get("pipeline_project"))
+    if (all(pipeline_link) and re.fullmatch(r"[a-f0-9]{32}", pipeline_link[0])
+            and st.session_state.get("pipeline-link-entry") != pipeline_link):
+        st.session_state["pipeline-link-entry"] = pipeline_link
+        st.session_state["page"] = "Pipelines"
+        st.session_state.setdefault("project-pending-selection", {})["visual-pipeline-project-id"] = pipeline_link[1]
 
 with st.sidebar:
     st.markdown("### 🧬 Molecular Design Studio")
@@ -4184,16 +4191,20 @@ def _render_workflow_setup() -> None:
 
 
 def _render_pipelines() -> None:
-    st.title("Pipelines")
-    st.caption("Connect tools into a reusable experiment. Move blocks freely, branch outputs, and keep every run as a separate snapshot.")
     from mn_molecular_design_studio import pipeline_node_ui, pipeline_graph_ui
+    from mn_molecular_design_studio.cluster.service import shared_jobs
     importlib.reload(pipeline_node_ui)
     importlib.reload(pipeline_graph_ui)
     from mn_molecular_design_studio.project_lifecycle import project_writable
     read_only = {project["id"] for project in _studio_projects(include_archived=True) if not project_writable(project)}
+
+    def search_pipeline_cluster_runs(**filters):
+        return shared_jobs(CURRENT_USER, token=str(st.session_state.get("studio-session-token") or ""), **filters)
+
     pipeline_graph_ui.render_pipeline_builder(owner_id=str(CURRENT_USER["id"]),
         project_selector=lambda key: _render_project_selector(key, include_archived=True),
-        submit_api=_post_local_api, search_jobs=search_jobs, read_only_projects=read_only)
+        submit_api=_post_local_api, search_jobs=search_jobs, read_only_projects=read_only,
+        search_cluster_runs=search_pipeline_cluster_runs if cluster_config.enabled() else None)
 
 
 def _render_multi_engine_campaign() -> None:

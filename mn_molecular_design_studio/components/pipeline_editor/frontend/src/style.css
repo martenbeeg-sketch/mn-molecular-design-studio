@@ -112,3 +112,79 @@
  .connection-panel,.round-inspector,.group-panel{position:absolute;z-index:12;right:0;top:0;bottom:0;background:#fcfdfb;box-shadow:-6px 0 16px #25402c19;max-width:82%}
  .editor-shell .workspace{position:relative}
 }
+.editor-toolbar{display:block;padding:0}
+.editor-heading,.canvas-actions{display:flex;align-items:center;gap:8px;padding:10px 14px}
+.editor-heading{justify-content:space-between;flex-wrap:wrap;border-bottom:1px solid #e9eeea}
+.editor-heading .toolbar-title{flex:1 1 300px;min-width:0}
+.editor-heading .primary-actions{flex:0 1 auto}
+.editor-heading .pipeline-name-input{flex:0 1 470px;min-width:95px;width:auto}
+.library-back{flex:none;color:#356550;font-weight:600}
+.editor-heading .run-button:disabled{background:#ecf0ed;border-color:#e0e9e2;color:#6c7e71}
+.canvas-actions{justify-content:flex-start;padding:7px 14px;background:#f8faf8}
+.canvas-spacer{flex:1}
+.canvas-empty{position:absolute;top:45%;left:50%;transform:translate(-50%,-50%);width:min(90%,420px);padding:30px;text-align:center;border:1px solid #dbe7df;border-radius:16px;background:#fff;color:#244c3a}
+.canvas-empty h2{margin:0 0 8px;font-size:22px;letter-spacing:-.02em}
+.canvas-empty p{margin:0;color:#526a5c;line-height:1.6}
+.canvas-empty button{margin-top:14px}
+@media(max-width:760px){
+  .editor-heading,.canvas-actions{padding:8px}
+  .workspace .connection-panel{display:block;position:absolute;right:1px;top:0;bottom:0;z-index:30;box-shadow:-5px 0 12px #21412d12}
+  .canvas-spacer{display:none}
+}
+
+.tool-palette{width:clamp(222px,26%,302px);padding:0 11px 12px;background:#fbfcfb}
+.palette-controls{position:sticky;top:0;z-index:2;background:#fbfcfb;padding:11px 0 7px;border-bottom:1px solid #e2e9e3}
+.palette-controls .panel-heading{padding:0 0 8px}
+.palette-controls input,.palette-controls select{width:100%;min-width:0;border:1px solid #c8d8ce;border-radius:6px;padding:7px 8px;background:#fff;color:#273e32}
+.palette-controls label{display:grid;gap:4px;color:#3e5649;font-size:11px}
+.palette-filter-bar,.palette-branch-heading{display:flex;align-items:center;gap:6px;margin-top:7px}
+.palette-filter-bar button,.palette-branch-heading button{font-size:11px;padding:4px 7px}
+.palette-filter-bar span{margin-left:auto;color:#52695b;font-size:11px;text-align:right}
+.palette-filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:9px}
+.palette-branch{background:#e9f4ef;border-radius:7px;padding:7px 8px;margin:1px 0 8px}
+.palette-branch-heading{margin:0 0 7px;justify-content:space-between}
+.palette-branch-heading strong{font-size:11px}
+.palette-branch-heading button{white-space:nowrap}
+.palette-empty{padding:8px;color:#52695b}
+.palette-existing{background:#eff6f1;border:1px solid #d7e7dd;border-radius:8px;margin:8px 0;padding:8px}
+.palette-existing h3{color:#38604a;margin:0 0 6px}
+.palette-existing button{display:block;width:100%;margin-top:5px;padding:6px 7px;text-align:left;font-size:11px}
+.palette-group{display:flex;justify-content:space-between;align-items:center;width:100%;border:0;border-radius:5px;background:transparent;color:#405a4b;padding:9px 5px;font-size:11px;font-weight:650;text-align:left}
+.palette-group:hover{background:#edf4ef}
+.palette-card{margin:0 0 6px;border:1px solid #d8e3db;border-left:3px solid var(--tool-color);border-radius:8px;background:#fff;overflow:hidden}
+.palette-card-content{display:block;width:100%;padding:8px 9px;border:0;border-radius:0;background:none;color:inherit;text-align:left}
+button.palette-card-content:hover,button.palette-card-content:focus-visible{background:#f0f7f2}
+button.palette-card-content[draggable=true]{cursor:grab}
+.palette-card-header{display:flex;justify-content:space-between;align-items:baseline;gap:6px;font-size:12px}
+.palette-add{color:#32634a;font-size:15px;line-height:1}
+.palette-card-description{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:4px;color:#52675b;font-size:11px;line-height:1.35}
+.palette-card-ports{display:grid;gap:3px;margin-top:7px;font-size:10px;color:#365945}
+.palette-card-ports>span{display:flex;gap:6px;align-items:baseline;line-height:1.45}
+.palette-card-ports b{display:inline-flex;justify-content:center;flex-shrink:0;min-width:27px;border-radius:4px;padding:2px 3px;background:#eaf2ed;font-size:8px;letter-spacing:.045em}
+.palette-inlets{display:flex;gap:5px;flex-wrap:wrap;padding:0 9px 8px}
+.palette-inlets small{color:#426c55;font-size:10px}
+.palette-inlets button{padding:3px 7px;font-size:10px}
+
+.studio-node:not(.study-node){width:278px;min-width:0}
+.node-sockets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;border-top:1px solid #e7ede8;margin-top:9px;padding-top:6px}
+.node-socket-column{min-width:0}
+.node-socket-heading{display:block;color:#536a5c;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px}
+.node-socket-column.output .node-socket-heading{text-align:right}
+.node-socket-row{position:relative;display:flex;align-items:center;gap:4px;min-height:32px;margin-bottom:3px;border-radius:5px;background:#f4f8f5;padding:3px 5px}
+.node-socket-row[data-linked=true]{background:#e5f1ea}
+.node-socket-text{display:grid;gap:2px;min-width:0;flex:1}
+.node-socket-text strong,.node-socket-text small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node-socket-text strong{font-size:10px;color:#254c38}
+.node-socket-text small{font-size:8px;color:#4a6556}
+.node-socket-row>.typed-socket{width:10px;height:10px;background:#779d87;border:2px solid #fff}
+.node-socket-row[data-linked=true]>.typed-socket{background:#2e7650}
+.node-socket-row>.typed-socket:hover{background:#195137;box-shadow:0 0 0 3px #618b7055}
+.node-socket-row>.react-flow__handle-left{left:-18px}
+.node-socket-row>.react-flow__handle-right{right:-18px}
+.socket-branch{flex-shrink:0;min-width:17px;height:17px;padding:0;background:#fff;border:1px solid #b8d2c2;color:#33674a;font-size:12px;font-weight:600;line-height:14px}
+.socket-branch:hover,.socket-branch:focus-visible{background:#bee0cb}
+
+@media(max-width:760px){
+  .tool-palette{width:215px;max-width:43%;padding-left:7px;padding-right:7px}
+  .palette-filters{grid-template-columns:minmax(0,1fr)}
+}

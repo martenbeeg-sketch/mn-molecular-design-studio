@@ -4,6 +4,7 @@ import {ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Handle, Pos
 import {StudyEdge, studyConnections, studyInfo, studyRole, studyPortPosition, studyPortStyle} from './activeStudy.jsx';
 import {frameBounds, originalConnection, projectGroups, pruneGroups} from './canvasGroups.js';
 import {ConnectionPanel} from './connectionPanel.jsx';
+import {ToolPalette, artifactLabel, compatibleInlets, portsFor} from './toolPalette.jsx';
 import {CollapsedGroup, Frame, RoundOutline} from './workspaceBlocks.jsx';
 import '@xyflow/react/dist/style.css';
 import './style.css';
@@ -12,12 +13,6 @@ const post=(type,data={})=>window.parent.postMessage({isStreamlitMessage:true,ty
 const copy=x=>JSON.parse(JSON.stringify(x));
 const uid=()=>crypto.randomUUID().replaceAll('-','');
 let catalog={};
-const semanticHandle=(handle,side,edges)=>{
-  const prefix=side==='source'?'route-out-':'route-in-';
-  if(!handle?.startsWith(prefix))return handle;
-  const edge=edges.find(item=>item.id===handle.slice(prefix.length));
-  return edge?(side==='source'?edge.sourceHandle:edge.targetHandle)|| (side==='source'?'out':'in'):handle;
-};
 const emittedTypes=(node,handle,edges,nodes,seen=new Set())=>{
   if(!node||seen.has(node.id))return [];
   const spec=catalog[node.data.kind]||{},port=(spec.capabilities?.outputs||spec.outputs||[]).find(item=>item.id===handle);
@@ -30,9 +25,34 @@ const emittedTypes=(node,handle,edges,nodes,seen=new Set())=>{
 const authored=(nodes,edges,base,viewport)=>({...base,nodes:nodes.map(n=>({id:n.id,type:'studio',position:n.position,data:{kind:n.data.kind,label:n.data.label,...(n.data.description?{description:n.data.description}:{}),params:n.data.params,...Object.fromEntries(['enabled','retained_run_dir','execution','evidence_namespace'].filter(k=>k in n.data).map(k=>[k,n.data[k]]))}})),edges:edges.map(e=>({id:e.id,source:e.source,target:e.target,sourceHandle:e.sourceHandle||'out',targetHandle:e.targetHandle||'in',...(e.loop_back?{loop_back:true}:{})})),viewport});
 const statusLabels={completed:'Complete',cached:'Reused',running:'Running',queued:'Queued',failed:'Failed',blocked:'Blocked',pending:'Pending'};
 
+function SocketList({ports, side, counts, onBranch}) {
+  const input = side === 'input';
+  if (!ports.length) return <div aria-hidden="true"/>;
+  return <div className={'node-socket-column ' + side}>
+    <span className="node-socket-heading">{input ? 'Inputs' : 'Outputs'}</span>
+    {ports.map(port => {
+      const types = port.artifact_types.map(artifactLabel);
+      const detail = input ? (port.multiple ? 'Multiple links' : !port.required ? 'Wire or configure' : '') : '';
+      const count = counts?.[port.id] || 0;
+      return <div key={port.id} className="node-socket-row" data-port-id={port.id} data-linked={count > 0}>
+        <Handle id={port.id} type={input ? 'target' : 'source'} position={input ? Position.Left : Position.Right}
+          className="typed-socket" title={port.label + (types.length ? ' · ' + types.join(', ') : '')}/>
+        <span className="node-socket-text">
+          <strong title={port.label}>{port.label}</strong>
+          <small title={[...types, detail].filter(Boolean).join(' · ')}>
+            {count > 1 ? count + ' links · ' : ''}{types.length === 1 ? types[0] : types.length + ' artifact types'}
+          </small>
+        </span>
+        {!input && <button className="socket-branch nodrag nopan" type="button" title={'Add step after ' + port.label}
+          aria-label={'Add step after ' + port.label} onClick={event => {event.stopPropagation();onBranch(port.id);}}>+</button>}
+      </div>;
+    })}
+  </div>;
+}
+
 const StudioNode=memo(({id,data,selected})=>{
   const updateNodeInternals=useUpdateNodeInternals();
-  useEffect(()=>updateNodeInternals(id),[id,data.routeHandles,updateNodeInternals]);
+  useEffect(()=>updateNodeInternals(id),[id,data.kind,data.routeHandles,updateNodeInternals]);
   const spec=catalog[data.kind]||{}; const p=data.params||{};
   const summary=data.summary||(p.num_designs?`${p.num_designs} design${p.num_designs===1?'':'s'} · ${p.binder_length||'variable'} aa`:p.sequences?`${p.sequences} sequence${p.sequences===1?'':'s'} / backbone`:data.kind==='target'?(p.target_pdb?`${p.target_chains||'A'} · ${p.hotspots?'hotspots set':'no hotspots'} · ${p.coldspots?'coldspots set':'no coldspots'}`:'Choose a target structure'):data.kind==='binder_context'?`${p.hotspots?'hotspot override':p.clear_unselected?'no hotspots':'inherit hotspots'} · ${p.coldspots?'coldspot override':p.clear_unselected?'no coldspots':'inherit coldspots'}`:data.kind==='filter'?(p.metric?`${p.metric} ${p.operator} ${p.threshold}`:p.passing_only?'Filter-passing designs':'All candidates'):data.kind==='results'?'Overlay · confidence · RMSD':spec.category);
   const coldspotLabel={native:'Coldspots supported',mapped:'Coldspots supported · mapped',unsupported:'Coldspots not supported'}[spec.coldspot_support];
@@ -45,7 +65,7 @@ const StudioNode=memo(({id,data,selected})=>{
       <div className="node-title">{data.label||spec.label}</div>
       <div className="study-summary">{info.summary}</div>
       {info.detail&&<div className="study-detail">{info.detail}</div>}
-      <span className="study-configure">Configure ↗</span>
+      <span className="study-configure">Select to inspect ↗</span>
       {data.routeHandles?.incoming.map(handle=><Handle key={handle.id} id={handle.id} type="target" position={studyPortPosition(handle.side)} className="study-handle" style={studyPortStyle(handle)}/>)}
       {data.routeHandles?.outgoing.map(handle=><Handle key={handle.id} id={handle.id} type="source" position={studyPortPosition(handle.side)} className="study-handle" style={studyPortStyle(handle)}/>)}
     </div>;
@@ -53,14 +73,15 @@ const StudioNode=memo(({id,data,selected})=>{
   return <div className={`studio-node ${selected?'is-selected':''}`} style={{'--node-color':spec.color}}>
     <div className="node-category"><span className="category-dot"/>{spec.category}{data.status&&<span className={`node-status ${data.status}`}>{statusLabels[data.status]||data.status}</span>}</div>
     <div className="node-title">{data.label||spec.label}</div>
-    <div className="node-summary">{summary}</div><div className="node-edit-hint">Click to configure <span>↗</span></div>
+    <div className="node-summary">{summary}</div><div className="node-edit-hint">Select to inspect <span>↗</span></div>
     {coldspotLabel&&<div className={`node-capability ${spec.coldspot_support==='unsupported'?'unsupported':'supported'}`}>{coldspotLabel}</div>}
     {hotspotLabel&&<div className={`node-capability ${spec.hotspot_support==='unsupported'?'unsupported':'supported'}`}>{hotspotLabel}</div>}
     {targetContextLabel&&<div className="node-capability unsupported">{targetContextLabel}</div>}
     {data.count!==undefined&&<div className="node-count">{data.count} candidates</div>}
-    <div className="ports">{spec.inputs?.map(p=><div key={p.id} className="port-label input"><Handle id={p.id} type="target" position={Position.Left}/><span>{p.label}</span></div>)}{spec.outputs?.map(p=><div key={p.id} className="port-label output"><span>{p.label}</span><Handle id={p.id} type="source" position={Position.Right}/></div>)}</div>
-    {data.routeHandles?.incoming.map(handle=><Handle key={handle.id} id={handle.id} type="target" position={Position.Left} className="route-handle" style={{top:`${handle.offset}%`,transform:'translateY(-50%)'}}/>)}
-    {data.routeHandles?.outgoing.map(handle=><Handle key={handle.id} id={handle.id} type="source" position={Position.Right} className="route-handle" style={{top:`${handle.offset}%`,transform:'translateY(-50%)'}}/>)}
+    <div className="node-sockets">
+      <SocketList ports={portsFor(spec, 'inputs')} side="input" counts={data.inputCounts}/>
+      <SocketList ports={portsFor(spec, 'outputs')} side="output" counts={data.outputCounts} onBranch={data.onBranch}/>
+    </div>
   </div>;
 });
 const nodeTypes={studio:StudioNode, collapsedGroup:CollapsedGroup, frame:Frame};
@@ -72,31 +93,31 @@ function Editor({args}){
   const initial=args.graph;
   const activeStudy=initial.template_id==='unidock_active_learning';
   const matrix=args.connections || matrixEmpty;
+  const feedback = (source, output, target, input) => matrix.screening_feedback?.join('/') === [source, output, target, input].join('/');
   const fitPadding=activeStudy?.08:.4;
   const [nodes,setNodes]=useState(initial.nodes),[edges,setEdges]=useState(initial.edges);
   const [groups,setGroups]=useState(initial.layout_groups || []);
   const [panel,setPanel]=useState('');
-  const [pipelineName,setPipelineName]=useState(initial.name||'Untitled pipeline'),[reuseCompleted,setReuseCompleted]=useState(args.reuse_completed!==false);
-  const [query,setQuery]=useState(''),[notice,setNotice]=useState(''),[selection,setSelection]=useState(null);
+  const [pipelineName,setPipelineName]=useState(initial.name||'Untitled pipeline');
+  const [notice,setNotice]=useState(''),[selection,setSelection]=useState(null),[branch,setBranch]=useState(null);
   const [palette,setPalette]=useState(!activeStudy),[focus,setFocus]=useState(false),[historyTick,setHistoryTick]=useState(0),[helpOpen,setHelpOpen]=useState(false),[showMap,setShowMap]=useState(false);
   const [fullscreen,setFullscreen]=useState(false),shellRef=useRef(null);
-  const base=useRef(initial),viewport=useRef(initial.viewport||{x:0,y:0,zoom:1}),reset=useRef(args.reset_token),lastSent=useRef(''),pipelineNameRef=useRef(pipelineName),reuseRef=useRef(reuseCompleted);
-  pipelineNameRef.current=pipelineName;reuseRef.current=reuseCompleted;
+  const base=useRef(initial),viewport=useRef(initial.viewport||{x:0,y:0,zoom:1}),reset=useRef(args.reset_token),lastSent=useRef(''),pipelineNameRef=useRef(pipelineName);
+  pipelineNameRef.current=pipelineName;
   const state=useRef({nodes,edges,groups}),history=useRef({past:[],future:[]}),clipboard=useRef(null),dragSnapshot=useRef(null);
   const groupEndpoints=useRef(new Map());
   const rf=useReactFlow(), initialized=useNodesInitialized(), fitPending=useRef(true); state.current={nodes,edges,groups};
   const snapshot=useCallback(()=>authored(state.current.nodes,state.current.edges,{...base.current,name:pipelineNameRef.current,layout_groups:pruneGroups(state.current.groups,state.current.nodes)},viewport.current),[]);
-  const emit=useCallback((action=null)=>{const graph=snapshot();lastSent.current=JSON.stringify(graph);post('streamlit:setComponentValue',{value:{graph,reuse_completed:reuseRef.current,...(action?{action:{...(typeof action==='string'?{type:action}:action),id:uid()}}:{})}});},[snapshot]);
+  const emit=useCallback((action=null)=>{const graph=snapshot();lastSent.current=JSON.stringify(graph);post('streamlit:setComponentValue',{value:{graph,...(action?{action:{...(typeof action==='string'?{type:action}:action),id:uid()}}:{})}});},[snapshot]);
   const pushHistory=useCallback((snap=null)=>{const h=history.current;h.past.push(snap||snapshot());if(h.past.length>60)h.past.shift();h.future=[];setHistoryTick(x=>x+1);},[snapshot]);
   const restore=useCallback(g=>{base.current={...base.current,name:g.name};setPipelineName(g.name||'Untitled pipeline');setNodes(copy(g.nodes));setEdges(copy(g.edges));setGroups(copy(g.layout_groups||[]));if(g.viewport){viewport.current=g.viewport;rf.setViewport(g.viewport);}},[rf]);
   const undo=useCallback(()=>{const h=history.current;if(!h.past.length)return;h.future.push(snapshot());restore(h.past.pop());setHistoryTick(x=>x+1);},[snapshot,restore]);
   const redo=useCallback(()=>{const h=history.current;if(!h.future.length)return;h.past.push(snapshot());restore(h.future.pop());setHistoryTick(x=>x+1);},[snapshot,restore]);
   useEffect(()=>{
-    if(reset.current!==args.reset_token){reset.current=args.reset_token;base.current=args.graph;setPipelineName(args.graph.name||'Untitled pipeline');setReuseCompleted(args.reuse_completed!==false);setNodes(copy(args.graph.nodes));setEdges(copy(args.graph.edges));setGroups(copy(args.graph.layout_groups||[]));history.current={past:[],future:[]};setSelection(null);if(activeStudy)setPalette(false);viewport.current=args.graph.viewport;fitPending.current=true;}
+    if(reset.current!==args.reset_token){reset.current=args.reset_token;base.current=args.graph;setPipelineName(args.graph.name||'Untitled pipeline');setNodes(copy(args.graph.nodes));setEdges(copy(args.graph.edges));setGroups(copy(args.graph.layout_groups||[]));history.current={past:[],future:[]};setSelection(null);if(activeStudy)setPalette(false);viewport.current=args.graph.viewport;fitPending.current=true;}
     base.current={...base.current,name:args.graph.name};
     if(args.graph.name!==pipelineNameRef.current)setPipelineName(args.graph.name||'Untitled pipeline');
-    if(args.reuse_completed!==reuseRef.current)setReuseCompleted(args.reuse_completed!==false);
-  },[args.reset_token,args.graph.name,args.reuse_completed,rf]);
+  },[args.reset_token,args.graph.name,rf]);
   const settingsApplied=useRef(args.settings_update?.id);
   useEffect(()=>{
     const change=args.settings_update;
@@ -113,7 +134,7 @@ function Editor({args}){
     setNodes(prev=>prev.map(n=>args.input_contexts[n.id]?{...n,data:{...n.data,params:{...n.data.params,...args.input_contexts[n.id]}}}:n));
   },[JSON.stringify(args.input_contexts)]);
   useEffect(()=>{
-    const timer=setTimeout(()=>{const g=snapshot(),serialized=JSON.stringify(g);if(serialized!==lastSent.current){lastSent.current=serialized;post('streamlit:setComponentValue',{value:{graph:g,reuse_completed:reuseRef.current}});}},500);
+    const timer=setTimeout(()=>{const g=snapshot(),serialized=JSON.stringify(g);if(serialized!==lastSent.current){lastSent.current=serialized;post('streamlit:setComponentValue',{value:{graph:g}});}},500);
     return()=>clearTimeout(timer);
   },[nodes,edges,groups,pipelineName,snapshot]);
   useEffect(()=>{if(initialized&&fitPending.current){const id=requestAnimationFrame(()=>{rf.fitView({padding:fitPadding,maxZoom:1});fitPending.current=false;});return()=>cancelAnimationFrame(id);}},[initialized,nodes,rf,args.reset_token,fitPadding]);
@@ -131,19 +152,24 @@ function Editor({args}){
   useEffect(()=>{if(notice){const t=setTimeout(()=>setNotice(''),5500);return()=>clearTimeout(t);}},[notice]);
   const addNode=useCallback((kind,position,connection=null)=>{
     const spec=catalog[kind];
-    if(activeStudy||!spec||spec.hidden)return;
-    pushHistory();const pos=position||rf.screenToFlowPosition({x:window.innerWidth*.49,y:330});
+    if(activeStudy||!spec||spec.hidden)return false;
+    if(spec.screening_stage && state.current.nodes.some(node=>node.data.kind===kind)){
+      setNotice(spec.label+' is already on the canvas. Connect to its existing input.');
+      return false;
+    }
+    const suggested=args.active_study_layout?.[kind];
+    pushHistory();const pos=position||(suggested&&{x:suggested.x,y:suggested.y})||rf.screenToFlowPosition({x:window.innerWidth*.49,y:330});
     const offsets=[[0,0],[0,210],[320,0],[-320,0],[0,-210],[320,210],[-320,210],[0,420],[640,0]];const open=offsets.map(([x,y])=>({x:pos.x+x,y:pos.y+y})).find(p=>!state.current.nodes.some(n=>Math.abs(n.position.x-p.x)<280&&Math.abs(n.position.y-p.y)<170))||{x:pos.x,y:pos.y+630};
     const n={id:`${kind}-${uid().slice(0,10)}`,type:'studio',position:open,selected:true,data:{kind,label:spec.label,params:Object.fromEntries(spec.fields.map(f=>[f.name,f.default]))}};
     setNodes(prev=>[...prev.map(n=>({...n,selected:false})),n]);
     if(connection)setEdges(prev=>[...prev,{...connection,id:`edge-${uid()}`,target:n.id}]);
     setSelection(connection?.source||n.id);
     setNotice(connection ? `${spec.label} added and connected.` : `${spec.label} added. Connect its sockets to another step.`);
-  },[activeStudy,pushHistory,rf]);
+    return true;
+  },[activeStudy,args.active_study_layout,pushHistory,rf]);
   const normalizeConnection=connection=>{
-    const current=originalConnection(connection,groupEndpoints.current), es=state.current.edges;
-    return {...current,sourceHandle:semanticHandle(current.sourceHandle,'source',es)||'out',
-      targetHandle:semanticHandle(current.targetHandle,'target',es)||'in'};
+    const current=originalConnection(connection,groupEndpoints.current);
+    return {...current,sourceHandle:current.sourceHandle||'out',targetHandle:current.targetHandle||'in'};
   };
   const compatible=useCallback(connection=>{
     const ns=state.current.nodes,es=state.current.edges;
@@ -153,27 +179,33 @@ function Editor({args}){
     if(!source||!target||source.id===target.id)return false;
     const a=catalog[source.data.kind],b=catalog[target.data.kind];
     const outputs=a.capabilities?.outputs||a.outputs||[],inputs=b.capabilities?.inputs||b.inputs||[];
-    const output=outputs.find(port=>port.id===(semanticHandle(connection.sourceHandle,'source',es)||'out'));
-    const input=inputs.find(port=>port.id===(semanticHandle(connection.targetHandle,'target',es)||'in'));
+    const output=outputs.find(port=>port.id===connection.sourceHandle);
+    const input=inputs.find(port=>port.id===connection.targetHandle);
     if(!output||!input||!matrix.wires[source.data.kind]?.[output.id]?.[target.data.kind]?.[input.id])return false;
-    const produced=emittedTypes(source,semanticHandle(connection.sourceHandle,'source',es)||'out',es,ns),accepts=input.artifact_types||input.accepts||[];
+    const produced=emittedTypes(source,connection.sourceHandle,es,ns),accepts=input.artifact_types||input.accepts||[];
     if(!produced.some(type=>accepts.includes(type)))return false;
     const occupied=es.filter(e=>e.target===target.id&&(e.targetHandle||'in')===input.id);
     if(occupied.length&&(!input.multiple||occupied.some(e=>e.source===source.id&&(e.sourceHandle||'out')===output.id)))return false;
+    if(feedback(source.data.kind,output.id,target.data.kind,input.id))return true;
     const visit=(id,seen=new Set())=>{if(id===source.id)return true;if(seen.has(id))return false;seen.add(id);return es.filter(e=>e.source===id&&!e.loop_back).some(e=>visit(e.target,seen));};
     return !visit(target.id);
   },[activeStudy,matrix]);
   const onConnect=c=>{
     if(!compatible(c)){setNotice('These sockets are incompatible, occupied, or would create a cycle.');return;}
     pushHistory();
-    setEdges(prev=>addEdge({...normalizeConnection(c),id:`edge-${uid()}`},prev));
+    const wire=normalizeConnection(c);
+    const source=nodes.find(node=>node.id===wire.source), target=nodes.find(node=>node.id===wire.target);
+    if(feedback(source.data.kind,wire.sourceHandle,target.data.kind,wire.targetHandle))wire.loop_back=true;
+    setEdges(prev=>addEdge({...wire,id:`edge-${uid()}`},prev));
+    return true;
   };
   const connectNext=(source, output, kind, inlet)=>{
     const match=matrix.wires[source.data.kind]?.[output]?.[kind]?.[inlet];
     const accepted=catalog[kind]?.capabilities?.inputs.find(port=>port.id===inlet)?.artifact_types||[];
-    if(!match||!emittedTypes(source,output,edges,nodes).some(type=>accepted.includes(type)))return;
-    addNode(kind,{x:source.position.x+352,y:source.position.y},
-      {source:source.id,sourceHandle:output,targetHandle:inlet});
+    if(!match||!emittedTypes(source,output,edges,nodes).some(type=>accepted.includes(type)))return false;
+    const position=catalog[kind].screening_stage ? null : {x:source.position.x+352,y:source.position.y};
+    return addNode(kind,position,{source:source.id,sourceHandle:output,targetHandle:inlet,
+      ...(feedback(source.data.kind,output,kind,inlet)?{loop_back:true}:{})});
   };
   const groupedMembers=new Set(groups.flatMap(group=>group.members));
   const selectionMembers=nodes.filter(node=>node.selected&&!groupedMembers.has(node.id));
@@ -263,7 +295,7 @@ function Editor({args}){
       if(levels.has(id))return levels.get(id);
       if(visiting.has(id))return 0;
       visiting.add(id);
-      const ins=es.filter(e=>e.target===id);
+      const ins=es.filter(e=>e.target===id&&!e.loop_back);
       const value=ins.length?Math.max(...ins.map(e=>level(e.source)))+1:0;
       levels.set(id,value);
       return value;
@@ -302,33 +334,37 @@ function Editor({args}){
   // Keep the node library visible while fullscreen. Node forms are rendered by
   // Streamlit outside this iframe, so clicking a node first exits fullscreen.
   const canvasOnly=focus&&!fullscreen;
-  const connectionLayout=useMemo(()=>{
-    if(activeStudy)return studyConnections(nodes,edges);
-    const outgoing=new Map(),incoming=new Map(),handles=new Map(nodes.map(node=>[node.id,{incoming:[],outgoing:[]}]))
-    edges.forEach(edge=>{
-      outgoing.set(edge.source,[...(outgoing.get(edge.source)||[]),edge]);
-      incoming.set(edge.target,[...(incoming.get(edge.target)||[]),edge]);
-    });
-    const nodeById=new Map(nodes.map(node=>[node.id,node]));
-    const offsetAt=(index,count)=>count<2?50:12+index*76/(count-1);
-    for(const [nodeId,group] of outgoing){
-      if(group.length<2)continue;
-      const ordered=[...group].sort((a,b)=>(nodeById.get(a.target)?.position.y??0)-(nodeById.get(b.target)?.position.y??0)||a.id.localeCompare(b.id));
-      ordered.forEach((edge,index)=>handles.get(nodeId).outgoing.push({id:`route-out-${edge.id}`,offset:offsetAt(index,ordered.length)}));
-    }
-    for(const [nodeId,group] of incoming){
-      if(group.length<2)continue;
-      const ordered=[...group].sort((a,b)=>(nodeById.get(a.source)?.position.y??0)-(nodeById.get(b.source)?.position.y??0)||a.id.localeCompare(b.id));
-      ordered.forEach((edge,index)=>handles.get(nodeId).incoming.push({id:`route-in-${edge.id}`,offset:offsetAt(index,ordered.length)}));
-    }
-    return {
-      handles,
-      edges:edges.map(edge=>({...edge,
-          sourceHandle:(outgoing.get(edge.source)?.length||0)>1?`route-out-${edge.id}`:edge.sourceHandle||'out',
-          targetHandle:(incoming.get(edge.target)?.length||0)>1?`route-in-${edge.id}`:edge.targetHandle||'in',
-      })),
-    };
-  },[edges,nodes,activeStudy]);
+  const openBranch = (nodeId, port) => {
+    setBranch({nodeId, port});
+    setPalette(true);
+    setFocus(false);
+    setSelection(nodeId);
+    setPanel('');
+    setHelpOpen(false);
+  };
+  const source = nodes.find(node => node.id === branch?.nodeId);
+  let branchData = null;
+  if(source && portsFor(catalog[source.data.kind], 'outputs').some(port => port.id === branch.port)){
+    const inlets=compatibleInlets(catalog,matrix.wires,source.data.kind,branch.port,
+      emittedTypes(source,branch.port,edges,nodes));
+    const existing=nodes.flatMap(target => (inlets[target.data.kind] || []).flatMap(port => {
+      const wire={source:source.id,sourceHandle:branch.port,target:target.id,targetHandle:port.id};
+      return compatible(wire) ? [{wire,label:target.data.label,kind:target.data.kind,port:port.label}] : [];
+    }));
+    branchData={...branch,node:source,inlets,existing};
+  }
+  const usedStages = new Set(nodes.filter(node=>catalog[node.data.kind].screening_stage).map(node=>node.data.kind));
+  const connectionLayout=useMemo(() => activeStudy ? studyConnections(nodes,edges) : {edges:edges.map(edge =>
+    edge.loop_back ? {...edge,label:'Next round',style:{stroke:'#ab641f',strokeWidth:2.5,strokeDasharray:'6 4'}} : edge
+  )}, [activeStudy,nodes,edges]);
+  const inputCounts = Object.create(null), outputCounts = Object.create(null);
+  for (const edge of edges) {
+    const input = inputCounts[edge.target] ||= {};
+    const output = outputCounts[edge.source] ||= {};
+    const targetPort = edge.targetHandle || 'in', sourcePort = edge.sourceHandle || 'out';
+    input[targetPort] = (input[targetPort] || 0) + 1;
+    output[sourcePort] = (output[sourcePort] || 0) + 1;
+  }
   const displayNodes=[...nodes,...(connectionLayout.references||[])].map(n=>{
     const incomingKinds=edges.filter(e=>e.target===n.id).map(e=>nodes.find(source=>source.id===e.source)?.data.kind);
     const hasSurfaceAnalysis=incomingKinds.includes('surface_analysis');
@@ -343,7 +379,7 @@ function Editor({args}){
       ? hasOtherResults?'Candidates + surface evidence':'Residue consensus · surface view'
       : undefined;
     const studySize=n.data.studySize||args.active_study_layout?.[n.data.kind]||{width:320,height:160};
-    return {...n,...(activeStudy?{style:{width:studySize.width}}:{}),data:{...n.data,status:args.execution?.[n.id]?.status,count:mdStep?undefined:args.execution?.[n.id]?.candidate_count,summary,routeHandles:connectionLayout.handles.get(n.id),...(activeStudy?{study:true,studySize,studyInfo:n.data.studyInfo||studyInfo(n.data.kind,n.data.params,nodes)}:{})}};
+    return {...n,...(activeStudy?{style:{width:studySize.width}}:{}),data:{...n.data,status:args.execution?.[n.id]?.status,count:mdStep?undefined:args.execution?.[n.id]?.candidate_count,summary,routeHandles:connectionLayout.handles?.get(n.id),inputCounts:inputCounts[n.id],outputCounts:outputCounts[n.id],onBranch:port=>openBranch(n.id,port),...(activeStudy?{study:true,studySize,studyInfo:n.data.studyInfo||studyInfo(n.data.kind,n.data.params,nodes)}:{})}};
   });
   const projection=projectGroups(displayNodes,connectionLayout.edges,edges,groups,catalog);
   groupEndpoints.current=projection.endpoints;
@@ -374,15 +410,57 @@ function Editor({args}){
     }
     const id=node.data.reference_to||node.id;
     setSelection(id);
-    if(event.shiftKey||event.ctrlKey||event.metaKey||panel==='connections')return;
-    if(panel==='group')setPanel('');
-    openSettings(id);
+    if(event.shiftKey||event.ctrlKey||event.metaKey)return;
+    if(canvasOnly)openSettings(id);
+    else setPanel('connections');
   };
-  const categories=[...new Set(Object.values(catalog).map(s=>s.category))];
   return <div ref={shellRef} className={`editor-shell ${activeStudy?'active-study':''} ${focus?'focus-mode':''} ${fullscreen?'fullscreen-mode':''}`}>
-    <header className="editor-toolbar"><div className="toolbar-title"><span className="flow-symbol">◇</span><input className="pipeline-name-input" aria-label="Pipeline name" value={pipelineName} onChange={event=>setPipelineName(event.target.value)} onBlur={()=>setPipelineName(name=>name.trim()||'Untitled pipeline')} title="Pipeline name"/><span className="draft-chip">Draft</span><label className="toolbar-reuse" title="Reuse successful completed steps in new runs; layout changes do not invalidate them."><input type="checkbox" checked={reuseCompleted} onChange={event=>{setReuseCompleted(event.target.checked);reuseRef.current=event.target.checked;emit();}}/>Reuse completed steps</label></div><div className="toolbar-actions"><button title="Undo (Ctrl+Z)" disabled={!history.current.past.length} onClick={undo}>↶</button><button title="Redo (Ctrl+Shift+Z)" disabled={!history.current.future.length} onClick={redo}>↷</button><span className="toolbar-divider"/><button onClick={layout} title="Arrange the current graph">Arrange</button>{!activeStudy&&<button disabled={selectionMembers.length<2} onClick={groupSelection} title="Group selected steps">Group</button>}<button aria-pressed={panel==='connections'} onClick={()=>{setPanel(panel==='connections'?'':'connections');setHelpOpen(false);}} title="Inspect inputs, outputs and compatible steps">Connections</button>{activeStudy&&args.round_outline&&<button aria-pressed={panel==='round'} onClick={()=>{setPanel(panel==='round'?'':'round');setHelpOpen(false);}}>Screening round</button>}<button title="Toggle canvas overview" onClick={()=>setShowMap(!showMap)}>Map</button><button title="Canvas shortcuts and help" onClick={()=>{setHelpOpen(!helpOpen);setSelection(null);setPanel('');}}>?</button><button onClick={()=>{setFocus(!focus);setTimeout(()=>rf.fitView({padding:fitPadding,duration:200}),80);}}>{focus?'Exit focus':'Focus canvas'}</button><button onClick={toggleFullscreen} title={fullscreen?'Exit fullscreen':'Enter fullscreen'}>{fullscreen?'Exit fullscreen':'⛶ Fullscreen'}</button><button title="Configure campaign objective and stopping limits" onClick={()=>emit('campaign')}>Campaign</button><button title="Configure workstation, GPU and batching defaults" onClick={()=>emit('resources')}>Resources</button><button onClick={()=>emit('save')}>Save</button><button onClick={()=>emit('save_as')}>Save as…</button><button onClick={()=>emit('save_version')}>Save version</button><button className="run-button" disabled={activeStudy&&!args.active_execution_ready} title={activeStudy&&!args.active_execution_ready?'Active-learning round execution is not connected yet. You can configure and save the workflow.':'Run this pipeline'} onClick={()=>emit('run')}>▶ Run pipeline</button></div></header>
+    <header className="editor-toolbar">
+      <div className="editor-heading">
+        <div className="toolbar-title">
+          <button className="library-back" onClick={()=>emit('library')}>‹ Pipeline library</button>
+          <input className="pipeline-name-input" aria-label="Pipeline name" value={pipelineName}
+            onChange={event=>setPipelineName(event.target.value)}
+            onBlur={()=>setPipelineName(name=>name.trim()||'Untitled pipeline')} title="Pipeline name"/>
+          <span className="draft-chip">{args.draft_saved?'Saved pipeline':'Unsaved pipeline'}</span>
+        </div>
+        <div className="toolbar-actions primary-actions">
+          <button onClick={()=>emit('versions')}>Versions</button>
+          <button onClick={()=>emit('runs')}>Runs</button>
+          <button className="run-button" disabled={!nodes.length} title={!nodes.length?'Add a step before setting up a run':'Review inputs and execution before submitting'}
+            onClick={()=>emit('run')}>Run setup →</button>
+        </div>
+      </div>
+      <div className="toolbar-actions canvas-actions">
+        <button title="Undo (Ctrl+Z)" disabled={!history.current.past.length} onClick={undo}>↶</button>
+        <button title="Redo (Ctrl+Shift+Z)" disabled={!history.current.future.length} onClick={redo}>↷</button>
+        <span className="toolbar-divider"/>
+        <button onClick={layout} title="Arrange the current graph">Arrange</button>
+        {!activeStudy&&<button disabled={selectionMembers.length<2} onClick={groupSelection} title="Group selected steps">Group</button>}
+        <button aria-pressed={panel==='connections'} onClick={()=>{setPanel(panel==='connections'?'':'connections');setHelpOpen(false);}}
+          title="Inspect inputs, outputs and compatible steps">Connections</button>
+        {activeStudy&&args.round_outline&&<button aria-pressed={panel==='round'}
+          onClick={()=>{setPanel(panel==='round'?'':'round');setHelpOpen(false);}}>Screening round</button>}
+        <button title="Toggle canvas overview" onClick={()=>setShowMap(!showMap)}>Map</button>
+        <span className="canvas-spacer"/>
+        <button onClick={()=>{setFocus(!focus);setTimeout(()=>rf.fitView({padding:fitPadding,duration:200}),80);}}>{focus?'Exit focus':'Focus canvas'}</button>
+        <button onClick={toggleFullscreen} title={fullscreen?'Exit fullscreen':'Enter fullscreen'}>{fullscreen?'Exit fullscreen':'⛶ Fullscreen'}</button>
+        <button title="Configure campaign objective and stopping limits" onClick={()=>emit('campaign')}>Campaign</button>
+        <button title="Configure workstation, GPU and batching defaults" onClick={()=>emit('resources')}>Resources</button>
+        <button onClick={()=>emit('save')}>Save</button>
+        <button onClick={()=>emit('save_as')}>Save as…</button>
+        <button disabled={!nodes.length} onClick={()=>emit('save_template')}>Save as template</button>
+        <button title="Canvas shortcuts and help" onClick={()=>{setHelpOpen(!helpOpen);setSelection(null);setPanel('');}}>?</button>
+      </div>
+    </header>
     <div className="workspace">
-      {palette&&!activeStudy&&!canvasOnly&&<aside className="node-library"><div className="panel-heading"><span>Add a step</span><button onClick={()=>setPalette(false)} title="Hide library">‹</button></div><input aria-label="Search pipeline tools" placeholder="Search tools…" value={query} onChange={e=>setQuery(e.target.value)}/>{categories.map(category=>{const specs=Object.values(catalog).filter(s=>!s.hidden&&s.category===category&&`${s.label} ${s.description}`.toLowerCase().includes(query.toLowerCase()));return specs.length?<section key={category}><h3>{category}</h3>{specs.map(s=><button key={s.key} className="palette-tool" draggable onDragStart={e=>e.dataTransfer.setData('application/studio-node',s.key)} onClick={()=>addNode(s.key)} title={s.description}><span style={{color:s.color}}>◇</span><span>{s.label}</span><span className="add-plus">+</span></button>)}</section>:null;})}<p className="library-help">Drag a tool onto the canvas, or click to add it.</p></aside>}
+      {palette && !activeStudy && !canvasOnly && <ToolPalette key={branchData?.nodeId || 'all'}
+        catalog={catalog} branch={branchData} usedStages={usedStages} onConnect={wire=>{if(onConnect(wire))setBranch(null);}} onBranchPort={port=>setBranch({...branch,port})}
+        onClearBranch={()=>setBranch(null)} onClose={()=>setPalette(false)}
+        onAdd={(kind,inlet) => {
+          if (!branchData) addNode(kind);
+          else if (connectNext(branchData.node, branchData.port, kind, inlet)) setBranch(null);
+        }}/>}
       <main className="flow-region" onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect='move';}} onDrop={e=>{e.preventDefault();const kind=e.dataTransfer.getData('application/studio-node');if(catalog[kind])addNode(kind,rf.screenToFlowPosition({x:e.clientX,y:e.clientY}));}}>
         {!palette&&!activeStudy&&!canvasOnly&&<button className="show-library" onClick={()=>setPalette(true)}>+ Tools</button>}
         <ReactFlow nodes={projection.nodes} edges={projection.edges} nodeTypes={nodeTypes}
@@ -390,19 +468,24 @@ function Editor({args}){
           onEdgesChange={changes=>{if(!activeStudy){if(changes.some(c=>c.type==='remove'))pushHistory();setEdges(prev=>applyEdgeChanges(changes,prev));}}}
           onNodeDragStart={()=>{dragSnapshot.current=snapshot();}} onNodeDragStop={()=>{if(dragSnapshot.current){pushHistory(dragSnapshot.current);dragSnapshot.current=null;}}}
           onConnect={onConnect} isValidConnection={compatible} nodesConnectable={!activeStudy}
-          onNodeClick={inspectNode} onPaneClick={()=>{setSelection(null);if(panel==='group')setPanel('');}}
+          onNodeClick={inspectNode}
+          onNodeDoubleClick={(_,node)=>{if(node.type==='studio'&&!canvasOnly)openSettings(node.data.reference_to||node.id);}}
+          onPaneClick={()=>{setSelection(null);if(panel==='group'||panel==='connections')setPanel('');}}
           onEdgeDoubleClick={(_,edge)=>{if(!activeStudy){pushHistory();setEdges(es=>es.filter(e=>e.id!==edge.id));}}}
           onMoveEnd={(_,v)=>{viewport.current=v;emit();}} minZoom={.18} maxZoom={2} defaultViewport={initial.viewport} snapToGrid snapGrid={[12,12]} selectionKeyCode="Shift" multiSelectionKeyCode="Shift" panOnDrag={[0,1,2]} deleteKeyCode={activeStudy?null:['Backspace','Delete']} connectionRadius={28} defaultEdgeOptions={{type:'default',pathOptions:{curvature:.12},style:{stroke:'#8ca99b',strokeWidth:2.2},interactionWidth:22}}>
           <Background gap={24} size={1.2} color="#cad6cf"/><Controls showInteractive={false} fitViewOptions={{padding:fitPadding,maxZoom:1}}/>{showMap&&<MiniMap style={{pointerEvents:'none'}} nodeColor={n=>catalog[n.data.kind]?.color||'#799687'} maskColor="rgba(246,249,246,.72)"/>}
         </ReactFlow>
+        {!nodes.length&&<div className="canvas-empty"><h2>Your pipeline starts here</h2>
+          <p>Choose a tool from the palette or drag it onto the canvas.</p>
+          {!palette&&<button onClick={()=>setPalette(true)}>Show tools</button>}
+        </div>}
         {activeStudy&&<div className="study-legend"><span><i className="legend-input"/>Input</span><span><i className="legend-tool"/>Tool</span><span><i className="legend-math"/>Calculation</span><span><i className="legend-decision"/>Decision</span></div>}
         {notice&&<div className="canvas-notice" role="status">{notice}</div>}
       </main>
       {!canvasOnly&&panel==='connections'&&<ConnectionPanel key={focusedNode?.id||'empty'}
         node={focusedNode} catalog={catalog} matrix={matrix} readOnly={activeStudy}
         close={()=>setPanel('')} configure={()=>openSettings(focusedNode.id)}
-        getTypes={(node,port)=>emittedTypes(node,port,edges,nodes)}
-        connect={(port,kind,inlet)=>connectNext(focusedNode,port,kind,inlet)}/>}
+        branch={port=>openBranch(focusedNode.id,port)}/>}
       {!canvasOnly&&panel==='round'&&<RoundOutline program={args.round_outline} configure={openSettings} close={()=>setPanel('')}/>}
       {!canvasOnly&&panel==='group'&&selectedGroup&&<aside className="node-inspector group-panel" aria-label="Group settings">
         <div className="panel-heading"><span>Group settings</span><button aria-label="Close group settings" onClick={()=>setPanel('')}>×</button></div>
@@ -413,8 +496,8 @@ function Editor({args}){
         <button onClick={()=>duplicateGroup(selectedGroup)}>Duplicate group</button>
         <button onClick={()=>removeGroup(selectedGroup.id)}>Ungroup steps</button>
       </aside>}
-      {!canvasOnly&&helpOpen&&<aside className="node-inspector"><div className="panel-heading"><span>Build without losing work</span><button onClick={()=>setHelpOpen(false)} title="Close help">×</button></div><div className="inspector-welcome"><div className="welcome-icon">⌘</div><h2>Connect your experiment</h2><p>Move the blocks freely. Drag between sockets to pass structures and sequences to the next step.</p><p>Click a block to open its familiar input form. Apply changes to save them in this draft.</p><div className="non-destructive-note">Saved versions and run results remain intact when you edit this draft.</div><dl><dt>Pan</dt><dd>Drag the background</dd><dt>Zoom</dt><dd>Scroll</dd><dt>Select several</dt><dd>Shift + drag</dd><dt>Undo / redo</dt><dd>Ctrl + Z / Shift + Z</dd><dt>Duplicate</dt><dd>Ctrl + D</dd><dt>Fit canvas</dt><dd>F</dd><dt>Remove wire</dt><dd>Double-click it</dd></dl></div></aside>}
-    </div><footer className="canvas-footer"><span>{nodes.length} steps · {edges.length} connections</span><span>Edits affect this draft. Run creates a separate snapshot.</span><button onClick={()=>{const blob=new Blob([JSON.stringify(snapshot(),null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='pipeline.json';a.click();URL.revokeObjectURL(url);}}>Export graph ↗</button></footer>
+      {!canvasOnly&&helpOpen&&<aside className="node-inspector"><div className="panel-heading"><span>Build without losing work</span><button onClick={()=>setHelpOpen(false)} title="Close help">×</button></div><div className="inspector-welcome"><div className="welcome-icon">⌘</div><h2>Connect your experiment</h2><p>Move the blocks freely. Drag between sockets to pass structures and sequences to the next step.</p><p>Select a step to inspect its connections. Double-click to open its input form.</p><div className="non-destructive-note">Versions stores snapshots of this saved pipeline. Runs opens the execution history.</div><dl><dt>Pan</dt><dd>Drag the background</dd><dt>Zoom</dt><dd>Scroll</dd><dt>Select several</dt><dd>Shift + drag</dd><dt>Undo / redo</dt><dd>Ctrl + Z / Shift + Z</dd><dt>Duplicate</dt><dd>Ctrl + D</dd><dt>Fit canvas</dt><dd>F</dd><dt>Remove wire</dt><dd>Double-click it</dd></dl></div></aside>}
+    </div><footer className="canvas-footer"><span>{nodes.length} steps · {edges.length} connections</span><span>Run setup checks inputs before submission.</span><button onClick={()=>{const blob=new Blob([JSON.stringify(snapshot(),null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='pipeline.json';a.click();URL.revokeObjectURL(url);}}>Export graph ↗</button></footer>
   </div>;
 }
 

@@ -87,7 +87,7 @@ def test_old_fixed_round_size_default_migrates_to_later_round_cap():
 
     migrated = graph.migrate_template_graph(study)
 
-    assert migrated["template_version"] == 7
+    assert migrated["template_version"] == graph.ACTIVE_LEARNING_TEMPLATE_VERSION
     migrated_docking = next(node["data"]["params"] for node in migrated["nodes"]
                             if node["data"]["kind"] == "active_docking")
     assert migrated_docking["batch_size"] == 0
@@ -119,7 +119,7 @@ def test_v5_default_batch_cap_migrates_to_no_cap():
     migrated_docking = next(node["data"]["params"] for node in migrated["nodes"]
                             if node["data"]["kind"] == "active_docking")
 
-    assert migrated["template_version"] == 7
+    assert migrated["template_version"] == graph.ACTIVE_LEARNING_TEMPLATE_VERSION
     assert migrated_docking["batch_size"] == 0
 
 
@@ -334,6 +334,35 @@ def test_active_learning_graph_queues_the_round_controller(monkeypatch, tmp_path
     assert queued == tmp_path / "queued"
     assert calls[0][0] is active_learning_controller.run_active_learning_pipeline
     assert calls[0][1]["task_group"] == "campaign"
+
+
+def test_manual_screen_compiles_only_with_the_exact_feedback_and_named_inputs():
+    recipe = graph.new_graph("unidock_active_learning")
+    draft = {key: value for key, value in recipe.items() if key not in {"template_id", "template_version"}}
+    incomplete = {**draft, "edges": [edge for edge in draft["edges"] if not edge.get("loop_back")]}
+    graph.validate_graph(incomplete, allow_incomplete=True)
+    with pytest.raises(ValueError, match="Next-round batch"):
+        graph.validate_graph(incomplete)
+    plan = graph.validate_graph(draft)
+    assert plan["graph"]["template_id"] == "unidock_active_learning"
+    assert "template_id" not in draft
+    loop = next(edge for edge in plan["graph"]["edges"] if edge.get("loop_back"))
+    assert loop["targetHandle"] == "next_batch"
+    assert loop not in plan["incoming_edges"][loop["target"]]
+    assert not graph.connection_compatibility(
+        "active_target", "active_docking", target_handle="seed",
+    )["compatible"]
+
+
+def test_previous_screening_wires_migrate_without_rearranging_the_canvas():
+    recipe = graph.new_graph("unidock_active_learning")
+    legacy = {**recipe, "template_version": 7,
+              "edges": [dict(edge, sourceHandle="out", targetHandle="in") for edge in recipe["edges"]]}
+    legacy["nodes"][0]["position"] = {"x": 37, "y": 85}
+    upgraded = graph.validate_graph(legacy)["graph"]
+    assert upgraded["edges"] == recipe["edges"]
+    assert upgraded["nodes"][0]["position"] == {"x": 37, "y": 85}
+    assert upgraded["template_version"] == graph.ACTIVE_LEARNING_TEMPLATE_VERSION
 
 
 def test_docking_picker_keeps_stale_registered_computers_for_live_check(monkeypatch):

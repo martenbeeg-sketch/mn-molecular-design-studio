@@ -37,6 +37,29 @@ def test_compound_and_receptor_ports_wire_exact_artifacts():
     )["compatible"]
 
 
+def test_rosetta_ligand_reference_is_a_separate_canvas_input():
+    from mn_molecular_design_studio.pipeline_graph import capability_contract
+
+    kind = "tile_docking_rosetta_ligand"
+    assert [port["id"] for port in capability_contract(kind)["inputs"]] == [
+        "target", "compounds", "reference_ligand",
+    ]
+    assert connection_compatibility("ligand_sdf_input", kind, target_handle="reference_ligand")["compatible"]
+    assert not connection_compatibility("ligand_sdf_input", kind, target_handle="compounds")["compatible"]
+    settings = {"center_x": 0, "center_y": 0, "center_z": 0}
+    sources = {"target": {"target": {"target_pdb": "/test/receptor.pdb"}},
+               "compounds": {"tile_artifact": {"path": "/test/compounds.json"}},
+               "reference_ligand": {"tile_artifact": {"path": "/test/reference.sdf"}}}
+    request = node_request(kind, {"workflow_parameters": settings}, {"workflow_inputs": sources}, "Dock")
+    assert request["parameters"] == {
+        **settings, "target_pdb": "/test/receptor.pdb", "compound_set_file": "/test/compounds.json",
+        "reference_ligand_sdf": "/test/reference.sdf", "job_name": "Dock",
+    }
+    sources.pop("reference_ligand")
+    request = node_request(kind, {"workflow_parameters": settings}, {"workflow_inputs": sources}, "Dock")
+    assert "reference_ligand_sdf" not in request["parameters"]
+
+
 def test_manifest_handoff_requires_real_artifact_and_checks_its_digest(tmp_path):
     run = tmp_path / "ligand-generation" / "fixture"
     run.mkdir(parents=True)

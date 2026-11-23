@@ -33,11 +33,29 @@ fingerprint settings. **Prepare library** and **Create centroids** are reusable
 tools. The stages managed by the active-learning controller are available within
 the complete **Large-library screen** recipe.
 
-Open **Pipelines** and select a project. In the **Pipeline browser**, expand **Starter pipelines** and choose
-binder design, peptide/IDR design, structure prediction and cofolding, docking
-and library screening, molecular dynamics, or analysis of saved results.
-Pick a method and click **Create editable pipeline** to open it on the canvas.
-Under **Saved drafts**, select an existing pipeline to review its steps, then click **Open in canvas**.
+Open **Pipelines** and select a project. **New pipeline** opens an empty canvas.
+Choose an existing draft under **Saved pipelines**, or open a starting graph from
+**Templates**. **Large-library screen** opens the complete screening graph.
+Other template categories offer guided settings for choosing tools and inputs.
+Select a canvas step to inspect its connections or click **Configure step** to
+edit its settings. **Runs** lists project runs in the library and runs of the
+current pipeline in the editor.
+
+Search the tool library by name or filter by category, modality, function, and
+input or output artifact. Cards list the registered connector names. Drag
+between named sockets or use the **+** beside an output to browse compatible
+next steps for that socket. RosettaLigand can take separate target, compound
+set, and optional reference ligand connections. Filter candidates exposes
+separate Pass, Fail, and Unresolved outputs.
+
+To build a **Large-library screen** from a blank canvas, use the individual
+blocks under **Library screening**. The docking block has separate sockets
+for the initial centroid sample, receptor, and next-round batch. The stopping
+decision has **Continue** and **Stop** outputs. Connect the selection block's
+**Next-round batch** output to the existing docking block to close the round.
+Use the canvas checklist to find missing stages and connections. When the
+topology is complete, Run setup validates data and workstations for the
+screening controller.
 The binder settings offer complete native, comparative and modular workflows.
 Specialist recipes, the blank canvas and legacy templates are under **Advanced**.
 The MCP `pipeline_templates` tool identifies main starters, variants with their
@@ -115,21 +133,32 @@ The [Python API tutorial](https://github.com/RosettaCommons/RFD4-Proteina/blob/m
 
 ## Drafts, versions, and results
 
-Drafts autosave within the selected project. **Save version** keeps an immutable copy;
-restoring a version replaces the draft without changing that version or an earlier run.
-Use **Archive draft** to take a recipe out of the active list. The **Archived drafts**
-panel restores it with its versions intact. In MCP, call `list_saved_pipelines` with
-`include_archived=true` and use `archive_pipeline_draft` with the current revision
-and `archived=false` to restore it. Saved versions and Results can still be read
-while a draft is archived. Restore it before running it again.
+Saved pipelines are editable setups that autosave within the selected project.
+A **saved version** is a snapshot of one setup. A **run** is an execution with
+its own snapshot and results.
 
-**Run pipeline** submits a CPU coordinator and ordinary child jobs through the existing scheduler.
-It freezes the graph and target input for that run and preserves original design artifacts.
+Use **Actions → Move to Trash** to remove a setup from the library. **Trash**
+restores the same pipeline and its saved versions. Previous runs remain available.
+Choose **Save as template** to keep a reusable snapshot in the selected project.
+**Create from template** opens a separate editable pipeline. Existing built-in
+templates remain available under **Templates**.
+
+MCP offers `trash_saved_pipeline`, `save_pipeline_template`,
+`list_saved_pipeline_templates` and `use_saved_pipeline_template`.
+To find trashed pipelines, use `list_saved_pipelines` with `include_trashed=true`.
+Archiving remains available under **Versions** and via `archive_pipeline_draft`.
+
+Open **Run setup** to review missing inputs, choose execution settings, and check
+readiness through the Studio API. **Submit run** freezes a separate snapshot and
+queues the coordinator and child jobs through the existing scheduler. On
+distributed submissions the assigned workstation checks its saved files and
+runtime before starting.
 
 With **Reuse unchanged completed steps** enabled, a new run can reuse successful outputs
 from this user and project when settings, upstream inputs, target contents, and adapter
 implementation match. Layout and labels do not affect reuse. A setting change invalidates
-that step and its descendants. Disable reuse to request fresh work.
+that step and its descendants. Disable reuse to request fresh work. Large-library
+screen runs start a new campaign.
 
 Only successful design jobs with explicit filter-passing designs are offered as existing
 design inputs. No surviving candidates skips downstream computation. A failed step blocks

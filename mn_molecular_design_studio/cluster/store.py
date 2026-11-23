@@ -410,6 +410,7 @@ class Store:
             total = int(db.execute("SELECT count(*) FROM job_search_index s" + where, db_values).fetchone()[0])
             rows = db.execute(
                 "SELECT j.id,j.node_id,j.local_ref,j.owner_id,j.project_id,j.created_at,j.data_state,"
+                "json_extract(j.payload,'$.request_summary.graph.id') AS pipeline_graph_id,"
                 "json_remove(j.payload,'$.artifacts','$.request_summary') AS payload "
                 "FROM job_search_index s JOIN jobs j ON j.id=s.job_id" + where
                 + " ORDER BY s.created_at DESC,s.job_id DESC LIMIT ? OFFSET ?",
@@ -418,6 +419,8 @@ class Store:
         page = [(dict(raw), json.loads(raw["payload"])) for raw in rows]
         for row, item in page:
             item["data_state"] = row.get("data_state") or item.get("data_state") or "present"
+            if row.get("pipeline_graph_id") and item.get("tool") == "visual_pipeline":
+                item["pipeline_graph_id"] = row["pipeline_graph_id"]
         nodes = {node["id"]: node for node in self.nodes()}
         with self.connect() as db:
             transfers = {r["job_id"]: r for r in db.execute(

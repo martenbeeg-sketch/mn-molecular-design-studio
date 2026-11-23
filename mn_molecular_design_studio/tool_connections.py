@@ -6,9 +6,9 @@ from typing import Literal
 
 from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, workflow_catalog
 from mn_molecular_design_studio.pipeline_graph import (
-    NODE_CATALOG, capability_contract, connection_restriction, matching_artifact_type,
+    NODE_CATALOG, SCREENING_FEEDBACK, capability_contract, connection_restriction, matching_artifact_type,
 )
-from mn_molecular_design_studio.tool_catalog import AF2_TILE_WORKFLOW, TOOL_CATALOG_GROUPS, catalog_rows
+from mn_molecular_design_studio.tool_catalog import AF2_TILE_WORKFLOW, TOOL_CATALOG_GROUPS, _workflow_discovery_tags, catalog_rows
 
 
 ConnectionView = Literal["tiles", "workflows", "operations", "connections", "handoffs"]
@@ -58,7 +58,8 @@ def _operations():
         contract = capability_contract(kind, spec)
         yield {"id": kind, "title": spec["label"], "category": spec["category"], "workflow": spec.get("workflow"),
                "engine_profile": spec.get("engine_profile"), "inputs": contract["inputs"], "outputs": contract["outputs"],
-               "constraints": contract["constraints"], "addable": not spec.get("hidden", False)}
+               "constraints": contract["constraints"],
+               "addable": spec.get("screening_stage", False) or not spec.get("hidden", False)}
 
 
 def _connections(operation, direction):
@@ -71,7 +72,9 @@ def _connections(operation, direction):
             for output in source["outputs"]:
                 for input_port in target["inputs"]:
                     artifact_type = matching_artifact_type(output, input_port)
-                    if artifact_type and not connection_restriction(source["id"], target["id"], artifact_type):
+                    if artifact_type and not connection_restriction(
+                            source["id"], target["id"], artifact_type,
+                            source_handle=output["id"], target_handle=input_port["id"]):
                         yield {"source": source["id"], "output": output["id"], "target": target["id"],
                                "input": input_port["id"], "artifact_type": artifact_type}
 
@@ -89,6 +92,34 @@ def _handoffs():
 
 
 @lru_cache(maxsize=1)
+def editor_tool_catalog():
+    """Attach the discovery tags used by All tools to registered canvas steps."""
+    workflows = {row["workflow"]: row for row in workflow_catalog()}
+    result = {}
+    for kind, spec in NODE_CATALOG.items():
+        workflow = next((workflows[name] for name in (spec.get("workflow"), *spec.get("workflow_aliases", ()))
+                         if name in workflows), None)
+        discovery = _workflow_discovery_tags(workflow) if workflow else {}
+        if spec.get("modalities"):
+            discovery["modalities"] = spec["modalities"]
+        tasks = spec.get("molecule_tasks", ())
+        if tasks:
+            discovery["modalities"] = ["Protein", *[
+                modality for task, modality in (("protein_ligand", "Ligand"), ("protein_dna", "DNA"),
+                                                ("protein_rna", "RNA"), ("protein_macrocyclic", "Peptide"))
+                if task in tasks
+            ]]
+        description = spec["description"]
+        if kind.startswith("tile_") and workflow and workflow.get("description"):
+            description = workflow["description"]
+        result[kind] = {**spec, "palette": {"description": description, **discovery}}
+        if spec.get("screening_stage"):
+            result[kind].update(hidden=False, category="Library screening")
+            result[kind]["palette"]["functions"] = ["Active learning"]
+    return result
+
+
+@lru_cache(maxsize=1)
 def editor_connections():
     """Compact lookup for the canvas, built from the same rows as API/MCP discovery."""
     wires = {}
@@ -99,7 +130,7 @@ def editor_connections():
     handoffs = {}
     for row in _handoffs():
         handoffs.setdefault(row["source"], []).append(row)
-    return {"wires": wires, "handoffs": handoffs}
+    return {"wires": wires, "handoffs": handoffs, "screening_feedback": SCREENING_FEEDBACK}
 
 
 def connection_catalog(*, view: ConnectionView, query: str, operation: str, direction: ConnectionDirection,

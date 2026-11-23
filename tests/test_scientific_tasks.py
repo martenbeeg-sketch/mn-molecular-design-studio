@@ -282,6 +282,45 @@ def test_api_supports_task_configuration_and_old_identifiers(api_data):
     assert client.post("/api/v1/pipelines/drafts", json=request, headers=headers(api_data, "other")).status_code == 404
 
 
+def test_pipeline_template_and_trash_are_independent_of_saved_versions(api_data):
+    client, project = api_data["client"], api_data["project"]["id"]
+    root = "/api/v1/pipelines"
+    original = graph.new_graph("unidock_active_learning")
+    original["name"] = "Screening setup"
+    pipeline_id = original["id"]
+    saved = client.post(root + "/save", json={"project_id": project, "graph": original, "version": True})
+    assert saved.status_code == 200, saved.text
+    revision = saved.json()["revision"]
+    publish = {"project_id": project, "expected_revision": revision, "name": "Reusable screen"}
+    published = client.post(f"{root}/{pipeline_id}/template", json=publish)
+    assert published.status_code == 200, published.text
+    assert client.post(f"{root}/{pipeline_id}/template", json=publish).json() == published.json()
+    template_id = published.json()["id"]
+    assert [row["id"] for row in client.get(root + "/saved-templates", params={"project_id": project}).json()["items"]] == [template_id]
+    assert client.get(root + "/saved-templates", params={"project_id": project}, headers=headers(api_data, "other")).status_code == 404
+
+    edit = client.post(root + "/save", json={"project_id": project, "expected_revision": revision,
+                                            "graph": {**original, "name": "Edited screening setup"}})
+    assert edit.status_code == 200, edit.text
+    trash = {"project_id": project, "expected_revision": edit.json()["revision"], "trashed": True}
+    assert client.post(f"{root}/{pipeline_id}/trash", json={**trash, "expected_revision": revision}).status_code == 409
+    assert client.post(f"{root}/{pipeline_id}/trash", json=trash).status_code == 200
+    assert client.get(root, params={"project_id": project}).json() == []
+    listed = client.get(root, params={"project_id": project, "include_trashed": True}).json()
+    assert listed[0]["trashed_at"] and listed[0]["versions"] == 1
+    assert client.post(root + "/run", json={"project_id": project, "graph": original}).status_code == 409
+    assert client.get(f"{root}/{pipeline_id}/versions", params={"project_id": project}).json()["items"][0]["revision"] == revision
+
+    copy = client.post(f"{root}/saved-templates/{template_id}/use", json={"project_id": project})
+    assert copy.status_code == 200, copy.text
+    new = copy.json()["graph"]
+    assert new["id"] != pipeline_id
+    assert new["name"] == "Reusable screen"
+    assert new["nodes"] == original["nodes"] and new["edges"] == original["edges"]
+    assert client.post(f"{root}/{pipeline_id}/trash", json={**trash, "trashed": False}).status_code == 200
+    assert client.get(root, params={"project_id": project}).json()[0]["graph"]["id"] == pipeline_id
+
+
 def test_pipeline_page_keeps_legacy_recipe_selector_and_canvas_as_main_builder(monkeypatch, tmp_path):
     from streamlit.testing.v1 import AppTest
     monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
@@ -292,16 +331,12 @@ render_pipeline_builder(owner_id="test-user", project_selector=lambda _:None,
 ''').run()
     assert not app.exception
     prefix = "visual-pipeline-unassigned"
-    original = copy.deepcopy(app.session_state[prefix + "-graph"])
-    assert app.selectbox(key=prefix + "-task").options == [
-        "Binder design", "Peptide / IDR design", "Structure prediction and cofolding",
-        "Docking and library screening", "Molecular dynamics", "Analysis of saved results", "Advanced",
-    ]
-    app.selectbox(key=prefix + "-task").set_value("advanced").run()
+    app.segmented_control(key=prefix + "-library-section").set_value("Templates").run()
+    app.selectbox(key=prefix + "-task-category").set_value("advanced").run()
     app.selectbox(key=prefix + "-advanced-recipe").set_value("legacy").run()
     app.selectbox(key=prefix + "-legacy").set_value("Foundry · RFD3 → MPNN → RF3").run()
     assert not app.exception
-    assert app.session_state[prefix + "-graph"] == original
+    assert prefix + "-graph" not in app.session_state
     app.button(key=prefix + "-open-legacy").click().run()
     assert not app.exception
     assert kinds(app.session_state[prefix + "-graph"]) == ["target", "binder_context", "rfd3", "foundry_mpnn", "rf3", "results"]

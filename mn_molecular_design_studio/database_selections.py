@@ -64,6 +64,7 @@ def open_in_pipeline(database, user, ids, project_id):
     st.session_state[prefix + "-graph"] = pipeline_graph.clean_graph(graph)
     st.session_state[prefix + "-reset"] = uuid.uuid4().hex
     st.session_state[prefix + "-name"] = "Database selection"
+    st.session_state[prefix + "-view"] = "editor"
     st.session_state.setdefault("project-pending-selection", {})["visual-pipeline-project-id"] = project_id
     st.session_state["pipeline-workspace-view"] = "Node canvas"
     st.session_state["page"] = "Pipelines"

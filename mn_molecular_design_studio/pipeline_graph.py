@@ -208,29 +208,68 @@ NODE_CATALOG = {
 # Its feedback edge is marked in the graph and executed by the dedicated
 # controller; the generic DAG runner must not try to schedule these nodes.
 _ACTIVE_STATE = "active_learning_state"
-_ACTIVE_LEARNING_EDGES = (
-    ("active_seed", "active_docking"), ("active_target", "active_docking"),
-    ("active_docking", "active_accumulate"), ("active_accumulate", "active_decision"),
-    ("active_decision", "active_binder_rule"), ("active_binder_rule", "active_train"),
-    ("active_train", "active_predict"), ("active_predict", "active_select"),
-    ("active_library", "active_predict"), ("active_library", "active_select"),
-    ("active_decision", "active_results"),
+SCREENING_FEEDBACK = ("active_select", "out", "active_docking", "next_batch")
+SCREENING_WIRES = (
+    ("active_seed", "out", "active_docking", "seed"),
+    ("active_target", "out", "active_docking", "receptor"),
+    ("active_docking", "out", "active_accumulate", "in"),
+    ("active_accumulate", "out", "active_decision", "in"),
+    ("active_decision", "continue", "active_binder_rule", "in"),
+    ("active_binder_rule", "out", "active_train", "in"),
+    ("active_train", "out", "active_predict", "model"),
+    ("active_predict", "out", "active_select", "predictions"),
+    ("active_library", "out", "active_predict", "library"),
+    ("active_library", "out", "active_select", "library"),
+    ("active_decision", "finish", "active_results", "in"),
+    SCREENING_FEEDBACK,
 )
-_ACTIVE_LEARNING_FEEDBACK = ("active_select", "active_docking")
+SCREENING_STAGES = frozenset(kind for source, _, target, _ in SCREENING_WIRES for kind in (source, target))
+
+
+def _screening_wire(edge, stages):
+    return (stages.get(edge.get("source")), edge.get("sourceHandle", "out"),
+            stages.get(edge.get("target")), edge.get("targetHandle", "in"))
+
+
+def is_screening_graph(graph):
+    return (graph.get("template_id") == "unidock_active_learning"
+            or any(node["data"]["kind"] in SCREENING_STAGES for node in graph["nodes"]))
+
+
+def screening_graph_issues(graph):
+    """Check that a drawn graph matches the workflow the round controller executes."""
+    stages = {node["id"]: node["data"]["kind"] for node in graph["nodes"]}
+    kinds = set(stages.values())
+    issues = []
+    if kinds - SCREENING_STAGES:
+        issues.append("The screening loop needs its own canvas. Use registered outputs from library preparation as inputs.")
+    if len(stages) != len(kinds):
+        issues.append("Keep one of each screening stage.")
+    missing = SCREENING_STAGES - kinds
+    if missing:
+        issues.append("Add " + ", ".join(sorted(NODE_CATALOG[kind]["label"] for kind in missing)) + ".")
+    wired = [_screening_wire(edge, stages) for edge in graph["edges"]]
+    if len(set(wired)) != len(wired) or set(wired) - set(SCREENING_WIRES):
+        issues.append("Remove duplicate or unsupported screening connections.")
+    for wire in SCREENING_WIRES:
+        source, out, target, inlet = wire
+        if wire not in wired and source in kinds and target in kinds:
+            output = next(port["label"] for port in NODE_CATALOG[source]["outputs"] if port["id"] == out)
+            destination = next(port["label"] for port in NODE_CATALOG[target]["inputs"] if port["id"] == inlet)
+            issues.append(f"Connect {NODE_CATALOG[source]['label']} / {output} to {NODE_CATALOG[target]['label']} / {destination}.")
+    return issues
 
 
 def restore_screening_connections(graph):
     """Rebuild the controller's fixed wires using the existing stage IDs."""
     by_kind = {node["data"]["kind"]: node["id"] for node in graph["nodes"]}
     if (graph.get("template_id") != "unidock_active_learning"
-            or set(by_kind) != set(ACTIVE_LEARNING_LAYOUT) or len(graph["nodes"]) != len(by_kind)):
+            or set(by_kind) != SCREENING_STAGES or len(graph["nodes"]) != len(by_kind)):
         raise ValueError("Open a complete Large-library screen recipe to restore its connections.")
-    edges = [{"id": f"edge-active-{index}", "source": by_kind[source], "sourceHandle": "out",
-              "target": by_kind[target], "targetHandle": "in"}
-             for index, (source, target) in enumerate(_ACTIVE_LEARNING_EDGES)]
-    source, target = _ACTIVE_LEARNING_FEEDBACK
-    edges.append({"id": "edge-active-loop", "source": by_kind[source], "sourceHandle": "out",
-                  "target": by_kind[target], "targetHandle": "in", "loop_back": True})
+    edges = [{"id": f"edge-active-{index}", "source": by_kind[source], "sourceHandle": out,
+              "target": by_kind[target], "targetHandle": inlet,
+              **({"loop_back": True} if (source, out, target, inlet) == SCREENING_FEEDBACK else {})}
+             for index, (source, out, target, inlet) in enumerate(SCREENING_WIRES)]
     return {**graph, "edges": edges}
 
 
@@ -327,13 +366,37 @@ NODE_CATALOG.update({
               help="Retained for saved-graph compatibility. Completion never imports from this value; make a separate selection from Results. Full scores, poses and files stay available externally."),
     ]),
 })
-NODE_CATALOG["active_docking"]["inputs"][0]["multiple"] = True
-NODE_CATALOG["active_predict"]["inputs"][0]["multiple"] = True
-NODE_CATALOG["active_select"]["inputs"][0]["multiple"] = True
-for _kind in {kind for connection in _ACTIVE_LEARNING_EDGES for kind in connection}:
-    # These nodes are scheduled together by the screening controller. Keep
-    # their contracts available to saved drafts and API callers.
+for _kind, _ports in {
+    "active_docking": (("seed", "Initial centroid sample"), ("receptor", "Receptor"), ("next_batch", "Next-round batch")),
+    "active_predict": (("model", "Trained model"), ("library", "Screening library")),
+    "active_select": (("predictions", "Ranked predictions"), ("library", "Random exploration library")),
+}.items():
+    NODE_CATALOG[_kind]["inputs"] = [
+        {"id": identifier, "label": label, "accepts": [_ACTIVE_STATE]} for identifier, label in _ports
+    ]
+NODE_CATALOG["active_decision"]["outputs"] = [
+    {"id": "continue", "label": "Continue", "type": _ACTIVE_STATE},
+    {"id": "finish", "label": "Stop", "type": _ACTIVE_STATE},
+]
+for _kind, _label in {
+    "active_seed": "Initial centroid sample", "active_target": "Receptor",
+    "active_library": "Screening library", "active_docking": "Docked batch scores",
+    "active_accumulate": "Cumulative scores", "active_binder_rule": "Training labels",
+    "active_train": "Trained model", "active_predict": "Ranked predictions",
+    "active_select": "Next-round batch",
+}.items():
+    NODE_CATALOG[_kind]["outputs"][0]["label"] = _label
+for _kind, _label in {
+    "active_accumulate": "Docked batch scores", "active_decision": "Cumulative scores",
+    "active_binder_rule": "Continue screening", "active_train": "Training labels",
+    "active_results": "Final screening state",
+}.items():
+    NODE_CATALOG[_kind]["inputs"][0]["label"] = _label
+for _kind in SCREENING_STAGES:
+    # The unified canvas exposes these stages. The legacy block editor keeps
+    # using the complete recipe it knows how to lay out and connect.
     NODE_CATALOG[_kind]["hidden"] = True
+    NODE_CATALOG[_kind]["screening_stage"] = True
 NODE_CATALOG["complexa_generator"]["inputs"][0]["optional"] = True
 
 from mn_molecular_design_studio.quality_tools import TOOLS as QUALITY_TOOLS
@@ -831,7 +894,7 @@ def _cofold_model_kinds(task_type: str) -> list[str]:
     ]
 
 
-ACTIVE_LEARNING_TEMPLATE_VERSION = 7
+ACTIVE_LEARNING_TEMPLATE_VERSION = 8
 ACTIVE_LEARNING_LAYOUT = {
     "active_seed": {"x": 80, "y": 40, "width": 320, "height": 150},
     "active_library": {"x": 760, "y": 40, "width": 320, "height": 150},
@@ -1416,6 +1479,15 @@ def migrate_template_graph(graph: dict[str, Any]) -> dict[str, Any]:
         existing = {node["data"]["kind"]: node for node in graph.get("nodes", [])}
         if set(existing) != set(ACTIVE_LEARNING_LAYOUT):
             return graph
+        if graph.get("template_version") == 7:
+            kinds = {node["id"]: node["data"]["kind"] for node in graph["nodes"]}
+            legacy_ports = {(source, target): (out, inlet) for source, out, target, inlet in SCREENING_WIRES}
+            edges = []
+            for edge in graph["edges"]:
+                old = _screening_wire(edge, kinds)
+                ports = legacy_ports.get((old[0], old[2])) if old[1::2] == ("out", "in") else None
+                edges.append({**edge, "sourceHandle": ports[0], "targetHandle": ports[1]} if ports else edge)
+            return {**graph, "edges": edges, "template_version": ACTIVE_LEARNING_TEMPLATE_VERSION}
         migrated = copy.deepcopy(graph)
         seed = next(node for node in migrated["nodes"] if node["data"]["kind"] == "active_seed")
         library = existing["active_library"]["data"]["params"]
@@ -1687,11 +1759,7 @@ def clean_graph(graph: dict) -> dict:
     return {"schema_version": SCHEMA, "id": graph["id"], "name": str(graph.get("name") or "Untitled pipeline")[:160], "nodes": cleaned,
             **({"layout_groups": groups} if groups else {}),
             "edges": [{k: edge[k] for k in ("id", "source", "target", "sourceHandle", "targetHandle") if k in edge}
-                      | ({"loop_back": True} if edge.get("loop_back") is True or (
-                          graph.get("template_id") == "unidock_active_learning"
-                          and kinds_by_id.get(edge.get("source")) == "active_select"
-                          and kinds_by_id.get(edge.get("target")) == "active_docking"
-                      ) else {})
+                      | ({"loop_back": True} if edge.get("loop_back") is True or _screening_wire(edge, kinds_by_id) == SCREENING_FEEDBACK else {})
                       for edge in edges if isinstance(edge, dict)],
             **({"candidate_execution": __import__("mn_molecular_design_studio.candidate_execution", fromlist=["policy"]).policy(graph["candidate_execution"])} if "candidate_execution" in graph else {}),
             **({'workflow_mode': graph['workflow_mode']} if graph.get('workflow_mode') in MODES else {}),
@@ -2214,10 +2282,7 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
         a, b = (NODE_CATALOG[nodes[i]["data"]["kind"]] for i in (source, target))
         source_handle = edge.get("sourceHandle", "out")
         target_handle = edge.get("targetHandle", "in")
-        if edge.get("loop_back") is True and (
-            graph.get("template_id") != "unidock_active_learning"
-            or a["key"] != "active_select" or b["key"] != "active_docking"
-        ):
+        if edge.get("loop_back") is True and (a["key"], source_handle, b["key"], target_handle) != SCREENING_FEEDBACK:
             raise ValueError("Only next-batch selection can return compounds to docking.")
         compatibility = connection_compatibility(
             nodes[source]["data"]["kind"], nodes[target]["data"]["kind"],
@@ -2234,6 +2299,10 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
         input_port = next(port for port in b["inputs"] if port.get("id", "in") == target_handle)
         if sum(1 for item in incoming_edges[target] if item.get("targetHandle", "in") == target_handle) > 1 and not input_port.get("multiple"):
             raise ValueError(f"{b['label']} accepts one upstream connection on {input_port['label']}. Branch after its output instead.")
+    if not allow_incomplete and is_screening_graph(graph):
+        if issues := screening_graph_issues(graph):
+            raise ValueError("Restore the screening recipe connections. " + " ".join(issues))
+        graph.update(template_id="unidock_active_learning", template_version=ACTIVE_LEARNING_TEMPLATE_VERSION)
     queue = sorted(n for n in nodes if not incoming[n])
     order, degrees = [], {n: len(incoming[n]) for n in nodes}
     while queue:
@@ -2320,13 +2389,19 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
         if node["data"].get("enabled") is False:
             continue
         for input_port in NODE_CATALOG[kind]["inputs"]:
-            if not allow_incomplete and not input_port.get("optional") and not any(edge.get("targetHandle", "in") == input_port.get("id", "in") for edge in incoming_edges[node_id]):
+            if kind not in SCREENING_STAGES and not allow_incomplete and not input_port.get("optional") and not any(edge.get("targetHandle", "in") == input_port.get("id", "in") for edge in incoming_edges[node_id]):
                 raise ValueError(f"Connect {input_port.get('label', 'an input')} to {node['data']['label']}.")
         if not allow_incomplete and kind not in {"results", "active_results"} and not any(e["source"] == node_id for e in graph["edges"]):
             raise ValueError(f"Connect {node['data']['label']} to a downstream step or Results node.")
         if require_inputs and kind == "target":
             if not node["data"]["params"].get("target_pdb"):
                 raise PipelineInputError(node_id, "Load a target structure before running the pipeline.")
+        if require_inputs and kind == "ligand_sdf_input":
+            from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+            ligand = node["data"]["params"].get("ligand_sdf")
+            path = resolve_stored_path(ligand, must_exist=True) if require_files and ligand else None
+            if not ligand or (require_files and (path is None or not path.is_file())):
+                raise PipelineInputError(node_id, "Choose an available ligand SDF file.")
         if require_inputs and kind == "md_source":
             params = node["data"]["params"]
             if not all(params.get(key) for key in ("source_run_dir", "option_id", "topology_relative_path")):
@@ -2462,13 +2537,6 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
                 raise ValueError("Select target β-strand residue ranges for RFdiffusion β-pairing.")
     if not allow_incomplete and not any(n["data"]["kind"] in {"results", "active_results"} for n in nodes.values()):
         raise ValueError("Add a Results node to collect the pipeline outputs.")
-    if graph.get("template_id") == "unidock_active_learning":
-        expected = restore_screening_connections(graph)["edges"]
-        def wiring(edge):
-            return (edge["source"], edge.get("sourceHandle", "out"), edge["target"],
-                    edge.get("targetHandle", "in"), edge.get("loop_back", False))
-        if len(graph["edges"]) != len(expected) or {wiring(edge) for edge in graph["edges"]} != {wiring(edge) for edge in expected}:
-            raise ValueError("Restore the screening recipe connections. The controller requires every declared stage and wire.")
     shared_campaign = _validate_shared_campaign(graph, nodes, incoming) if not allow_incomplete else None
     if shared_campaign:
         graph["shared_campaign"] = shared_campaign
@@ -2514,8 +2582,8 @@ def save_definition(graph: dict, owner_id: str, project_id: str, *, version=Fals
             current = json.loads(draft.read_text(encoding="utf-8"))
         except FileNotFoundError:
             current = None
-        if current is not None and current.get("archived_at"):
-            raise PipelineDraftConflictError("Restore this archived pipeline or save a separate copy.")
+        if current is not None:
+            _require_editable_pipeline(current)
         current_revision = current["revision"] if current is not None else None
         if not for_run and expected_revision != current_revision and digest != current_revision:
             raise PipelineDraftConflictError("The saved draft has changed. Open the saved draft or use Save as… to keep your edits separately.")
@@ -2531,59 +2599,149 @@ def save_definition(graph: dict, owner_id: str, project_id: str, *, version=Fals
     return payload
 
 
-def require_active_draft(owner_id: str, project_id: str, pipeline_id: str) -> None:
-    """Check the saved draft on the organizer before dispatching to a worker."""
+def _pipeline_draft_path(owner_id, project_id, pipeline_id):
     if not re.fullmatch(r"[a-f0-9]{32}", pipeline_id):
         raise ValueError("Invalid pipeline ID.")
-    path = scope_root(owner_id, project_id) / pipeline_id / "draft.json"
+    return scope_root(owner_id, project_id) / pipeline_id / "draft.json"
+
+
+def _require_editable_pipeline(pipeline):
+    if pipeline.get("trashed_at"):
+        raise PipelineDraftConflictError("Restore this pipeline from Trash before editing or running it.")
+    if pipeline.get("archived_at"):
+        raise PipelineDraftConflictError("Restore this archived pipeline or save a separate copy.")
+
+
+def require_active_draft(owner_id: str, project_id: str, pipeline_id: str) -> None:
+    """Check the saved draft on the organizer before dispatching to a worker."""
+    path = _pipeline_draft_path(owner_id, project_id, pipeline_id)
     try:
         draft = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return
-    if draft.get("archived_at"):
-        raise PipelineDraftConflictError("Restore this archived pipeline or save a separate copy.")
+    _require_editable_pipeline(draft)
+
+
+def _require_pipeline_revision(revision):
+    if not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{64}", revision):
+        raise ValueError("Use the revision from the saved pipeline.")
+
+
+def _read_saved_pipeline(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise LookupError("Saved pipeline not found.") from exc
+
+
+def _set_pipeline_status(owner_id, project_id, pipeline_id, *, field, enabled, expected_revision):
+    from mn_molecular_design_studio.cluster.config import atomic_json
+
+    _require_pipeline_revision(expected_revision)
+    if type(enabled) is not bool:
+        raise ValueError(f"{field.removesuffix('_at')} must be true or false.")
+    draft = _pipeline_draft_path(owner_id, project_id, pipeline_id)
+    if not draft.is_file():
+        raise LookupError("Saved pipeline not found.")
+    other_status = "archived_at" if field == "trashed_at" else "trashed_at"
+    with (draft.parent / ".draft.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = _read_saved_pipeline(draft)
+        if current["revision"] != expected_revision:
+            raise PipelineDraftConflictError("The saved pipeline has changed. Open the latest revision.")
+        if current.get(other_status):
+            _require_editable_pipeline(current)
+        if bool(current.get(field)) != enabled:
+            if enabled:
+                current[field] = datetime.now(timezone.utc).isoformat()
+            else:
+                current.pop(field, None)
+            atomic_json(draft, current)
+    return current
 
 
 def set_draft_archived(owner_id: str, project_id: str, pipeline_id: str, *,
                        archived: bool, expected_revision: str) -> dict:
     """Archive or restore a draft while keeping its graph and version IDs."""
-    from mn_molecular_design_studio.cluster.config import atomic_json
-
-    if not re.fullmatch(r"[a-f0-9]{32}", pipeline_id):
-        raise ValueError("Invalid pipeline ID.")
-    if not isinstance(expected_revision, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_revision):
-        raise ValueError("Use the revision from the saved pipeline draft.")
-    if type(archived) is not bool:
-        raise ValueError("archived must be true or false.")
-    draft = scope_root(owner_id, project_id) / pipeline_id / "draft.json"
-    if not draft.is_file():
-        raise LookupError("Pipeline draft not found.")
-    with (draft.parent / ".draft.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        current = json.loads(draft.read_text(encoding="utf-8"))
-        if current["revision"] != expected_revision:
-            raise PipelineDraftConflictError("The saved draft has changed. Open the latest draft.")
-        if bool(current.get("archived_at")) != archived:
-            if archived:
-                current["archived_at"] = datetime.now(timezone.utc).isoformat()
-            else:
-                current.pop("archived_at", None)
-            atomic_json(draft, current)
-    return current
+    return _set_pipeline_status(owner_id, project_id, pipeline_id, field="archived_at",
+                                enabled=archived, expected_revision=expected_revision)
 
 
-def list_definitions(owner_id: str, project_id: str, *, include_archived=False) -> list[dict]:
+def set_draft_trashed(owner_id: str, project_id: str, pipeline_id: str, *,
+                      trashed: bool, expected_revision: str) -> dict:
+    """Move a saved pipeline to Trash or restore its exact saved revision."""
+    return _set_pipeline_status(owner_id, project_id, pipeline_id, field="trashed_at",
+                                enabled=trashed, expected_revision=expected_revision)
+
+
+def list_definitions(owner_id: str, project_id: str, *, include_archived=False, include_trashed=False) -> list[dict]:
     definitions = []
     for path in scope_root(owner_id, project_id).glob("*/draft.json"):
         try:
             draft = json.loads(path.read_text())
-            if draft.get("archived_at") and not include_archived:
+            if (draft.get("archived_at") and not include_archived) or (draft.get("trashed_at") and not include_trashed):
                 continue
             draft["versions"] = len(list((path.parent / "versions").glob("*.json")))
             definitions.append(draft)
         except (OSError, ValueError):
             continue
     return sorted(definitions, key=lambda d: d["saved_at"], reverse=True)
+
+
+def _template_summary(template):
+    return {key: value for key, value in template.items() if key != "graph"} | {
+        "steps": len(template["graph"]["nodes"]),
+    }
+
+
+def save_pipeline_template(owner_id: str, project_id: str, pipeline_id: str, *,
+                           name: str, expected_revision: str) -> dict:
+    """Copy a saved revision to an independent, reusable template in this project."""
+    from mn_molecular_design_studio.cluster.config import atomic_json
+    _require_pipeline_revision(expected_revision)
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 160:
+        raise ValueError("Enter a template name of 1 to 160 characters.")
+    name = name.strip()
+    current = _read_saved_pipeline(_pipeline_draft_path(owner_id, project_id, pipeline_id))
+    _require_editable_pipeline(current)
+    if current["revision"] != expected_revision:
+        raise PipelineDraftConflictError("The saved pipeline has changed. Open the latest revision.")
+    # Identical publish retries resolve to the same immutable snapshot.
+    identity = json.dumps([pipeline_id, expected_revision, name], ensure_ascii=False)
+    identifier = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+    root = scope_root(owner_id, project_id) / "templates"
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / f"{identifier}.json"
+    with (root / ".templates.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if path.is_file():
+            return _template_summary(json.loads(path.read_text(encoding="utf-8")))
+        record = {"id": identifier, "name": name, "created_at": datetime.now(timezone.utc).isoformat(),
+                  "source_pipeline_id": pipeline_id, "source_revision": expected_revision,
+                  "graph": clean_graph(current["graph"])}
+        atomic_json(path, record)
+    return _template_summary(record)
+
+
+def list_pipeline_templates(owner_id: str, project_id: str) -> list[dict]:
+    templates = []
+    for path in (scope_root(owner_id, project_id) / "templates").glob("*.json"):
+        try:
+            templates.append(_template_summary(json.loads(path.read_text(encoding="utf-8"))))
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return sorted(templates, key=lambda item: item["created_at"], reverse=True)
+
+
+def new_pipeline_from_template(owner_id: str, project_id: str, template_id: str) -> dict:
+    if not re.fullmatch(r"[a-f0-9]{32}", template_id):
+        raise ValueError("Invalid template ID.")
+    path = scope_root(owner_id, project_id) / "templates" / f"{template_id}.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise LookupError("Pipeline template not found.") from exc
+    return clean_graph({**record["graph"], "id": uuid.uuid4().hex, "name": record["name"]})
 
 
 def list_versions(owner_id: str, project_id: str, pipeline_id: str) -> list[dict]:
@@ -2673,6 +2831,14 @@ SUPPORTED_TEMPLATE_IDS = (set(LEGACY_STARTER_TEMPLATES.values()) | set(STARTER_T
 
 from mn_molecular_design_studio import pipeline_tile_workflows as tile_workflows
 
+NODE_CATALOG["ligand_sdf_input"] = _spec(
+    "ligand_sdf_input", "Ligand SDF", "Input", "Use an uploaded ligand structure as a separate workflow input.",
+    output="ligand_sdf", formats=("sdf",),
+    fields=[field("ligand_sdf", "Ligand SDF", "", kind="text", section="basic")],
+)
+NODE_CATALOG["ligand_sdf_input"]["outputs"][0]["label"] = "Ligand SDF"
+NODE_CATALOG["ligand_sdf_input"]["modalities"] = ["Ligand"]
+
 # SAbR already runs in the graph executor and annotates the input structures.
 NODE_CATALOG["sabr"]["workflow_aliases"] = ["analysis.sabr"]
 for _kind, _tile in tile_workflows.TILES.items():
@@ -2756,14 +2922,15 @@ def matching_artifact_type(output: dict, input_port: dict) -> str | None:
     return min(set(output["artifact_types"]) & set(input_port["artifact_types"]), default=None)
 
 
-def connection_restriction(source_kind: str, target_kind: str, artifact_type: str) -> str | None:
+def connection_restriction(source_kind: str, target_kind: str, artifact_type: str,
+                           *, source_handle="out", target_handle="in") -> str | None:
     if source_kind == "run_source":
         from mn_molecular_design_studio.run_graph import compatible
         if not compatible(target_kind):
             return ("Run results must connect to a tool with a compatible saved-collection input. "
                     "Connect analysis before cohort ranking or merging.")
     if (artifact_type == _ACTIVE_STATE
-            and (source_kind, target_kind) not in (*_ACTIVE_LEARNING_EDGES, _ACTIVE_LEARNING_FEEDBACK)):
+            and (source_kind, source_handle, target_kind, target_handle) not in SCREENING_WIRES):
         return "Use the connections defined by the active-learning docking template."
     return None
 
@@ -2780,7 +2947,8 @@ def connection_compatibility(source_kind: str, target_kind: str, *, source_handl
         return {"compatible": False, "reason": "The selected connection port is not declared by its operation."}
     artifact_type = matching_artifact_type(output, input_port)
     if artifact_type:
-        if restriction := connection_restriction(source_kind, target_kind, artifact_type):
+        if restriction := connection_restriction(source_kind, target_kind, artifact_type,
+                                                source_handle=source_handle, target_handle=target_handle):
             return {"compatible": False, "reason": restriction}
         return {"compatible": True, "artifact_type": artifact_type, "reason": "Compatible scientific artifact types."}
     produced = output["artifact_types"]

@@ -542,6 +542,7 @@ def render_results_board(user, *, workflow_schema=None, submit=None):
             st.session_state[prefix+'-graph'] = graph
             st.session_state[prefix+'-reset'] = graph['id']
             st.session_state[prefix+'-name'] = graph['name']
+            st.session_state[prefix+'-view'] = 'editor'
             st.session_state.setdefault('project-pending-selection', {})['visual-pipeline-project-id'] = project
             st.session_state['pipeline-workspace-view'] = 'Node canvas'
             st.session_state['page'] = 'Pipelines'

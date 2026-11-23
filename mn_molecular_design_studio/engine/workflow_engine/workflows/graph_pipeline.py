@@ -1696,6 +1696,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if kind == "target" or kind == 'cofold_input' and params.get('target_pdb') or kind=='complexa_generator' and params.get('target_pdb'):
                         target_path = _path(params["target_pdb"])
                         key_params["structure_digest"] = file_digest(target_path)
+                    if kind == "ligand_sdf_input":
+                        ligand_path = _path(params["ligand_sdf"])
+                        key_params["ligand_digest"] = file_digest(ligand_path)
                     if kind in {"design_source","generation_source","backbone_source","molecule_source","project_design_source"}:
                         loader=(source_molecule_selection if kind == 'molecule_source' else source_project_designs if kind == 'project_design_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs)
                         extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
@@ -1906,6 +1909,17 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         if any(n["data"]["kind"] in candidate_sets.KINDS for n in nodes.values()):
                             output["target"]["identity"] = candidate_sets.target_identity(output["target"])
                         complete(node_id, output, key);progressed=True;continue
+                    if kind == "ligand_sdf_input":
+                        from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import validate_ligand_sdf
+
+                        validate_ligand_sdf(ligand_path)
+                        staged = parent / "artifacts" / "pipeline_inputs" / node_id / ("ligand-" + key_params["ligand_digest"][:16] + ".sdf")
+                        staged.parent.mkdir(parents=True, exist_ok=True)
+                        if not staged.exists():
+                            shutil.copy2(ligand_path, staged)
+                        complete(node_id, {"tile_artifact": {"path": str(staged)}}, key)
+                        progressed = True
+                        continue
                     if kind == 'cofold_input':
                         task = {key: copy.deepcopy(params.get(key, '')) for key in (
                             'task_type', 'target_protein_sequences', 'partner_protein_sequences',

@@ -570,6 +570,17 @@ def test_cluster_search_index_tracks_filters_and_pages_without_loading_full_cata
     assert store.search(user, statuses=["completed"], limit=1)["total"] == 3
 
 
+def test_cluster_pipeline_history_exposes_graph_identity_without_request(cluster):
+    store, nodes, user, needs, _, request, _ = cluster
+    graph_id = "a" * 32
+    pipeline = {**request, "kind": "pipeline", "payload": {"graph": {"id": graph_id, "name": "Example pipeline"}}}
+    job = store.submit(pipeline, needs, user, origin_node=nodes[0]["node_id"])["job"]
+    rows = store.search(user, project_id=request["project_id"], tools=["visual_pipeline"])["items"]
+
+    assert [(row["cluster_job_id"], row["pipeline_graph_id"]) for row in rows] == [(job["cluster_job_id"], graph_id)]
+    assert "request_summary" not in rows[0]
+
+
 def test_submission_idempotency_and_changed_input_conflicts(cluster):
     store, nodes, user, needs, _, request, _ = cluster
     first = store.submit(request, needs, user, origin_node=nodes[0]["node_id"], idempotency_key="one-click")
