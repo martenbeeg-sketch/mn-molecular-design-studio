@@ -1054,6 +1054,16 @@ def execution_harness(monkeypatch,tmp_path,design_source_factory):
         p=tmp_path/f"child-{len(calls)}";p.mkdir()
         c=copy.deepcopy(base);c["candidate_id"]="design";c["complex_pdb"]=str(source/"designed.cif")
         c["stage"]={"rfd3":"generation.backbone","foundry_mpnn":"generation.backbone_sequence"}.get(n["data"]["kind"],"complex_refolding")
+        if c["stage"] == "complex_refolding":
+            c["source_tool"] = n["data"]["kind"]
+            c["candidate_id"] = c["source_tool"] + "-prediction"
+            params = request["parameters"]
+            tasks = params.get("tasks")
+            if tasks:
+                c["parents"] = [tasks[0]["source_candidate_id"]]
+            else:
+                parent_row = json.loads(Path(params["candidates_jsonl"]).read_text().splitlines()[0])
+                c["parents"] = [parent_row["candidate_id"]]
         c["metrics"]={"ranking_score":.8}
         normalized=p/"artifacts/normalized_candidates";normalized.mkdir(parents=True)
         (normalized/"candidates.jsonl").write_text(json.dumps(c)+"\n")
@@ -1072,7 +1082,8 @@ def test_execution_reuses_only_unchanged_steps_and_preserves_prior_results(execu
     moved=copy.deepcopy(g);next(n for n in moved["nodes"] if n["data"]["kind"]=="binder_context")["position"]["y"]+=400
     p2=runner.run_graph_pipeline(moved,"moved","owner","project")
     assert len(calls)==3
-    assert json.loads((p2/"result.json").read_text())["metrics"]["cached_steps"]==4
+    cached = json.loads((p2/"graph_execution.json").read_text())["nodes"]
+    assert {node for node, state in cached.items() if state["status"] == "cached"} == {"rfd3-2", "foundry_mpnn-3", "rf3-4"}
     changed=copy.deepcopy(g);next(n for n in changed["nodes"] if n["data"]["kind"]=="foundry_mpnn")["data"]["params"]["sequences"]+=1
     runner.run_graph_pipeline(changed,"changed","owner","project")
     assert calls==["rfd3","foundry_mpnn","rf3","foundry_mpnn","rf3"]

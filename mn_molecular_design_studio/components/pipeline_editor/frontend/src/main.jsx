@@ -171,6 +171,7 @@ function Editor({args}){
     connection=normalizeConnection(connection);
     const source=ns.find(n=>n.id===connection.source),target=ns.find(n=>n.id===connection.target);
     if(!source||!target||source.id===target.id)return false;
+    if(source.data.kind==='target' && source.data.params?.target_input==='idr' && target.data.kind!=='rfd4')return false;
     const a=catalog[source.data.kind],b=catalog[target.data.kind];
     const outputs=a.capabilities?.outputs||a.outputs||[],inputs=b.capabilities?.inputs||b.inputs||[];
     const output=outputs.find(port=>port.id===connection.sourceHandle);
@@ -337,6 +338,9 @@ function Editor({args}){
   if(source && portsFor(catalog[source.data.kind], 'outputs').some(port => port.id === branch.port)){
     const inlets=compatibleInlets(catalog,matrix.wires,source.data.kind,branch.port,
       emittedTypes(source,branch.port,edges,nodes));
+    if(source.data.kind==='target' && source.data.params?.target_input==='idr'){
+      for(const kind of Object.keys(inlets)) if(kind!=='rfd4') delete inlets[kind];
+    }
     const existing=nodes.flatMap(target => (inlets[target.data.kind] || []).flatMap(port => {
       const wire={source:source.id,sourceHandle:branch.port,target:target.id,targetHandle:port.id};
       return compatible(wire) ? [{wire,label:target.data.label,kind:target.data.kind,port:port.label}] : [];
@@ -377,13 +381,14 @@ function Editor({args}){
   const projection=projectGroups(displayNodes,displayEdges,edges,groups,catalog);
   groupEndpoints.current=projection.endpoints;
   const focusedNode=nodes.find(node=>node.id===selection);
-  const openSettings=async id=>{
+  const openCanvasDialog=async action=>{
     if((document.fullscreenElement||document.webkitFullscreenElement)===shellRef.current){
       const exit=document.exitFullscreen||document.webkitExitFullscreen;
       if(exit)await exit.call(document);
     }
-    emit({type:'edit_node',node_id:id});
+    emit(action);
   };
+  const openSettings=id=>openCanvasDialog({type:'edit_node',node_id:id});
   const inspectNode=(event,node)=>{
     if(event.target.closest('.react-flow__handle'))return;
     setHelpOpen(false);
@@ -464,6 +469,7 @@ function Editor({args}){
       {!readOnly && palette && !canvasOnly && <ToolPalette key={branchData?.nodeId || 'all'}
         catalog={catalog} branch={branchData} usedStages={usedStages} onConnect={wire=>{if(onConnect(wire))setBranch(null);}} onBranchPort={port=>setBranch({...branch,port})}
         onClearBranch={()=>setBranch(null)} onClose={()=>setPalette(false)}
+        onDesignBinder={args.binder_picker ? id=>openCanvasDialog({type:'binder_picker',node_id:id}) : undefined}
         onAdd={(kind,inlet) => {
           if (!branchData) addNode(kind);
           else if (connectNext(branchData.node, branchData.port, kind, inlet)) setBranch(null);

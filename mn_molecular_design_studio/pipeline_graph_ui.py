@@ -384,6 +384,23 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
     contexts = {}
     node_id, params = selected["id"], selected["data"]["params"]
     key = f"{prefix}-{node_id}"
+    if selected["data"]["kind"] == "target" and params.get("target_input") == "idr":
+        from mn_molecular_design_studio.binder_pipeline import stage_idr_target
+
+        sequence = st.text_area("Target sequence or FASTA", value=params.get("target_sequence", ""),
+                                key=key + "-idr-sequence")
+        hotspots = st.text_input("Hotspot residues (optional)", value=params.get("hotspots", ""),
+                                key=key + "-idr-hotspots", help="Use 1-based residue positions in the sequence.")
+        if sequence.strip():
+            try:
+                values = stage_idr_target(sequence, owner_id, hotspots=hotspots)
+            except (ValueError, OSError) as exc:
+                st.error(str(exc))
+                values = {"target_pdb": "", "target_sequence": ""}
+        else:
+            values = {"target_pdb": "", "target_sequence": ""}
+        params.update(values)
+        return {node_id: values}
     if selected["data"]["kind"] == "target":
         path = resolve_stored_path(params.get("target_pdb"), must_exist=True) if params.get("target_pdb") else None
         source = render_target_source(
@@ -672,7 +689,81 @@ def _activate_graph(prefix, graph, revision=None):
     st.session_state.pop(prefix + "-run-check", None)
     st.session_state[prefix+"-reset"] = uuid.uuid4().hex
     st.session_state.pop(prefix + "-guided-open", None)
+    st.session_state.pop(prefix + "-binder-open", None)
     _close_node_editor(prefix)
+
+
+def _binder_picker(key, *, connected_target=None):
+    from mn_molecular_design_studio.binder_pipeline import (
+        FORMATS, TARGET_INPUTS, compatible_routes, idr_target, legacy_sequence_carrier,
+    )
+
+    if connected_target:
+        params = connected_target["data"]["params"]
+        if legacy_sequence_carrier(params):
+            st.info("This legacy Target carries a sequence. Use New pipeline → Design a binder → Sequence to configure an IDR route.")
+            return None
+        target_input = "idr" if idr_target(params) else "structure"
+        st.caption(f"Using {connected_target['data']['label']} · {TARGET_INPUTS[target_input]}")
+    else:
+        source = st.segmented_control("Target input", ["Structure", "Sequence"], default="Structure", key=key + "-source")
+        if source is None:
+            return None
+        target_input = "structure"
+        if source == "Sequence":
+            target_input = st.selectbox("Target context", ["idr", "sequence"], index=None,
+                                        format_func=TARGET_INPUTS.get, placeholder="Choose how to interpret the sequence",
+                                        key=key + "-context")
+            if target_input is None:
+                return None
+    binder_format = st.pills("Binder format", list(FORMATS), format_func=FORMATS.get,
+                             default="miniprotein", key=key + "-format")
+    if binder_format is None:
+        return None
+    routes = compatible_routes(target_input, binder_format)
+    if not routes:
+        st.info("Studio has no registered binder-design route for this input and format.")
+        return None
+    engines = list(dict.fromkeys(route.engine for route in routes))
+    engine = st.selectbox("Design engine", engines, key=f"{key}-{target_input}-{binder_format}-engine")
+    variants = [route for route in routes if route.engine == engine]
+    route = (st.selectbox("Refolding", variants, format_func=lambda item: item.variant,
+                          key=f"{key}-{target_input}-{binder_format}-refold")
+             if len(variants) > 1 else variants[0])
+    st.caption(route.summary)
+    if st.button("Add to canvas" if connected_target else "Create binder pipeline", type="primary", key=key + "-create"):
+        return route
+    return None
+
+
+def _show_binder_branch(prefix, graph, project_id, submit_api):
+    from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline
+
+    open_key = prefix + "-binder-open"
+    target = next((node for node in graph["nodes"] if node["id"] == st.session_state.get(open_key)
+                   and node["data"]["kind"] == "target"), None)
+    if target is None:
+        return
+
+    @st.dialog("Design a binder", on_dismiss=lambda: st.session_state.pop(open_key, None))
+    def dialog():
+        route = _binder_picker(f"{prefix}-{graph['id']}-{target['id']}-binder", connected_target=target)
+        if route is None:
+            return
+        try:
+            created = new_binder_pipeline(route.id, target_input=route.target_input, binder_format=route.format,
+                                          graph=graph, target_node_id=target["id"])
+            revision = _draft_revision(prefix, graph)
+            if project_id and revision:
+                saved = _save_draft(prefix, project_id, created, submit_api)
+                created, revision = saved["graph"], saved["revision"]
+        except (ValueError, RuntimeError, OSError, KeyError) as exc:
+            st.error(str(exc))
+            return
+        _activate_graph(prefix, created, revision)
+        st.rerun()
+
+    dialog()
 
 
 def _show_guided_pipeline_setup(prefix, graph, project_id, submit_api):
@@ -683,16 +774,31 @@ def _show_guided_pipeline_setup(prefix, graph, project_id, submit_api):
     from mn_molecular_design_studio.pipeline_graph import MAIN_STARTERS
     from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
 
-    @st.dialog("Guided pipeline setup", width="medium", on_dismiss=lambda: st.session_state.pop(open_key, None))
+    @st.dialog("Start a pipeline", width="medium", on_dismiss=lambda: st.session_state.pop(open_key, None))
     def dialog():
-        st.caption("Choose a workflow to add connected steps to your canvas.")
+        if st.button("Start with an empty canvas", key=open_key + "-blank"):
+            st.session_state.pop(open_key, None)
+            st.rerun()
         categories = {value: name for name, value in MAIN_STARTERS.items()}
+        categories["targeted_protein_binder"] = "Design a binder"
         categories["advanced"] = "Advanced workflows"
         key = prefix + "-guided-" + graph["id"]
         task = st.selectbox("Workflow type", list(categories), format_func=categories.get, index=None, key=key + "-task")
         if task is None:
             return
-        created = render_task_setup(key + "-" + task, task=task, compact=True)
+        if task == "targeted_protein_binder":
+            from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline
+
+            route = _binder_picker(key + "-binder")
+            if route is None:
+                return
+            try:
+                created = new_binder_pipeline(route.id, target_input=route.target_input, binder_format=route.format)
+            except ValueError as exc:
+                st.error(str(exc))
+                return
+        else:
+            created = render_task_setup(key + "-" + task, task=task, compact=True)
         if created is None:
             return
         created["id"] = graph["id"]
@@ -1206,7 +1312,9 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
         title, create = st.columns([3, 1], vertical_alignment="bottom")
         title.title("Pipeline library")
         if create.button("New pipeline", type="primary", icon=":material/add:", width="stretch", key=prefix + "-new"):
-            _activate_graph(prefix, blank_program())
+            graph = blank_program()
+            _activate_graph(prefix, graph)
+            st.session_state[prefix + "-guided-open"] = graph["id"]
             st.rerun()
         section = st.segmented_control(
             "Pipeline library view", ["Saved pipelines", "Templates", "Runs", "Trash"],
@@ -1656,6 +1764,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                          template_id=opened_template["id"] if opened_template else None,
                          starting_points=starting_points,
                          can_edit_templates=can_edit_templates,
+                         binder_picker=not opened_template and not in_trash,
                          guided_setup=not opened_template and not graph["nodes"],
                          restore_viewport=bool(_draft_revision(prefix, graph) or st.session_state.get(prefix + "-restore-viewport")),
                          execution=execution, settings_update=st.session_state.get(prefix+"-settings-update"),
@@ -1732,6 +1841,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                             st.rerun()
                     elif action_type == "guided_setup" and not graph["nodes"]:
                         st.session_state[prefix + "-guided-open"] = graph["id"]
+                    elif action_type == "binder_picker":
+                        st.session_state[prefix + "-binder-open"] = action.get("node_id")
                     elif action["type"] == "campaign":
                         st.session_state[prefix + "-campaign-open"] = True
                     elif action["type"] == "resources":
@@ -1794,6 +1905,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             if st.button("Open run results", key=prefix + "-open-latest-result"):
                 _navigate_to_job_details(reference, final_results=graph.get("template_id") == "unidock_active_learning")
     _show_guided_pipeline_setup(prefix, graph, project_id, submit_api)
+    if not opened_template and not in_trash:
+        _show_binder_branch(prefix, graph, project_id, submit_api)
     _show_pipeline_campaign(prefix, project_id, submit_api)
     _show_pipeline_resources(prefix, owner_id, project_id, submit_api)
     _show_pipeline_versions(prefix, owner_id, project_id, graph, saved_draft, submit_api)

@@ -95,6 +95,7 @@ def install(app, current_user, *, validate_paths, resolve_job):
 
     @router.get("/pipelines/templates")
     def pipeline_templates(user=Depends(current_user)):
+        from mn_molecular_design_studio.binder_pipeline import catalogue as binder_catalogue
         from mn_molecular_design_studio.pipeline_graph import MAIN_STARTERS, STARTER_TEMPLATES, LEGACY_STARTER_TEMPLATES, TEMPLATE_REFERENCES
         from mn_molecular_design_studio.scientific_tasks import catalogue
         from mn_molecular_design_studio.workflow_modes import MODES
@@ -104,6 +105,7 @@ def install(app, current_user, *, validate_paths, resolve_job):
                                        "variant" if key in variants else "advanced"),
                            **({"parent_id": variants[key]} if key in variants else {})}
                           for label, key in STARTER_TEMPLATES.items()], "tasks": catalogue(),
+                "binder_builder": binder_catalogue(),
                 "legacy_items": [{"id": key, "label": label} for label, key in LEGACY_STARTER_TEMPLATES.items()]}
 
     @router.post("/pipelines/drafts")
@@ -114,6 +116,28 @@ def install(app, current_user, *, validate_paths, resolve_job):
         if not project:
             raise HTTPException(422, "Choose an existing project.")
         call(require_project_access, user, project)
+        if payload.template == "design_binder":
+            from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline, stage_idr_target
+
+            if payload.source_job or payload.selected_candidate_ids:
+                raise HTTPException(422, "A binder starter uses a target structure or sequence.")
+            config = payload.configuration or {"route": "rfd4-internal", "target_input": "structure", "binder_format": "miniprotein"}
+            if set(config) != {"route", "target_input", "binder_format"}:
+                raise HTTPException(422, "Choose route, target_input and binder_format from the binder builder catalog.")
+            route = config["route"]
+            target_input = config["target_input"]
+            binder_format = config["binder_format"]
+            params = call(api_files.resolve_references, payload.parameters, user)
+            validate_paths(params, user)
+            if target_input == "idr":
+                if set(params) - {"target_sequence", "hotspots"}:
+                    raise HTTPException(422, "An IDR target accepts a sequence and optional hotspot positions.")
+                if params.get("target_sequence"):
+                    params = call(stage_idr_target, params["target_sequence"], str(user["id"]), hotspots=params.get("hotspots", ""))
+            elif "target_sequence" in params:
+                raise HTTPException(422, "Choose the IDR route to supply a target sequence.")
+            graph = call(new_binder_pipeline, route, target_input=target_input, binder_format=binder_format, inputs=params)
+            return {"project_id": project, "graph": graph, "saved": False}
         if payload.template not in SUPPORTED_TEMPLATE_IDS:
             raise HTTPException(422, "Choose a template from /pipelines/templates.")
         template = payload.template

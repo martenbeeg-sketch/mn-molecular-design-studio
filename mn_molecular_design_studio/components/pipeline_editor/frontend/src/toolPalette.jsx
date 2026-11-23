@@ -67,7 +67,7 @@ function ToolCard({spec, inlets, onAdd}) {
   </article>;
 }
 
-export function ToolPalette({catalog, branch, usedStages, onConnect, onBranchPort, onClearBranch, onAdd, onClose}) {
+export function ToolPalette({catalog, branch, usedStages, onConnect, onBranchPort, onClearBranch, onAdd, onClose, onDesignBinder}) {
   const [query, setQuery] = useState('');
   const [filters, setFilters] = useState({});
   const [advanced, setAdvanced] = useState(false);
@@ -103,6 +103,10 @@ export function ToolPalette({catalog, branch, usedStages, onConnect, onBranchPor
       {branch && <div className="palette-branch">
         <div className="palette-branch-heading"><strong>{branch.node.data.label}</strong>
           <button type="button" onClick={() => {setFilters({});onClearBranch();}}>Show all tools</button></div>
+        {onDesignBinder && branch.node.data.kind === 'target' &&
+          <button type="button" className="palette-design-binder" onClick={() => onDesignBinder(branch.node.id)}>
+            Design a binder…
+          </button>}
         <label>Branch from output
           <select aria-label="Branch from output" value={branch.port} onChange={event => {setFilters({});onBranchPort(event.target.value);}}>
             {portsFor(catalog[branch.node.data.kind], 'outputs').map(port =>

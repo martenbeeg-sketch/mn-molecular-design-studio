@@ -203,6 +203,7 @@ def compatibility_catalog():
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, workflow_catalog
     from mn_molecular_design_studio.engine.workflow_engine.workflows.generator_capabilities import generator_capabilities
     from mn_molecular_design_studio.output_vocabulary import measure_capabilities
+    from mn_molecular_design_studio.binder_pipeline import catalogue as binder_catalogue
 
     # workflow_catalog resolves each registered implementation to catch stale
     # module/function routes without submitting a job or invoking a model.
@@ -242,6 +243,7 @@ def compatibility_catalog():
         })
     return {
         'version': 'studio.design-workflow-capabilities.v1',
+        'binder_builder': binder_catalogue(),
         'complete_native_workflows': [row for row in workflows if row['route_status'] == 'complete_native_graph'],
         'composable_generators': [row for row in workflows if row['route_status'] == 'modular_graph_generator'],
         'specialized_graph_routes': [row for row in workflows if row['route_status'] == 'specialized_graph_route'],

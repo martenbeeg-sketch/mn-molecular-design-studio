@@ -1115,6 +1115,8 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
                     "hotspots": current_params.get("hotspots", ""),
                     "coldspots": current_params.get("coldspots", ""),
                 }
+                if current_params.get("target_input") == "idr":
+                    target["target_sequence"] = current_params["target_sequence"]
             elif current_kind == "binder_context":
                 if current_params.get("clear_unselected"):
                     target["hotspots"] = current_params.get("hotspots", "")

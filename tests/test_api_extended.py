@@ -430,6 +430,27 @@ def test_all_canvas_starters_are_available_as_unsaved_api_drafts(api_data):
     assert client.post("/api/v1/pipelines/drafts", json={**request, "template": "arbitrary"}).status_code == 422
 
 
+def test_binder_picker_catalog_and_draft_use_the_same_routes(api_data):
+    data, client = api_data, api_data["client"]
+    catalog = client.get("/api/v1/pipelines/templates").json()["binder_builder"]
+    assert catalog == client.get("/api/v1/pipelines/compatibility").json()["binder_builder"]
+    route = next(route for route in catalog["routes"] if route["id"] == "rfd4-idr")
+    request = {"project_id": data["project"]["id"], "template": catalog["template_id"],
+               "configuration": {"route": route["id"], "target_input": route["target_input"], "binder_format": route["format"]},
+               "parameters": {"target_sequence": "ACDEFGHIKLMN"}}
+    response = client.post("/api/v1/pipelines/drafts", json=request)
+    assert response.status_code == 200, response.text
+    assert response.json()["saved"] is False
+    graph = response.json()["graph"]
+    target = graph["nodes"][0]["data"]["params"]
+    assert target["target_input"] == "idr" and target["target_sequence"] == "ACDEFGHIKLMN"
+    validation = client.post("/api/v1/pipelines/validate", json={"project_id": request["project_id"], "graph": graph})
+    assert validation.status_code == 200, validation.text
+    assert validation.json()["valid"]
+    request["configuration"]["binder_format"] = "cyclic_peptide"
+    assert client.post("/api/v1/pipelines/drafts", json=request).status_code == 422
+
+
 @pytest.mark.parametrize("tool", ["kejia_idr", "peptide_trap"])
 def test_pipeline_continuation_validates_source_candidate_and_project(api_data, tool):
     data, client = api_data, api_data["client"]

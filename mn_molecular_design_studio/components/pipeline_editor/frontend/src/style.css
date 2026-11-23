@@ -93,6 +93,7 @@
 .palette-branch-heading{margin:0 0 7px;justify-content:space-between}
 .palette-branch-heading strong{font-size:11px}
 .palette-branch-heading button{white-space:nowrap}
+.palette-branch .palette-design-binder{width:100%;margin:0 0 8px;padding:7px 9px;text-align:left;font-weight:650;border-color:#a7c3b4;color:#205941;background:#fff}
 .palette-empty{padding:8px;color:#52695b}
 .palette-existing{background:#eff6f1;border:1px solid #d7e7dd;border-radius:8px;margin:8px 0;padding:8px}
 .palette-existing h3{color:#38604a;margin:0 0 6px}

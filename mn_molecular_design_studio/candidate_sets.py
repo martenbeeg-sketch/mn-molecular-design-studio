@@ -337,6 +337,12 @@ def chaperone_handoff(parent, node_id, source):
                 row = source_record(row, source, node_id, target_info)
             elif info and target_info and info.get("target_id") != target_info.get("target_id"):
                 raise ValueError("Chaperone handoff candidate belongs to a different target identity.")
+            raw = row.get("raw_metadata") or {}
+            previous = raw.pop("chaperone_interop", None)
+            if previous:
+                # A new handoff writes a new receipt. Preserve the preceding
+                # one in the same history used for downstream tool results.
+                _append_handoff_receipts(row, {"raw_metadata": {"chaperone_interop": previous}})
             prepared.append(row)
         return prepared
 

@@ -282,7 +282,7 @@ def create_server(client=None):
     async def create_pipeline_draft(template: str, project_id: str, ctx: Context, parameters: dict | None = None,
                                     source_job: str | None = None, selected_candidate_ids: list[str] | None = None,
                                     configuration: dict | None = None) -> dict[str, Any]:
-        """Create an unsaved graph. For small_molecule_hit_prioritization, set the Top N pose limit in configuration.method_settings.unidock_active_learning.active_accumulate.retained_pose_count."""
+        """Create an unsaved graph. For design_binder, use route, target_input and binder_format from pipeline_templates. For small_molecule_hit_prioritization, set the Top N pose limit in configuration.method_settings.unidock_active_learning.active_accumulate.retained_pose_count."""
         return await call(ctx, "POST", "/api/v1/pipelines/drafts", body={"template": template, "project_id": project_id,
                           "parameters": parameters or {}, "source_job": source_job,
                           "selected_candidate_ids": selected_candidate_ids or [], "configuration": configuration or {}})

@@ -563,6 +563,22 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
             chains=target.get("target_chains") or []
             p["target_chains"]=[x for x in re.split(r"[,;\s]+",chains) if x] if isinstance(chains,str) else chains
             p["hotspots"]=target.get("hotspots","")
+            if target.get("target_sequence"):
+                from mn_molecular_design_studio.rfd4_proteina_input import idr_binder_condition_spec, parse_idr_fasta
+                from mn_molecular_design_studio.target_identity import is_sequence_carrier_reference
+
+                p["target_structure"] = target.get("target_pdb")
+                if p.get("task") != "protein_binder" or not is_sequence_carrier_reference(p["target_structure"]):
+                    raise ValueError("An IDR sequence input requires RFD4 protein-binder design and a staged sequence.")
+                if p["target_chains"] != ["A"] or p["input_files"]:
+                    raise ValueError("An IDR sequence input uses a single staged chain A.")
+                target_sequence = parse_idr_fasta(target["target_sequence"])
+                carrier = design_validation.protein_chains(design_validation.read_structure(_path(p["target_structure"])))
+                if set(carrier) != {"A"} or design_validation.sequence(carrier["A"]) != target_sequence:
+                    raise ValueError("The staged target does not match the recorded IDR sequence. Apply the Target step again.")
+                p.update(input_mode="condition_spec", condition_spec=idr_binder_condition_spec(
+                    target_sequence, target_filename=Path(p["target_structure"]).name,
+                    binder_length_min=p["length_min"], binder_length_max=p["length_max"], hotspots=p["hotspots"]))
             if p.get("input_mode") == "condition_spec" and p.get("target_structure"):
                 from mn_molecular_design_studio.rfd4_proteina_input import rebind_condition_spec_target
                 p["condition_spec"] = rebind_condition_spec_target(
@@ -1590,6 +1606,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                              status=node_states.get(p, {}).get("status"), params=nodes[p]["data"]["params"])
                                     for p in plan["incoming"][node_id] if NODE_CATALOG[nodes[p]["data"]["kind"]]["category"] == "Structure prediction"}
                         handoff_revision = {}
+                        if kind == "results" and len(upstream) > 1:
+                            handoff_revision["results_collection_version"] = 2
                         if kind == "complex_analysis":
                             from mn_molecular_design_studio import complex_analysis_handoff
                             handoff_revision["handoff_digest"] = file_digest(Path(complex_analysis_handoff.__file__))
@@ -1638,7 +1656,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             from mn_molecular_design_studio.complex_analysis_handoff import build_collection
                             output = build_collection(parent, node_id, source, params)
                         else:
-                            output = candidate_sets.write_collection(parent, node_id, candidate_sets.iter_candidates(source, review=True), source["target"])
+                            rows = (row for branch in upstream for row in candidate_sets.iter_candidates(branch, review=True))
+                            output = candidate_sets.write_collection(parent, node_id, rows, source["target"])
                         complete(node_id, output, key); progressed = True; continue
                     if NODE_CATALOG[kind]['category'] == 'Sequence design' and source.get("candidate_set_manifest"):
                         original_source = source
@@ -1899,13 +1918,19 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         chains = [x for x in re.split(r"[\s,;]+", params["target_chains"]) if x]
                         if not chains:
                             raise ValueError("Select at least one target chain.")
-                        staged_target = parent / "artifacts" / "pipeline_inputs" / node_id / ("target-" + key_params["structure_digest"][:16] + target_path.suffix)
+                        target_dir = parent / "artifacts" / "pipeline_inputs" / node_id
+                        file_id = "target-" + key_params["structure_digest"][:16]
+                        is_idr = params.get("target_input") == "idr"
+                        staged_target = (target_dir / file_id / "idr_sequence_carrier.cif" if is_idr
+                                         else target_dir / (file_id + target_path.suffix))
                         staged_target.parent.mkdir(parents=True, exist_ok=True)
                         if not staged_target.exists():
                             shutil.copy2(target_path, staged_target)
                         output = {"target": {"target_pdb": str(staged_target), "target_chains": chains,
                                              "hotspots": params["hotspots"], "coldspots": params.get("coldspots", ""),
                                              "target_type": params.get("target_type", "auto")}}
+                        if is_idr:
+                            output["target"].update(target_type="fasta_idr", target_sequence=params["target_sequence"])
                         if any(n["data"]["kind"] in candidate_sets.KINDS for n in nodes.values()):
                             output["target"]["identity"] = candidate_sets.target_identity(output["target"])
                         complete(node_id, output, key);progressed=True;continue

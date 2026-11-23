@@ -87,6 +87,8 @@ NODE_CATALOG = {
     ]),
     "target": _spec("target", "Target Structure", "Target inputs", "Shared PDB or mmCIF structure, selected protein chains and optional baseline interface annotations. Downstream acceptance infers structured versus FASTA/IDR context from this input and the connected design conditions.", output="target", color="#758f84", fields=[
         field("target_pdb", "Target structure", "", kind="text"), field("target_chains", "Target chains", "A", kind="text"),
+        field("target_input", "Target input", "structure", kind="select", options=["structure", "idr"]),
+        field("target_sequence", "Target sequence", "", kind="text"),
         field("hotspots", "Hotspot residues", "", kind="text"), field("coldspots", "Coldspot residues", "", kind="text"),
         field("target_source_molecule_id", "Saved target molecule ID", "", kind="text"),
         field("target_source_structure_id", "Saved target structure ID", "", kind="text")]),
@@ -434,7 +436,9 @@ _OPTIONAL_FIELDS = {
         field("use_fast_ln", "Fast layer normalization", True, kind="boolean"),
         field("use_deepspeed_evo_attention", "DeepSpeed Evo attention", False, kind="boolean"),
         field("prepare_target_msa", "Prepare target MSA", True, kind="boolean")],
-    "bindcraft2": [field("campaign_seed", "Campaign seed (0 = random)", 0, minimum=0, maximum=2147483647),
+    "bindcraft2": [field("modality", "Binder format", "binder", kind="select",
+        options=["binder", "peptide", "cyclic_peptide"], section="basic"),
+        field("campaign_seed", "Campaign seed (0 = random)", 0, minimum=0, maximum=2147483647),
         field("max_trajectories", "Maximum native trajectory attempts (0 = design count)", 0, minimum=0, maximum=100000,
               help="Independent native stopping cap. Zero preserves the saved graph's design-count cap."),
         field("workers_per_gpu", "Native workers per GPU", "auto", kind="select", options=["auto", "1", "2", "3", "4"],
@@ -1828,6 +1832,8 @@ def resolve_pipeline_target_type(nodes: dict, incoming: dict, node_id: str) -> s
         kind = data.get("kind")
         node_params = data.get("params") or {}
         if kind == "target":
+            if node_params.get("target_input") == "idr":
+                return "fasta_idr"
             if node_params.get("target_type") in TARGET_TYPES:
                 return node_params["target_type"]
             target_params.append(node_params)
@@ -2387,8 +2393,14 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
                 raise ValueError(f"Connect {input_port.get('label', 'an input')} to {node['data']['label']}.")
         if not allow_incomplete and kind not in {"results", "active_results"} and not any(e["source"] == node_id for e in graph["edges"]):
             raise ValueError(f"Connect {node['data']['label']} to a downstream step or Results node.")
-        if require_inputs and kind == "target":
-            if not node["data"]["params"].get("target_pdb"):
+        if kind == "target":
+            params = node["data"]["params"]
+            if params.get("target_input") == "idr":
+                if any(nodes[dest]["data"]["kind"] != "rfd4" for dest in outgoing[node_id]):
+                    raise PipelineInputError(node_id, "Connect this sequence target directly to an RFD4 design step.")
+                if require_inputs and not (params.get("target_pdb") and params.get("target_sequence")):
+                    raise PipelineInputError(node_id, "Enter the IDR sequence in the Target step.")
+            elif require_inputs and not params.get("target_pdb"):
                 raise PipelineInputError(node_id, "Load a target structure before running the pipeline.")
         if require_inputs and kind == "ligand_sdf_input":
             from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
