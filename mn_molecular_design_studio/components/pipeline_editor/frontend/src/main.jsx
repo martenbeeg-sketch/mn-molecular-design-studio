@@ -1,7 +1,6 @@
-import React, {memo, useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import React, {memo, useCallback, useEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Handle, Position, applyNodeChanges, applyEdgeChanges, addEdge, useReactFlow, useNodesInitialized, useUpdateNodeInternals} from '@xyflow/react';
-import {StudyEdge, studyConnections, studyInfo, studyRole, studyPortPosition, studyPortStyle} from './activeStudy.jsx';
 import {frameBounds, originalConnection, projectGroups, pruneGroups} from './canvasGroups.js';
 import {ConnectionPanel} from './connectionPanel.jsx';
 import {ToolPalette, artifactLabel, compatibleInlets, portsFor} from './toolPalette.jsx';
@@ -52,24 +51,12 @@ function SocketList({ports, side, counts, onBranch}) {
 
 const StudioNode=memo(({id,data,selected})=>{
   const updateNodeInternals=useUpdateNodeInternals();
-  useEffect(()=>updateNodeInternals(id),[id,data.kind,data.routeHandles,updateNodeInternals]);
+  useEffect(()=>updateNodeInternals(id),[id,data.kind,updateNodeInternals]);
   const spec=catalog[data.kind]||{}; const p=data.params||{};
   const summary=data.summary||(p.num_designs?`${p.num_designs} design${p.num_designs===1?'':'s'} · ${p.binder_length||'variable'} aa`:p.sequences?`${p.sequences} sequence${p.sequences===1?'':'s'} / backbone`:data.kind==='target'?(p.target_pdb?`${p.target_chains||'A'} · ${p.hotspots?'hotspots set':'no hotspots'} · ${p.coldspots?'coldspots set':'no coldspots'}`:'Choose a target structure'):data.kind==='binder_context'?`${p.hotspots?'hotspot override':p.clear_unselected?'no hotspots':'inherit hotspots'} · ${p.coldspots?'coldspot override':p.clear_unselected?'no coldspots':'inherit coldspots'}`:data.kind==='filter'?(p.metric?`${p.metric} ${p.operator} ${p.threshold}`:p.passing_only?'Filter-passing designs':'All candidates'):data.kind==='results'?'Overlay · confidence · RMSD':spec.category);
   const coldspotLabel={native:'Coldspots supported',mapped:'Coldspots supported · mapped',unsupported:'Coldspots not supported'}[spec.coldspot_support];
   const hotspotLabel={native:'Hotspots supported',conditional:'Hotspots depend on task',unsupported:'Hotspots not supported'}[spec.hotspot_support];
   const targetContextLabel=spec.target_context_support==='structure_only'?'Structure + chains only · interface annotations ignored':null;
-  if(data.study){
-    const info=data.studyInfo,compact=data.studySize.width<300;
-    return <div className={`studio-node study-node ${compact?'study-compact':''} study-role-${studyRole(data.kind)} study-${data.kind} ${selected?'is-selected':''}`} style={{height:data.studySize.height,'--node-color':spec.color}}>
-      <div className="study-eyebrow">{info.eyebrow}{data.status&&<span className={`node-status ${data.status}`}>{statusLabels[data.status]||data.status}</span>}</div>
-      <div className="node-title">{data.label||spec.label}</div>
-      <div className="study-summary">{info.summary}</div>
-      {info.detail&&<div className="study-detail">{info.detail}</div>}
-      <span className="study-configure">Select to inspect ↗</span>
-      {data.routeHandles?.incoming.map(handle=><Handle key={handle.id} id={handle.id} type="target" position={studyPortPosition(handle.side)} className="study-handle" style={studyPortStyle(handle)}/>)}
-      {data.routeHandles?.outgoing.map(handle=><Handle key={handle.id} id={handle.id} type="source" position={studyPortPosition(handle.side)} className="study-handle" style={studyPortStyle(handle)}/>)}
-    </div>;
-  }
   return <div className={`studio-node ${selected?'is-selected':''}`} style={{'--node-color':spec.color}}>
     <div className="node-category"><span className="category-dot"/>{spec.category}{data.status&&<span className={`node-status ${data.status}`}>{statusLabels[data.status]||data.status}</span>}</div>
     <div className="node-title">{data.label||spec.label}</div>
@@ -85,22 +72,20 @@ const StudioNode=memo(({id,data,selected})=>{
   </div>;
 });
 const nodeTypes={studio:StudioNode, collapsedGroup:CollapsedGroup, frame:Frame};
-const edgeTypes={study:StudyEdge};
 const matrixEmpty={wires:{},handoffs:{}};
 
 function Editor({args}){
   catalog=args.catalog;
   const initial=args.graph;
-  const activeStudy=initial.template_id==='unidock_active_learning';
   const matrix=args.connections || matrixEmpty;
   const feedback = (source, output, target, input) => matrix.screening_feedback?.join('/') === [source, output, target, input].join('/');
-  const fitPadding=activeStudy?.08:.4;
+  const fitPadding=.4;
   const [nodes,setNodes]=useState(initial.nodes),[edges,setEdges]=useState(initial.edges);
   const [groups,setGroups]=useState(initial.layout_groups || []);
   const [panel,setPanel]=useState('');
   const [pipelineName,setPipelineName]=useState(initial.name||'Untitled pipeline');
   const [notice,setNotice]=useState(''),[selection,setSelection]=useState(null),[branch,setBranch]=useState(null);
-  const [palette,setPalette]=useState(!activeStudy),[focus,setFocus]=useState(false),[historyTick,setHistoryTick]=useState(0),[helpOpen,setHelpOpen]=useState(false),[showMap,setShowMap]=useState(false);
+  const [palette,setPalette]=useState(true),[focus,setFocus]=useState(false),[historyTick,setHistoryTick]=useState(0),[helpOpen,setHelpOpen]=useState(false),[showMap,setShowMap]=useState(false);
   const [fullscreen,setFullscreen]=useState(false),shellRef=useRef(null);
   const base=useRef(initial),viewport=useRef(initial.viewport||{x:0,y:0,zoom:1}),reset=useRef(args.reset_token),lastSent=useRef(''),pipelineNameRef=useRef(pipelineName);
   pipelineNameRef.current=pipelineName;
@@ -114,7 +99,7 @@ function Editor({args}){
   const undo=useCallback(()=>{const h=history.current;if(!h.past.length)return;h.future.push(snapshot());restore(h.past.pop());setHistoryTick(x=>x+1);},[snapshot,restore]);
   const redo=useCallback(()=>{const h=history.current;if(!h.future.length)return;h.past.push(snapshot());restore(h.future.pop());setHistoryTick(x=>x+1);},[snapshot,restore]);
   useEffect(()=>{
-    if(reset.current!==args.reset_token){reset.current=args.reset_token;base.current=args.graph;setPipelineName(args.graph.name||'Untitled pipeline');setNodes(copy(args.graph.nodes));setEdges(copy(args.graph.edges));setGroups(copy(args.graph.layout_groups||[]));history.current={past:[],future:[]};setSelection(null);if(activeStudy)setPalette(false);viewport.current=args.graph.viewport;fitPending.current=true;}
+    if(reset.current!==args.reset_token){reset.current=args.reset_token;base.current=args.graph;setPipelineName(args.graph.name||'Untitled pipeline');setNodes(copy(args.graph.nodes));setEdges(copy(args.graph.edges));setGroups(copy(args.graph.layout_groups||[]));history.current={past:[],future:[]};setSelection(null);viewport.current=args.graph.viewport;fitPending.current=true;}
     base.current={...base.current,name:args.graph.name};
     if(args.graph.name!==pipelineNameRef.current)setPipelineName(args.graph.name||'Untitled pipeline');
   },[args.reset_token,args.graph.name,rf]);
@@ -152,12 +137,12 @@ function Editor({args}){
   useEffect(()=>{if(notice){const t=setTimeout(()=>setNotice(''),5500);return()=>clearTimeout(t);}},[notice]);
   const addNode=useCallback((kind,position,connection=null)=>{
     const spec=catalog[kind];
-    if(activeStudy||!spec||spec.hidden)return false;
+    if(!spec||spec.hidden)return false;
     if(spec.screening_stage && state.current.nodes.some(node=>node.data.kind===kind)){
       setNotice(spec.label+' is already on the canvas. Connect to its existing input.');
       return false;
     }
-    const suggested=args.active_study_layout?.[kind];
+    const suggested=args.screening_positions?.[kind];
     pushHistory();const pos=position||(suggested&&{x:suggested.x,y:suggested.y})||rf.screenToFlowPosition({x:window.innerWidth*.49,y:330});
     const offsets=[[0,0],[0,210],[320,0],[-320,0],[0,-210],[320,210],[-320,210],[0,420],[640,0]];const open=offsets.map(([x,y])=>({x:pos.x+x,y:pos.y+y})).find(p=>!state.current.nodes.some(n=>Math.abs(n.position.x-p.x)<280&&Math.abs(n.position.y-p.y)<170))||{x:pos.x,y:pos.y+630};
     const n={id:`${kind}-${uid().slice(0,10)}`,type:'studio',position:open,selected:true,data:{kind,label:spec.label,params:Object.fromEntries(spec.fields.map(f=>[f.name,f.default]))}};
@@ -166,14 +151,13 @@ function Editor({args}){
     setSelection(connection?.source||n.id);
     setNotice(connection ? `${spec.label} added and connected.` : `${spec.label} added. Connect its sockets to another step.`);
     return true;
-  },[activeStudy,args.active_study_layout,pushHistory,rf]);
+  },[args.screening_positions,pushHistory,rf]);
   const normalizeConnection=connection=>{
     const current=originalConnection(connection,groupEndpoints.current);
     return {...current,sourceHandle:current.sourceHandle||'out',targetHandle:current.targetHandle||'in'};
   };
   const compatible=useCallback(connection=>{
     const ns=state.current.nodes,es=state.current.edges;
-    if(activeStudy)return false;
     connection=normalizeConnection(connection);
     const source=ns.find(n=>n.id===connection.source),target=ns.find(n=>n.id===connection.target);
     if(!source||!target||source.id===target.id)return false;
@@ -189,7 +173,7 @@ function Editor({args}){
     if(feedback(source.data.kind,output.id,target.data.kind,input.id))return true;
     const visit=(id,seen=new Set())=>{if(id===source.id)return true;if(seen.has(id))return false;seen.add(id);return es.filter(e=>e.source===id&&!e.loop_back).some(e=>visit(e.target,seen));};
     return !visit(target.id);
-  },[activeStudy,matrix]);
+  },[matrix]);
   const onConnect=c=>{
     if(!compatible(c)){setNotice('These sockets are incompatible, occupied, or would create a cycle.');return;}
     pushHistory();
@@ -242,7 +226,7 @@ function Editor({args}){
     setSelection(groupId);
   };
   const changeCanvasNodes=changes=>{
-    const real=changes.filter(change=>nodes.some(node=>node.id===change.id)&&(!activeStudy||change.type!=='remove'));
+    const real=changes.filter(change=>nodes.some(node=>node.id===change.id));
     const shifts=changes.filter(change=>change.type==='position'&&change.position&&groups.some(group=>group.id===change.id));
     if(real.some(change=>change.type==='remove'))pushHistory();
     if(!real.length&&!shifts.length)return;
@@ -275,21 +259,16 @@ function Editor({args}){
       const mod=e.ctrlKey||e.metaKey;
       if(mod&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?redo():undo();}
       if(mod&&e.key.toLowerCase()==='y'){e.preventDefault();redo();}
-      if(mod&&e.key.toLowerCase()==='d'&&!activeStudy){e.preventDefault();duplicate();}
+      if(mod&&e.key.toLowerCase()==='d'){e.preventDefault();duplicate();}
       if(mod&&e.key.toLowerCase()==='c'){const ns=state.current.nodes.filter(n=>n.selected);clipboard.current={nodes:copy(ns),edges:copy(state.current.edges.filter(e=>ns.some(n=>n.id===e.source)&&ns.some(n=>n.id===e.target)))};}
-      if(mod&&e.key.toLowerCase()==='v'&&!activeStudy&&clipboard.current?.nodes.length){e.preventDefault();pushHistory();const c=clipboard.current,ids=Object.fromEntries(c.nodes.map(n=>[n.id,`${n.data.kind}-${uid().slice(0,10)}`]));setNodes(p=>[...p.map(n=>({...n,selected:false})),...c.nodes.map(n=>({...copy(n),id:ids[n.id],position:{x:n.position.x+70,y:n.position.y+70},selected:true}))]);setEdges(p=>[...p,...c.edges.map(e=>({...e,id:`edge-${uid()}`,source:ids[e.source],target:ids[e.target]}))]);}
+      if(mod&&e.key.toLowerCase()==='v'&&clipboard.current?.nodes.length){e.preventDefault();pushHistory();const c=clipboard.current,ids=Object.fromEntries(c.nodes.map(n=>[n.id,`${n.data.kind}-${uid().slice(0,10)}`]));setNodes(p=>[...p.map(n=>({...n,selected:false})),...c.nodes.map(n=>({...copy(n),id:ids[n.id],position:{x:n.position.x+70,y:n.position.y+70},selected:true}))]);setEdges(p=>[...p,...c.edges.map(e=>({...e,id:`edge-${uid()}`,source:ids[e.source],target:ids[e.target]}))]);}
       if(e.key.toLowerCase()==='f'){e.preventDefault();rf.fitView({padding:fitPadding,duration:250});}
       if(e.key==='Escape')setSelection(null);
     };window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);
-  },[undo,redo,duplicate,pushHistory,rf,fitPadding,activeStudy]);
+  },[undo,redo,duplicate,pushHistory,rf,fitPadding]);
   const layout=()=>{
     pushHistory();
     const ns=state.current.nodes,es=state.current.edges;
-    if(activeStudy){
-      setNodes(ns.map(node=>{const position=args.active_study_layout?.[node.data.kind];return position?{...node,position:{x:position.x,y:position.y}}:node;}));
-      setTimeout(()=>rf.fitView({padding:fitPadding,duration:250}),30);
-      return;
-    }
     const levels=new Map(),visiting=new Set();
     const level=id=>{
       if(levels.has(id))return levels.get(id);
@@ -354,9 +333,9 @@ function Editor({args}){
     branchData={...branch,node:source,inlets,existing};
   }
   const usedStages = new Set(nodes.filter(node=>catalog[node.data.kind].screening_stage).map(node=>node.data.kind));
-  const connectionLayout=useMemo(() => activeStudy ? studyConnections(nodes,edges) : {edges:edges.map(edge =>
-    edge.loop_back ? {...edge,label:'Next round',style:{stroke:'#ab641f',strokeWidth:2.5,strokeDasharray:'6 4'}} : edge
-  )}, [activeStudy,nodes,edges]);
+  const displayEdges=edges.map(edge => edge.loop_back
+    ? {...edge,label:'Next round',style:{stroke:'#ab641f',strokeWidth:2.5,strokeDasharray:'6 4'}}
+    : edge);
   const inputCounts = Object.create(null), outputCounts = Object.create(null);
   for (const edge of edges) {
     const input = inputCounts[edge.target] ||= {};
@@ -365,7 +344,7 @@ function Editor({args}){
     input[targetPort] = (input[targetPort] || 0) + 1;
     output[sourcePort] = (output[sourcePort] || 0) + 1;
   }
-  const displayNodes=[...nodes,...(connectionLayout.references||[])].map(n=>{
+  const displayNodes=nodes.map(n=>{
     const incomingKinds=edges.filter(e=>e.target===n.id).map(e=>nodes.find(source=>source.id===e.source)?.data.kind);
     const hasSurfaceAnalysis=incomingKinds.includes('surface_analysis');
     const hasOtherResults=incomingKinds.some(kind=>kind&&kind!=='surface_analysis');
@@ -378,21 +357,13 @@ function Editor({args}){
       : n.data.kind==='results'&&hasSurfaceAnalysis
       ? hasOtherResults?'Candidates + surface evidence':'Residue consensus · surface view'
       : undefined;
-    const studySize=n.data.studySize||args.active_study_layout?.[n.data.kind]||{width:320,height:160};
-    return {...n,...(activeStudy?{style:{width:studySize.width}}:{}),data:{...n.data,status:args.execution?.[n.id]?.status,count:mdStep?undefined:args.execution?.[n.id]?.candidate_count,summary,routeHandles:connectionLayout.handles?.get(n.id),inputCounts:inputCounts[n.id],outputCounts:outputCounts[n.id],onBranch:port=>openBranch(n.id,port),...(activeStudy?{study:true,studySize,studyInfo:n.data.studyInfo||studyInfo(n.data.kind,n.data.params,nodes)}:{})}};
+    return {...n,data:{...n.data,status:args.execution?.[n.id]?.status,
+      count:mdStep?undefined:args.execution?.[n.id]?.candidate_count,
+      summary:summary || args.round_outline?.screen?.step_details[n.id],
+      inputCounts:inputCounts[n.id],outputCounts:outputCounts[n.id],onBranch:port=>openBranch(n.id,port)}};
   });
-  const projection=projectGroups(displayNodes,connectionLayout.edges,edges,groups,catalog);
+  const projection=projectGroups(displayNodes,displayEdges,edges,groups,catalog);
   groupEndpoints.current=projection.endpoints;
-  if(activeStudy&&args.round_outline?.screen){
-    const {rounds,decision,next_round}=args.round_outline.screen;
-    const members=displayNodes.filter(node=>[...rounds,decision,...next_round].includes(node.id));
-    if(members.length){
-      const {position,width,height}=frameBounds(members);
-      projection.nodes.unshift({id:'screening-round-frame',type:'frame',position,style:{width,height},
-        draggable:false,deletable:false,zIndex:-1,data:{name:'Repeat docking rounds',subtitle:'Open round',
-          members:members.map(node=>node.id),loop:true}});
-    }
-  }
   const focusedNode=nodes.find(node=>node.id===selection);
   const openSettings=async id=>{
     if((document.fullscreenElement||document.webkitFullscreenElement)===shellRef.current){
@@ -404,17 +375,16 @@ function Editor({args}){
   const inspectNode=(event,node)=>{
     if(event.target.closest('.react-flow__handle'))return;
     setHelpOpen(false);
-    if(node.data.loop){setPanel(panel==='round'?'':'round');return;}
     if(node.type==='frame'||node.type==='collapsedGroup'){
       setSelection(node.id);setPanel('group');return;
     }
-    const id=node.data.reference_to||node.id;
+    const id=node.id;
     setSelection(id);
     if(event.shiftKey||event.ctrlKey||event.metaKey)return;
     if(canvasOnly)openSettings(id);
     else setPanel('connections');
   };
-  return <div ref={shellRef} className={`editor-shell ${activeStudy?'active-study':''} ${focus?'focus-mode':''} ${fullscreen?'fullscreen-mode':''}`}>
+  return <div ref={shellRef} className={`editor-shell ${focus?'focus-mode':''} ${fullscreen?'fullscreen-mode':''}`}>
     <header className="editor-toolbar">
       <div className="editor-heading">
         <div className="toolbar-title">
@@ -436,10 +406,10 @@ function Editor({args}){
         <button title="Redo (Ctrl+Shift+Z)" disabled={!history.current.future.length} onClick={redo}>↷</button>
         <span className="toolbar-divider"/>
         <button onClick={layout} title="Arrange the current graph">Arrange</button>
-        {!activeStudy&&<button disabled={selectionMembers.length<2} onClick={groupSelection} title="Group selected steps">Group</button>}
+        <button disabled={selectionMembers.length<2} onClick={groupSelection} title="Group selected steps">Group</button>
         <button aria-pressed={panel==='connections'} onClick={()=>{setPanel(panel==='connections'?'':'connections');setHelpOpen(false);}}
           title="Inspect inputs, outputs and compatible steps">Connections</button>
-        {activeStudy&&args.round_outline&&<button aria-pressed={panel==='round'}
+        {args.round_outline?.screen&&<button aria-pressed={panel==='round'}
           onClick={()=>{setPanel(panel==='round'?'':'round');setHelpOpen(false);}}>Screening round</button>}
         <button title="Toggle canvas overview" onClick={()=>setShowMap(!showMap)}>Map</button>
         <span className="canvas-spacer"/>
@@ -454,7 +424,7 @@ function Editor({args}){
       </div>
     </header>
     <div className="workspace">
-      {palette && !activeStudy && !canvasOnly && <ToolPalette key={branchData?.nodeId || 'all'}
+      {palette && !canvasOnly && <ToolPalette key={branchData?.nodeId || 'all'}
         catalog={catalog} branch={branchData} usedStages={usedStages} onConnect={wire=>{if(onConnect(wire))setBranch(null);}} onBranchPort={port=>setBranch({...branch,port})}
         onClearBranch={()=>setBranch(null)} onClose={()=>setPalette(false)}
         onAdd={(kind,inlet) => {
@@ -462,28 +432,27 @@ function Editor({args}){
           else if (connectNext(branchData.node, branchData.port, kind, inlet)) setBranch(null);
         }}/>}
       <main className="flow-region" onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect='move';}} onDrop={e=>{e.preventDefault();const kind=e.dataTransfer.getData('application/studio-node');if(catalog[kind])addNode(kind,rf.screenToFlowPosition({x:e.clientX,y:e.clientY}));}}>
-        {!palette&&!activeStudy&&!canvasOnly&&<button className="show-library" onClick={()=>setPalette(true)}>+ Tools</button>}
+        {!palette&&!canvasOnly&&<button className="show-library" onClick={()=>setPalette(true)}>+ Tools</button>}
         <ReactFlow nodes={projection.nodes} edges={projection.edges} nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes} onNodesChange={changeCanvasNodes}
-          onEdgesChange={changes=>{if(!activeStudy){if(changes.some(c=>c.type==='remove'))pushHistory();setEdges(prev=>applyEdgeChanges(changes,prev));}}}
+          onNodesChange={changeCanvasNodes}
+          onEdgesChange={changes=>{if(changes.some(c=>c.type==='remove'))pushHistory();setEdges(prev=>applyEdgeChanges(changes,prev));}}
           onNodeDragStart={()=>{dragSnapshot.current=snapshot();}} onNodeDragStop={()=>{if(dragSnapshot.current){pushHistory(dragSnapshot.current);dragSnapshot.current=null;}}}
-          onConnect={onConnect} isValidConnection={compatible} nodesConnectable={!activeStudy}
+          onConnect={onConnect} isValidConnection={compatible}
           onNodeClick={inspectNode}
-          onNodeDoubleClick={(_,node)=>{if(node.type==='studio'&&!canvasOnly)openSettings(node.data.reference_to||node.id);}}
+          onNodeDoubleClick={(_,node)=>{if(node.type==='studio'&&!canvasOnly)openSettings(node.id);}}
           onPaneClick={()=>{setSelection(null);if(panel==='group'||panel==='connections')setPanel('');}}
-          onEdgeDoubleClick={(_,edge)=>{if(!activeStudy){pushHistory();setEdges(es=>es.filter(e=>e.id!==edge.id));}}}
-          onMoveEnd={(_,v)=>{viewport.current=v;emit();}} minZoom={.18} maxZoom={2} defaultViewport={initial.viewport} snapToGrid snapGrid={[12,12]} selectionKeyCode="Shift" multiSelectionKeyCode="Shift" panOnDrag={[0,1,2]} deleteKeyCode={activeStudy?null:['Backspace','Delete']} connectionRadius={28} defaultEdgeOptions={{type:'default',pathOptions:{curvature:.12},style:{stroke:'#8ca99b',strokeWidth:2.2},interactionWidth:22}}>
+          onEdgeDoubleClick={(_,edge)=>{pushHistory();setEdges(es=>es.filter(e=>e.id!==edge.id));}}
+          onMoveEnd={(_,v)=>{viewport.current=v;emit();}} minZoom={.18} maxZoom={2} defaultViewport={initial.viewport} snapToGrid snapGrid={[12,12]} selectionKeyCode="Shift" multiSelectionKeyCode="Shift" panOnDrag={[0,1,2]} deleteKeyCode={['Backspace','Delete']} connectionRadius={28} defaultEdgeOptions={{type:'default',pathOptions:{curvature:.12},style:{stroke:'#8ca99b',strokeWidth:2.2},interactionWidth:22}}>
           <Background gap={24} size={1.2} color="#cad6cf"/><Controls showInteractive={false} fitViewOptions={{padding:fitPadding,maxZoom:1}}/>{showMap&&<MiniMap style={{pointerEvents:'none'}} nodeColor={n=>catalog[n.data.kind]?.color||'#799687'} maskColor="rgba(246,249,246,.72)"/>}
         </ReactFlow>
         {!nodes.length&&<div className="canvas-empty"><h2>Your pipeline starts here</h2>
           <p>Choose a tool from the palette or drag it onto the canvas.</p>
           {!palette&&<button onClick={()=>setPalette(true)}>Show tools</button>}
         </div>}
-        {activeStudy&&<div className="study-legend"><span><i className="legend-input"/>Input</span><span><i className="legend-tool"/>Tool</span><span><i className="legend-math"/>Calculation</span><span><i className="legend-decision"/>Decision</span></div>}
         {notice&&<div className="canvas-notice" role="status">{notice}</div>}
       </main>
       {!canvasOnly&&panel==='connections'&&<ConnectionPanel key={focusedNode?.id||'empty'}
-        node={focusedNode} catalog={catalog} matrix={matrix} readOnly={activeStudy}
+        node={focusedNode} catalog={catalog} matrix={matrix}
         close={()=>setPanel('')} configure={()=>openSettings(focusedNode.id)}
         branch={port=>openBranch(focusedNode.id,port)}/>}
       {!canvasOnly&&panel==='round'&&<RoundOutline program={args.round_outline} configure={openSettings} close={()=>setPanel('')}/>}

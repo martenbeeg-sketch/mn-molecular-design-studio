@@ -263,9 +263,8 @@ def screening_graph_issues(graph):
 def restore_screening_connections(graph):
     """Rebuild the controller's fixed wires using the existing stage IDs."""
     by_kind = {node["data"]["kind"]: node["id"] for node in graph["nodes"]}
-    if (graph.get("template_id") != "unidock_active_learning"
-            or set(by_kind) != SCREENING_STAGES or len(graph["nodes"]) != len(by_kind)):
-        raise ValueError("Open a complete Large-library screen recipe to restore its connections.")
+    if set(by_kind) != SCREENING_STAGES or len(graph["nodes"]) != len(by_kind):
+        raise ValueError("Add all screening stages to restore their connections.")
     edges = [{"id": f"edge-active-{index}", "source": by_kind[source], "sourceHandle": out,
               "target": by_kind[target], "targetHandle": inlet,
               **({"loop_back": True} if (source, out, target, inlet) == SCREENING_FEEDBACK else {})}
@@ -993,19 +992,13 @@ def new_graph(template="foundry") -> dict[str, Any]:
         kinds = ["active_library", "active_seed", "active_docking", "active_accumulate",
                  "active_binder_rule", "active_train", "active_predict", "active_select",
                  "active_decision", "active_results", "active_target"]
-        labels = {"active_library": "Compound library", "active_seed": "Centroid library",
-                  "active_docking": "Docking", "active_accumulate": "Accumulate results",
-                  "active_decision": "Stopping criteria reached?", "active_binder_rule": "Binder labels",
-                  "active_train": "Train NN", "active_predict": "Predict compound library",
-                  "active_select": "Select next docking batch", "active_target": "Receptor",
-                  "active_results": "Final results"}
         nodes = []
         for index, kind in enumerate(kinds):
             position = ACTIVE_LEARNING_LAYOUT[kind]
             spec = NODE_CATALOG[kind]
             params = {item["name"]: copy.deepcopy(item["default"]) for item in spec["fields"]}
             nodes.append({"id": f"{kind}-{index}", "type": "studio", "position": {"x": position["x"], "y": position["y"]},
-                          "data": {"kind": kind, "label": labels[kind], "params": params}})
+                          "data": {"kind": kind, "label": spec["label"], "params": params}})
         return clean_graph(restore_screening_connections({"schema_version": SCHEMA, "id": uuid.uuid4().hex,
                             "name": "Active-learning docking screen",
                             "nodes": nodes,

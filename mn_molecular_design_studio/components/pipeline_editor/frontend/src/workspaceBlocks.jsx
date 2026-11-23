@@ -20,7 +20,7 @@ export function CollapsedGroup({id, data, selected}) {
 }
 
 export function Frame({data, selected}) {
-  return <div className={`canvas-frame ${data.loop ? 'repeat-frame' : ''} ${selected ? 'frame-selected' : ''}`}>
+  return <div className={`canvas-frame ${selected ? 'frame-selected' : ''}`}>
     <div className="frame-caption"><strong>{data.name}</strong><span>{data.subtitle || `${data.members.length} steps`}</span></div>
   </div>;
 }

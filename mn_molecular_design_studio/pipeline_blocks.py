@@ -5,7 +5,7 @@ import uuid
 
 from mn_molecular_design_studio.active_learning_settings import next_round_selection_counts
 from mn_molecular_design_studio.pipeline_graph import (
-    NODE_CATALOG, connection_compatibility, new_graph, validate_graph,
+    NODE_CATALOG, connection_compatibility, is_screening_graph, new_graph, screening_graph_issues, validate_graph,
 )
 
 SCREEN = "unidock_active_learning"
@@ -75,7 +75,7 @@ def program(graph):
             "sources": sources, "enabled": data.get("enabled", True),
         }
     result = {"blocks": blocks, "stages": stages}
-    if graph.get("template_id") == SCREEN:
+    if is_screening_graph(plan["graph"]) and not screening_graph_issues(plan["graph"]):
         by_kind = {node["data"]["kind"]: node for node in nodes.values()}
         def ids(kinds):
             return [by_kind[kind]["id"] for kind in kinds]

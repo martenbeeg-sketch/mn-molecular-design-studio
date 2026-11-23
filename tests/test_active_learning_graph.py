@@ -337,10 +337,16 @@ def test_active_learning_graph_queues_the_round_controller(monkeypatch, tmp_path
 
 
 def test_manual_screen_compiles_only_with_the_exact_feedback_and_named_inputs():
+    from mn_molecular_design_studio.pipeline_blocks import program
+
     recipe = graph.new_graph("unidock_active_learning")
     draft = {key: value for key, value in recipe.items() if key not in {"template_id", "template_version"}}
     incomplete = {**draft, "edges": [edge for edge in draft["edges"] if not edge.get("loop_back")]}
     graph.validate_graph(incomplete, allow_incomplete=True)
+    assert program(recipe)["screen"] == program(draft)["screen"]
+    assert "screen" not in program(incomplete)
+    assert graph.restore_screening_connections(incomplete) == draft
+    assert all(node["data"]["label"] == graph.NODE_CATALOG[node["data"]["kind"]]["label"] for node in recipe["nodes"])
     with pytest.raises(ValueError, match="Next-round batch"):
         graph.validate_graph(incomplete)
     plan = graph.validate_graph(draft)

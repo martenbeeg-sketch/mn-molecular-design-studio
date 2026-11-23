@@ -9,7 +9,7 @@ const labels = (ports, metadata) => ports.length ? ports.map(item => (
   </li>
 )) : <li className="panel-hint">None</li>;
 
-export function ConnectionPanel({node, catalog, matrix, close, configure, branch, readOnly}) {
+export function ConnectionPanel({node, catalog, matrix, close, configure, branch}) {
   const [handoffsOpen, setHandoffsOpen] = useState(false);
   const spec = node && catalog[node.data.kind];
   const inputs = portsFor(spec, 'inputs');
@@ -24,7 +24,7 @@ export function ConnectionPanel({node, catalog, matrix, close, configure, branch
         <button onClick={configure}>Configure step</button>
         <dl><dt>Inputs</dt><dd><ul>{labels(inputs, true)}</ul></dd><dt>Outputs</dt><dd><ul>{labels(outputs)}</ul></dd></dl>
       </div>
-      {readOnly ? <p className="panel-hint">The screening recipe connects these stages.</p> : outputs.length > 0 && <section className="connection-options">
+      {outputs.length > 0 && <section className="connection-options">
         <h3>Add next step</h3>
         <ul>{outputs.map(port => <li key={port.id}>
           <button onClick={() => branch(port.id)}>Add from {port.label}</button>

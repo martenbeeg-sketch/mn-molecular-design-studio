@@ -12,11 +12,11 @@ Shift-select steps and click **Group** to name, collapse or duplicate them. A
 collapsed group exposes its boundary sockets. It keeps the original runnable
 steps and wires in the draft. **Open group** shows the contents on the canvas.
 
-In the large-library screen, **Screening round** opens a block outline inside the
-canvas. **Repeat docking rounds** frames the real stages. The If/Otherwise
-decision either exits to Final results or prepares the next batch. Select a step
-in the outline to edit that stage's settings. The screening controller manages
-the recipe's wires.
+The **Large-library screen** template preconnects the steps on the standard
+canvas. Every step uses the same inputs and outputs as a pipeline assembled by
+hand. In a complete screening graph, **Screening round** opens an outline of
+the stopping decision and next batch. Select a step in the outline to edit its
+settings. Run setup checks that the screening connections are complete.
 
 The screening stack shows the selected centroid sample for round one, the
 stopping criteria, and how the next batch is built. The selection block uses the

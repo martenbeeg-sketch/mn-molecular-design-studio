@@ -1539,22 +1539,25 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     reset_token = st.session_state[prefix + "-reset"]
     from mn_molecular_design_studio.tool_connections import editor_connections, editor_tool_catalog
     round_outline = None
-    if graph.get("template_id") == "unidock_active_learning":
+    screen_issues = screening_graph_issues(graph) if is_screening_graph(graph) else None
+    if screen_issues == []:
         from mn_molecular_design_studio.pipeline_blocks import program
         try:
             round_outline = program(graph)
         except (KeyError, ValueError):
-            from mn_molecular_design_studio.pipeline_graph import restore_screening_connections
-            try:
-                restored = restore_screening_connections(graph)
-                validate_graph(restored, allow_incomplete=True)
-            except ValueError:
-                pass  # The runnable-graph check below explains the draft issue.
-            else:
-                if restored != graph and st.button("Restore screening recipe connections", key=prefix + "-restore-screen"):
-                    _activate_graph(prefix, restored, _draft_revision(prefix, graph))
-                    st.rerun()
-    value = _component()(graph=graph, catalog=editor_tool_catalog(), active_study_layout=ACTIVE_LEARNING_LAYOUT,
+            pass  # The runnable-graph check below explains the draft issue.
+    elif screen_issues:
+        from mn_molecular_design_studio.pipeline_graph import restore_screening_connections
+        try:
+            restored = restore_screening_connections(graph)
+            validate_graph(restored, allow_incomplete=True)
+        except ValueError:
+            pass  # The checklist below explains the missing stages.
+        else:
+            if restored != graph and st.button("Restore screening connections", key=prefix + "-restore-screen"):
+                _activate_graph(prefix, restored, _draft_revision(prefix, graph))
+                st.rerun()
+    value = _component()(graph=graph, catalog=editor_tool_catalog(), screening_positions=ACTIVE_LEARNING_LAYOUT,
                          connections=editor_connections(), round_outline=round_outline,
                          reset_token=reset_token, input_contexts={},
                          draft_saved=bool(_draft_revision(prefix, graph)),
@@ -1619,17 +1622,18 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                             st.warning("Choose a project before saving a pipeline.")
                         else:
                             st.session_state[prefix + "-save-as-open"] = True
+                if changed and not action_type and (screen_issues is not None or is_screening_graph(updated)):
+                    st.rerun()
             except StudioAPIConflictError:
                 st.rerun()
             except (ValueError, OSError, TypeError, KeyError) as exc:
                 launch_panel.error(str(exc))
     from mn_molecular_design_studio.cluster.ui import _job_details_reference, _navigate_to_job_details
     with launch_panel:
-        if is_screening_graph(graph) and graph.get("template_id") != "unidock_active_learning":
-            issues = screening_graph_issues(graph)
-            if issues:
+        if screen_issues is not None:
+            if screen_issues:
                 with st.expander("Screening graph checklist"):
-                    for issue in issues:
+                    for issue in screen_issues:
                         st.write(issue)
             else:
                 st.caption("Screening graph complete · includes next-round feedback")
