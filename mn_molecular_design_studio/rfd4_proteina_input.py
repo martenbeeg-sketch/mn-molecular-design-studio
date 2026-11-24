@@ -15,9 +15,19 @@ from mn_molecular_design_studio.design_validation import protein_chains, read_st
 UPSTREAM_VERSION = "RFD4-Proteina 0.0.3"
 UPSTREAM_COMMIT = "9d35ee4f6328fd9b17f5b84756ee5db99d6d89ac"
 IMAGE = "mn-rfd4-proteina:0.0.3-cu130"
+CYCLIC_TASK = "cyclic_peptide_binder"
+CYCLIC_COMMIT = "6306a210dd17dcae8e4e0f381b5b74a719d9b30e"
+CYCLIC_IMAGE = "mn-rfd4-proteina:0.0.3-6306a21-cu130"
+
+
+def runtime_for(task: str) -> tuple[str, str]:
+    """Return the image and upstream source pin used for this task."""
+    return (CYCLIC_IMAGE, CYCLIC_COMMIT) if task == CYCLIC_TASK else (IMAGE, UPSTREAM_COMMIT)
+
 
 TASKS = {
     "protein_binder": "Protein Binder",
+    CYCLIC_TASK: "Cyclic Peptide Binder · Annotated mmCIF",
     "nanobody": "Nanobody Design",
     "antibody": "Antibody Design",
     "tcr": "TCR Design",
@@ -34,6 +44,7 @@ TASKS = {
 
 TASK_HELP = {
     "protein_binder": "Co-design a binder backbone and sequence around a selected protein target and optional hotspot residues.",
+    CYCLIC_TASK: "Use an RFD4 annotated mmCIF containing the target and an explicit head-to-tail peptide bond.",
     "nanobody": 'Design CDRs on a built-in VHH framework or a supplied nanobody–target complex.',
     "antibody": 'Design selected CDR residues while retaining the supplied antibody framework and target.',
     "tcr": 'Design selected TCR CDR residues in a supplied target–TCR complex.',
@@ -598,12 +609,41 @@ def validate_run_counts(parameters: dict[str, Any]) -> None:
             raise ValueError(f'{key} must be an integer between {low} and {high}.')
 
 
+def cyclic_complex_chains(path: Path) -> tuple[str, list[str]]:
+    from mn_molecular_design_studio.cyclic_topology import head_to_tail_chains
+
+    if path.suffix.lower() not in {".cif", ".mmcif"} or not path.is_file():
+        raise ValueError("Choose an annotated mmCIF containing both the target and the cyclic peptide.")
+    rings = head_to_tail_chains(path)
+    chains = set(protein_chains(read_structure(path)))
+    if len(rings) != 1 or not rings <= chains or not chains - rings:
+        raise ValueError("Include one head-to-tail peptide chain and at least one separate receptor protein chain.")
+    return next(iter(rings)), sorted(chains - rings)
+
+
 def prepare_request(parameters: dict[str, Any], *, run_dir: Path) -> dict[str, Any]:
     """Validate/stage inputs; native chemistry and condition validation runs in the image."""
     import copy
     from Bio.PDB import MMCIFIO
     p=copy.deepcopy(parameters)
     p['options']=validate_options(p)
+    if p.get("task") == CYCLIC_TASK:
+        path = Path(p["target_structure"]) if p.get("target_structure") else None
+        if path is None:
+            raise ValueError("Choose an annotated mmCIF containing both the target and the cyclic peptide.")
+        if p.get("input_files") or p.get("hotspots") or p.get("condition_spec"):
+            raise ValueError("Supply the ring and design conditions in the single annotated mmCIF.")
+        if (p["options"].get("refold") or p["options"].get("apo")
+                or p["options"].get("reward_search") == "Best by refolding"
+                or p.get("avoid_structures") or p.get("also_bind_structures")):
+            raise ValueError("This RFD4 cyclic workflow uses native co-design. Clear the refolding options.")
+        ring, receptors = cyclic_complex_chains(path)
+        if p.get("target_chains") and set(p["target_chains"]) != set(receptors):
+            raise ValueError("Select all receptor protein chains in the annotated cyclic complex.")
+        p["input_mode"] = "annotated_cif"
+        p["target_chains"] = receptors
+        p["input_files"] = [str(path)]
+        p["options"].update(refold=False, design_chains=[ring])
     task=p.get('task','protein_binder'); mode=p.get('input_mode','guided')
     if task not in TASKS: raise ValueError('Select a supported RFD4 task.')
     if mode not in {'guided','guided_binder','annotated_cif','condition_spec','unconditional'}:
@@ -622,12 +662,12 @@ def prepare_request(parameters: dict[str, Any], *, run_dir: Path) -> dict[str, A
         source=Path(source).expanduser().resolve()
         if not source.is_file() or source.suffix.lower() not in {'.pdb','.ent','.cif','.mmcif'}:
             raise ValueError(f'Missing or unsupported structure: {source.name}')
-        total+=source.stat().st_size
-        if source.stat().st_size>50_000_000 or total>100_000_000:
-            raise ValueError('Structure inputs must be under 50 MB each and 100 MB total.')
         if source.name in originals:
             if originals[source.name]!=source: raise ValueError('Structure filenames must be unique: '+source.name)
             return staged[source.name]
+        total+=source.stat().st_size
+        if source.stat().st_size>50_000_000 or total>100_000_000:
+            raise ValueError('Structure inputs must be under 50 MB each and 100 MB total.')
         destination=staging/source.name
         if source.suffix.lower() in {'.pdb','.ent'}:
             destination=staging/(source.name+'.cif')

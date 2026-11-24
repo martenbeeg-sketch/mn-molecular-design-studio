@@ -24,7 +24,9 @@ def test_registered_binder_routes_build_valid_graphs(route):
     elif "shared_filter" in kinds:
         assert _settings(graph, "shared_filter")["binder_format"] == route.format
     else:
-        assert route.method.startswith("tile_design_") or route.method in {"boltzgen", "complexa", "peptide_trap", "kejia_idr"} or route.format in {"antibody", "tcr"}
+        assert (route.method.startswith("tile_design_")
+                or route.method in {"boltzgen", "complexa", "peptide_trap", "kejia_idr"}
+                or route.format in {"antibody", "tcr"} or route.id == "rfd4-cyclic")
     if route.method == "boltzgen":
         assert _settings(graph, route.method)["task"] == {"vhh": "nanobody", "miniprotein": "protein"}.get(route.format, route.format)
     if route.method == "tile_design_rfantibody":
@@ -36,6 +38,9 @@ def test_registered_binder_routes_build_valid_graphs(route):
         settings = _settings(graph, "rfd4")
         if route.format in {"antibody", "tcr"}:
             assert settings["task"] == route.format
+        elif route.id == "rfd4-cyclic":
+            assert settings["task"] == "cyclic_peptide_binder" and settings["input_mode"] == "annotated_cif"
+            assert json.loads(settings["options_json"])["refold"] is False
         else:
             assert json.loads(settings["options_json"])["refold"] == (not external)
 
@@ -51,16 +56,17 @@ def test_design_capabilities_match_registered_workflows_and_picker_routes():
     assert set(data["binder_formats"]) == {row["output"] for row in data["items"]
                                             if row["output"] in data["binder_formats"]}
     assert {row["route_id"] for row in data["items"] if row["access"] == "pipeline"} == {route.id for route in ROUTES}
-    assert {row["access"] for row in data["items"] if row["output"] in data["binder_formats"]} <= {"pipeline", "upstream"}
+    assert {row["access"] for row in data["items"] if row["output"] in data["binder_formats"]} == {"pipeline"}
     assert all(NODE_CATALOG[row["canvas_node"]]["workflow"] == row["workflow"]
                for row in data["items"] if row["access"] == "canvas")
-    assert {row["access"] for row in data["items"]} == {"pipeline", "canvas", "upstream"}
+    assert {row["access"] for row in data["items"]} == {"pipeline", "canvas"}
     assert {row["workflow"] for row in data["items"]} <= set(WORKFLOWS)
     assert {workflow for workflow in TOOL_CATALOG_WORKFLOW_IDS if workflow.startswith(("design.", "ligand.generation."))} <= {
         row["workflow"] for row in data["items"]}
     cyclic = catalogue(target_input="structure", binder_format="cyclic_peptide")["items"]
-    assert {row["engine"] for row in cyclic if row["access"] == "pipeline"} == {"BindCraft2", "BoltzGen", "RFpeptides"}
-    assert {row["engine"] for row in cyclic if row["access"] == "upstream"} == {"RFdiffusion3", "RFD4-Proteina"}
+    assert {row["engine"] for row in cyclic if row["access"] == "pipeline"} == {
+        "BindCraft2", "BoltzGen", "RFdiffusion3", "RFD4-Proteina", "RFpeptides",
+    }
 
 
 def test_cyclic_binder_tile_inherits_connected_target():

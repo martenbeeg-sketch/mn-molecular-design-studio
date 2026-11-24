@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import math
 import secrets
 import shutil
@@ -31,21 +32,31 @@ def _normalize(run: Path, prepared: dict, requested: int) -> list[dict]:
             structure = read_structure(path)
             destination = root / "structures" / f"{identifier}_{index:05d}.cif"
             destination.parent.mkdir(parents=True, exist_ok=True)
-            writer = MMCIFIO(); writer.set_structure(structure); writer.save(str(destination))
+            cyclic_ids = context.get("cyclic_chains") or []
+            if cyclic_ids:
+                # Keep native CIF connection tables and numbering verbatim.
+                opener = gzip.open if path.suffix == ".gz" else open
+                with opener(path, "rb") as raw, destination.open("wb") as staged:
+                    shutil.copyfileobj(raw, staged)
+            else:
+                writer = MMCIFIO(); writer.set_structure(structure); writer.save(str(destination))
             chains = protein_chains(structure)
             target_ids = []
-            if context["source_path"] and context["task"] == "protein_binder":
+            if context["source_path"] and context["task"] in inputs.PROTEIN_BINDER_TASKS:
                 original = protein_chains(read_structure(Path(context["source_path"])))
                 for source_id in context["target_chains"]:
                     expected = sequence(original[source_id])
-                    matches = [c for c, residues in chains.items() if c not in target_ids and sequence(residues) == expected]
+                    matches = [c for c, residues in chains.items()
+                               if c not in target_ids and c not in cyclic_ids and sequence(residues) == expected]
                     if source_id in matches:
                         target_ids.append(source_id)
                     elif len(matches) == 1:
                         target_ids.append(matches[0])
                     else:
                         raise ValueError("Could not map the retained protein target into the RFdiffusion3 output.")
-            binder_ids = [c for c in chains if c not in target_ids]
+            if cyclic_ids and any(chain not in chains for chain in cyclic_ids):
+                raise ValueError("RFdiffusion3 output is missing the requested cyclic-encoded chain.")
+            binder_ids = cyclic_ids or [c for c in chains if c not in target_ids]
             if not binder_ids:
                 raise ValueError("RFdiffusion3 returned no generated protein chain.")
             native_json = path.with_name(path.name.removesuffix(".gz").removesuffix(".cif") + ".json")
@@ -77,7 +88,8 @@ def _normalize(run: Path, prepared: dict, requested: int) -> list[dict]:
                 "binder_chains": binder_ids, "target_chains": target_ids, "metrics": metrics,
                 "raw_metadata": {"task": context["task"], "specification_name": context["name"],
                                  "result_kind": "generation_only", "native_structure": str(path),
-                                 "metadata_path": str(native_json), "engine_version": inputs.CODE_VERSION,
+                                 "metadata_path": str(native_json), "engine_version": prepared["engine_version"],
+                                 **({"cyclic_encoding_chains": cyclic_ids} if cyclic_ids else {}),
                                  "input_specification": prepared["specifications"][identifier],
                                  "target_entity_chains": context["target_chains"],
                                  "input_target_chains": context["target_chains"],
@@ -89,7 +101,7 @@ def _normalize(run: Path, prepared: dict, requested: int) -> list[dict]:
 
 
 def run_rfdiffusion3_design(
-    task: Literal["protein_binder", "enzyme", "nucleic_acid_binder", "ligand_binder", "json"] = "protein_binder",
+    task: Literal["protein_binder", "cyclic_peptide_binder", "enzyme", "nucleic_acid_binder", "ligand_binder", "json"] = "protein_binder",
     target_structure: Path | None = None,
     target_chains: list[str] | None = None,
     length_min: int = 100, length_max: int = 150,
@@ -108,8 +120,9 @@ def run_rfdiffusion3_design(
     parameters["target_structure"] = str(target_structure) if target_structure else None
     parameters["input_files"] = [str(path) for path in input_files or []]
     prepared = inputs.prepare_request(parameters)
+    image, version = inputs.runtime_for(parameters)
     seed = seed or secrets.randbelow(2147483646) + 1
-    parameters.update(seed=seed, gpu_device=normalize_gpu_device(gpu_device), engine_version=inputs.CODE_VERSION, image=inputs.IMAGE)
+    parameters.update(seed=seed, gpu_device=normalize_gpu_device(gpu_device), engine_version=version, image=image)
     job = create_job("design", "rfdiffusion3_design", "rfdiffusion3", {"target_structure": str(target_structure) if target_structure else None}, parameters)
     update_status(job.run_dir, "preparing", campaign_name=job_name, current_phase="Preparing RFdiffusion3 inputs")
     root = job.run_dir / "artifacts/raw/rfdiffusion3"
@@ -139,7 +152,7 @@ def run_rfdiffusion3_design(
             "--cpus", str(cpu_cores), "--shm-size=16G", *docker_gpu_args(gpu_device),
             "--mount", f"type=bind,src={job.run_dir.resolve()},dst=/work",
             "--mount", f"type=bind,src={weights.resolve()},dst=/weights,readonly",
-            "-e", f"OMP_NUM_THREADS={cpu_cores}", "-e", "PYTHONUNBUFFERED=1", "-w", "/work", "--entrypoint", "rfd3", inputs.IMAGE,
+            "-e", f"OMP_NUM_THREADS={cpu_cores}", "-e", "PYTHONUNBUFFERED=1", "-w", "/work", "--entrypoint", "rfd3", image,
             "design", f"inputs=/work/{configuration.relative_to(job.run_dir).as_posix()}",
             f"out_dir=/work/{output.relative_to(job.run_dir).as_posix()}", "ckpt_path=/weights/rfd3_latest.ckpt",
             f"diffusion_batch_size={batch_size}", f"n_batches={batches}",
@@ -148,7 +161,7 @@ def run_rfdiffusion3_design(
             f"inference_sampler.cfg_scale={cfg_scale}", f"low_memory_mode={low_memory_mode}", f"seed={seed}",
             "skip_existing=False", "prevalidate_inputs=True", "global_prefix=studio_",
         ]
-        write_json(job.run_dir / "command.json", {"mode": "docker", "image": inputs.IMAGE, "command": command})
+        write_json(job.run_dir / "command.json", {"mode": "docker", "image": image, "command": command})
         update_status(job.run_dir, "running", current_phase=f"Generating {num_designs} design(s) per task input")
         with (job.run_dir / "stdout.log").open("a") as stdout, (job.run_dir / "stderr.log").open("a") as stderr:
             with execution_phase(job.run_dir, "docker_command") as timing:
@@ -172,7 +185,7 @@ def run_rfdiffusion3_design(
             "outputs": {"artifacts": artifacts, "candidates": normalized, "design_table": str(table)},
             "metrics": {"return_code": process.returncode, "task": task, "candidate_count": len(normalized),
                         "requested_designs_per_input": num_designs, "input_count": len(prepared["specifications"]),
-                        "native_generated_count": len(list(output.glob("*.cif*"))), "engine_version": inputs.CODE_VERSION},
+                        "native_generated_count": len(list(output.glob("*.cif*"))), "engine_version": version},
             "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl",
                                      "campaign_result": "artifacts/normalized_candidates/campaign_result.json"},
         })

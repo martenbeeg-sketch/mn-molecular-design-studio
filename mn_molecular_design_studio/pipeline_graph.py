@@ -103,7 +103,7 @@ NODE_CATALOG = {
     "generation_source": _spec("generation_source", "Generated project designs", "Input", "Select generated structures and sequences from a completed generator job in this project.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Generator run", "", kind="text")]),
     "project_design_source": _spec("project_design_source", "Existing project designs", "Input", "Select saved candidates from completed project jobs. Choose Complex Results to include historical predictions and protein–ligand complexes for manual analysis.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Source job", "", kind="text"), field("source_scope", "Source scope", "designs", kind="select", options=["designs", "complex_results"], section="basic")]),
     "rfd4": _spec("rfd4", "RFD4-Proteina", "Design engine", "Co-design sequence and structure. Set task, design count, binder length and sampling in this tile; target structure, chains, hotspots and coldspots come from the connected Target Structure tile. Advanced native inputs stay optional.", accepts=["target"], output="sequence", workflow="design.rfd4_proteina", fields=[
-        field("task", "Design task", "protein_binder", kind="select", options=["protein_binder","nanobody","antibody","tcr","motif_scaffolding","enzyme","small_molecule_binder","dna_binder","rna_design","existing_structure","custom_conditions","score_structures","unconditional"], section="basic"),
+        field("task", "Design task", "protein_binder", kind="select", options=["protein_binder","cyclic_peptide_binder","nanobody","antibody","tcr","motif_scaffolding","enzyme","small_molecule_binder","dna_binder","rna_design","existing_structure","custom_conditions","score_structures","unconditional"], section="basic"),
         field("target_structure", "Input structure", "", kind="text", help="Usually inherited from the connected Target Structure tile."),
         field("input_mode", "Input method", "guided", kind="select", options=["guided","annotated_cif","condition_spec"], section="basic"),
         field("condition_spec", "Native condition specification", "", kind="text", help="Advanced: native YAML/JSON design specification used with the condition_spec input method."),
@@ -2520,6 +2520,8 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
             raise ValueError("Load a structure in Proteina-Complexa Generator or connect a Target block.")
         if require_inputs and kind == "rfd4" and not incoming[node_id]:
             params = node["data"]["params"]
+            if params["task"] == "cyclic_peptide_binder":
+                raise PipelineInputError(node_id, "Connect a Target step with the annotated cyclic complex.")
             needs_target = params["input_mode"] == "guided" and params["task"] not in {"rna_design", "unconditional", "score_structures", "existing_structure"}
             if needs_target and not params["target_structure"]:
                 raise PipelineInputError(node_id, "Connect a Target step or supply an input structure for RFD4.")

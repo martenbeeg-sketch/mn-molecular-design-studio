@@ -6,8 +6,7 @@ from dataclasses import asdict, dataclass
 from mn_molecular_design_studio.binder_pipeline import FORMATS, ROUTES, TARGET_INPUTS
 
 
-ACCESS = {"pipeline": "Build pipeline", "canvas": "Add canvas step", "tile": "Open tool",
-          "api": "API only", "upstream": "Upstream only"}
+ACCESS = {"pipeline": "Build pipeline", "canvas": "Add canvas step", "tile": "Open tool", "api": "API only"}
 OTHER_TASKS = {
     "protein_small_molecule": "Protein binder for a small molecule",
     "enzyme": "Enzyme or catalytic scaffold",
@@ -43,14 +42,6 @@ def _capabilities():
                    route.target_input, route.summary, route.id, route.method)
         for route in ROUTES
     ]
-    capabilities.extend([
-        Capability("RFD4-Proteina", "cyclic_peptide", "design.rfd4_proteina", "upstream",
-                   note="Upstream cyclic-peptide recipe. The installed Studio adapter has no dedicated cyclic-binder preset.",
-                   reference="https://github.com/RosettaCommons/RFD4-Proteina/pull/82"),
-        Capability("RFdiffusion3", "cyclic_peptide", "design.rfdiffusion3", "upstream",
-                   note="The current upstream input guide lists cyclic chains. Studio's pinned input adapter does not expose that field.",
-                   reference="https://github.com/RosettaCommons/foundry/blob/production/models/rfd3/docs/input.md"),
-    ])
     for engine, workflow, node, tasks in (
         ("RFD4-Proteina", "design.rfd4_proteina", "rfd4", ("protein_small_molecule", "enzyme", "motif", "dna_binder", "redesign", "rna_design", "new_fold")),
         ("RFdiffusion3", "design.rfdiffusion3", "tile_design_rfd3_tasks", ("protein_small_molecule", "enzyme", "dna_binder", "rna_binder")),

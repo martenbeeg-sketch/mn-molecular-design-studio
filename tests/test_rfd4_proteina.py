@@ -8,9 +8,8 @@ from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline 
 from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation as automation
 
 
-def test_all_thirteen_tasks_and_native_operations():
-    assert len(inputs.TASKS)==13
-    assert 'score_structures' in inputs.TASKS
+def test_registered_tasks_and_native_operations():
+    assert {"score_structures", "cyclic_peptide_binder"} <= inputs.TASKS.keys()
     assert set(inputs.OPERATIONS)=={'diversify','inverse_folding','structure_prediction','sidechain_packing'}
 
 

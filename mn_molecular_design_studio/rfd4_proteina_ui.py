@@ -37,10 +37,6 @@ PREVIEW_TASKS = {
         "label": "IDR Peptide Binder (experimental)",
         "description": "Co-generate a binder and a sequence-fixed, coordinate-unconditioned IDR target.",
     },
-    "cyclic_peptide_binder": {
-        "label": "Cyclic Peptide Binder (preview)",
-        "description": "Plan a head-to-tail cyclic peptide binder against a protein target.",
-    },
 }
 
 
@@ -354,7 +350,7 @@ def _optional(task,o,p,path,chains,folding,*,condition_spec=False):
         if not folding:
             o['cluster']=st.checkbox('Cluster Designs',key='rfd4-cluster-'+task)
             o['filter_conditions']=st.checkbox('Drop Designs That Break Conditions',value=True,key='rfd4-filter-'+task)
-            if task not in ('antibody','tcr','rna_design'):o['refold']=st.checkbox('Check Designs by Refolding',value=True,key='rfd4-refold-'+task)
+            if task not in ('antibody','tcr','rna_design',inputs.CYCLIC_TASK):o['refold']=st.checkbox('Check Designs by Refolding',value=True,key='rfd4-refold-'+task)
             else:o['refold']=False
     if o.get('refold'):
         fields=[]
@@ -432,14 +428,22 @@ def _render_content(schema:dict,*,owner_id,project_selector,submit,folding=False
                 st.error(str(exc))
         st.info('Experimental sequence-only target mode: the CIF contains an ideal extended backbone only to carry residue identity. C_SEQ fixes the target sequence; no C_CRD or C_CRDGRP condition is added, so target coordinates are free. Hotspots add C_HOT contact guidance without fixing coordinates. This does not predict or validate the IDR ensemble.')
         st.caption('Hotspot positions are 1-based positions in the pasted FASTA sequence. The native RFD4 protein-binder workflow and its configured Results are used.')
-    elif preview_task:
-        st.file_uploader('Target structure (PDB or mmCIF)',type=['pdb','ent','cif','mmcif'],disabled=True,key='rfd4-cyclic-preview-structure')
-        st.multiselect('Target Chains',[],disabled=True,key='rfd4-cyclic-preview-chains')
-        st.text_input('Optional hotspot residues',placeholder='e.g. A25, A30-35',disabled=True,key='rfd4-cyclic-preview-hotspots')
-        st.number_input('Cyclic peptide length',min_value=6,max_value=24,value=12,disabled=True,key='rfd4-cyclic-preview-length')
-        st.markdown('RFD4 has a [cyclic peptide binder preset](https://github.com/RosettaCommons/RFD4-Proteina/blob/main/configs/design_tasks/presets/cyclic_peptide_binder.yaml) and [tests for head-to-tail ring topology](https://github.com/RosettaCommons/RFD4-Proteina/blob/main/tests/pipeline/test_canonical_polymer_ordering.py). Studio still needs a ring-aware input and output path.')
-        st.info('Preview only: job submission is disabled until Studio can validate these inputs and preserve the intended design topology in its outputs.')
-        ready=False
+    elif task == inputs.CYCLIC_TASK:
+        st.caption("Supply the receptor, ring bond and design conditions in one annotated mmCIF.")
+        upload = st.file_uploader("Annotated cyclic complex", type=["cif", "mmcif"], key="rfd4-cyclic-complex")
+        ready = False
+        if upload:
+            try:
+                path, = inputs.store_structure_uploads([upload], owner_id)
+                ring, receptors = inputs.cyclic_complex_chains(path)
+                p["target_chains"] = receptors
+                p["target_structure"] = str(path)
+                p["input_mode"] = "annotated_cif"
+                ready = True
+                st.caption(f"Receptor chains {', '.join(receptors)} · cyclic chain {ring}")
+            except (ValueError, OSError) as exc:
+                st.error(str(exc))
+        o["refold"] = False
     elif sequence_input:
         p['protein_sequences']=st.text_area('Protein sequence(s)',placeholder='Paste sequence or FASTA; use separate records for chains.')
         ready=bool(p['protein_sequences'].strip())
@@ -542,9 +546,8 @@ def _render_content(schema:dict,*,owner_id,project_selector,submit,folding=False
     if not folding:
         st.button('Load example inputs',on_click=_load_example_inputs,args=('pd_l1_binder',owner_id),key='rfd4-load-example')
     validate_clicked, submit_column, _ = st.columns([1.25,1,1])
-    placeholder_preview=task=='cyclic_peptide_binder'
-    validate_clicked=validate_clicked.button('Validate / Prepare',disabled=placeholder_preview or not ready,key='rfd4-validate-prepare')
-    clicked=submit_column.button('Submit',type='primary',disabled=placeholder_preview or not ready or not campaign_ready or not project_id,key='rfd4-submit')
+    validate_clicked=validate_clicked.button('Validate / Prepare',disabled=not ready,key='rfd4-validate-prepare')
+    clicked=submit_column.button('Submit',type='primary',disabled=not ready or not campaign_ready or not project_id,key='rfd4-submit')
     st.caption('Validate / Prepare checks the inputs in the RFD4 container. It does not create a job or run inference.')
     if validate_clicked:
         try:

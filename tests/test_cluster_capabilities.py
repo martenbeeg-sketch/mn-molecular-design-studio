@@ -157,6 +157,19 @@ def test_rfdiffusion3_placement_does_not_require_classic_model_directory():
     assert needs["gpu_count"] == 1
 
 
+def test_cyclic_designs_require_their_own_runtime_images(monkeypatch):
+    from mn_molecular_design_studio import rfd4_proteina_input, rfdiffusion3_input
+
+    monkeypatch.setattr(capabilities, "reference_fingerprints", lambda _paths: {})
+    for workflow, image in (("design.rfdiffusion3", rfdiffusion3_input.CYCLIC_IMAGE),
+                            ("design.rfd4_proteina", rfd4_proteina_input.CYCLIC_IMAGE)):
+        needs = capabilities.requirements(
+            {"workflow": workflow, "parameters": {"task": "cyclic_peptide_binder"}},
+            installed_images={},
+        )
+        assert set(needs["images"]) == {image}
+
+
 def test_ligand_generator_placement_includes_its_native_image_and_checkpoints():
     for engine, image, paths in (
         ("pocketflow", "mn-pocketflow:cu128-a31a5a0", {"generation/pocketflow/ZINC-pretrained-255000.pt"}),

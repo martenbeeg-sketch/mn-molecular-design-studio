@@ -1,0 +1,12 @@
+FROM mn-rfd4-proteina:0.0.3-cu130
+
+ARG RFD4_COMMIT
+LABEL org.opencontainers.image.source="https://github.com/RosettaCommons/RFD4-Proteina" \
+      org.opencontainers.image.revision="${RFD4_COMMIT}"
+
+COPY upstream /opt/studio-rfd4-source
+RUN uv pip install --system --no-cache --no-deps "bionemo-ir==0.2.1" \
+        "certifi==2026.10.23" "filelock==3.32.7" "gemmi==0.7.5" && \
+    uv pip install --system --no-cache --no-deps --no-sources --reinstall /opt/studio-rfd4-source && \
+    python -m pip check && rfd4-generate --help >/dev/null
+COPY upstream/configs /opt/rfd4/configs

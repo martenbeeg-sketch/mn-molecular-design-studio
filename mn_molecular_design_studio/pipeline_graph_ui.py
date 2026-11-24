@@ -402,6 +402,30 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
         params.update(values)
         return {node_id: values}
     if selected["data"]["kind"] == "target":
+        from mn_molecular_design_studio.rfd4_proteina_input import CYCLIC_TASK
+
+        successors = {edge["target"] for edge in (graph or {}).get("edges", []) if edge["source"] == node_id}
+        if any(node["id"] in successors and node["data"]["kind"] == "rfd4"
+               and node["data"]["params"].get("task") == CYCLIC_TASK for node in (graph or {}).get("nodes", [])):
+            from mn_molecular_design_studio import rfd4_proteina_input as inputs
+
+            st.caption("Upload the annotated mmCIF with the receptor, peptide ring and design conditions.")
+            upload = st.file_uploader("Annotated cyclic complex", type=["cif", "mmcif"], key=key + "-cyclic-complex")
+            try:
+                path = resolve_stored_path(params.get("target_pdb"), must_exist=True) if params.get("target_pdb") else None
+                if upload is not None:
+                    path, = inputs.store_structure_uploads([upload], owner_id)
+                if path is None:
+                    return {}
+                ring, receptors = inputs.cyclic_complex_chains(path)
+            except (ValueError, OSError) as exc:
+                st.error(str(exc))
+                return {}
+            st.caption(f"{path.name} · receptor chains {', '.join(receptors)} · cyclic chain {ring}")
+            values = {"target_pdb": str(path), "target_chains": ",".join(receptors),
+                      "hotspots": "", "coldspots": "", "target_source_molecule_id": "", "target_source_structure_id": ""}
+            params.update(values)
+            return {node_id: values}
         path = resolve_stored_path(params.get("target_pdb"), must_exist=True) if params.get("target_pdb") else None
         source = render_target_source(
             key_prefix=key, label="Target Structure", example_code="7QF4",

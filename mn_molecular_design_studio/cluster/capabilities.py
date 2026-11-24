@@ -123,6 +123,9 @@ def requirements(payload, *, references=(), installed_images=None):
             raise ValueError(f"Unknown workflow: {workflow}")
         spec = WORKFLOWS[workflow]
         manifest_tools = SURFACE_METHODS if workflow == "detection.surface_analysis" else (spec.tool,)
+        if workflow in {"design.rfd4_proteina", "refolding.rfd4_proteina"}:
+            # RFD4 chooses its image by task below.
+            manifest_tools = ()
         if workflow in {"design.boltzgen", "design.boltzgen_generator", "design.boltzgen_mimosa"}:
             if str(p.get("mimosa_condition", "unconstrained")).strip().lower() == "unconstrained":
                 manifest_tools = ("boltzgen",)
@@ -276,14 +279,18 @@ def requirements(payload, *, references=(), installed_images=None):
             if workflow.startswith(("design.", "refolding.", "sequence.")):
                 cpu_only = False
             if "rfdiffusion3" in workflow:
-                needed_images.add("mn-foundry:cu128"); needed_refs.add("foundry/rfd3_latest.ckpt")
+                from mn_molecular_design_studio.rfdiffusion3_input import runtime_for
+
+                needed_images.add(runtime_for(p)[0] if workflow == "design.rfdiffusion3" else "mn-foundry:cu128")
+                needed_refs.add("foundry/rfd3_latest.ckpt")
             if workflow in {"design.rfd4_proteina","refolding.rfd4_proteina"}:
-                from mn_molecular_design_studio.rfd4_proteina_input import IMAGE,HF_REVISION
-                needed_images.add(IMAGE)
+                from mn_molecular_design_studio.rfd4_proteina_input import CYCLIC_TASK, HF_REVISION, runtime_for
+                needed_images.add(runtime_for(p.get("task", "protein_binder"))[0])
                 bundle="rfd4-proteina/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/"+HF_REVISION
                 needed_refs.update(bundle+"/"+name for name in ("config.json","model.safetensors"))
                 o=p.get("options") or {}
-                needs_oracle=workflow=="design.rfd4_proteina" and (o.get("refold",True) or o.get("apo") or o.get("reward_search")=="Best by refolding" or p.get("avoid_structures") or p.get("also_bind_structures"))
+                needs_oracle=(workflow=="design.rfd4_proteina" and p.get("task") != CYCLIC_TASK
+                              and (o.get("refold",True) or o.get("apo") or o.get("reward_search")=="Best by refolding" or p.get("avoid_structures") or p.get("also_bind_structures")))
                 if needs_oracle:
                     engine=o.get("folding_engine","openfold3_jax")
                     from mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_oracle import ORACLE_IMAGE

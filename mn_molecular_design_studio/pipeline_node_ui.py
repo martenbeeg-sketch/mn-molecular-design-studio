@@ -537,7 +537,8 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""
         from mn_molecular_design_studio.target_editor import _target_storage_path
 
         rfd3 = tile.workflow == "design.rfdiffusion3"
-        choices = ({"ligand_binder": "Ligand binder", "enzyme": "Enzyme scaffold", "nucleic_acid_binder": "DNA or RNA binder"}
+        choices = ({"ligand_binder": "Ligand binder", "enzyme": "Enzyme scaffold", "nucleic_acid_binder": "DNA or RNA binder",
+                    "cyclic_peptide_binder": "Cyclic peptide backbone"}
                    if rfd3 else {"small_molecule": "Small-molecule binder", "redesign": "Protein redesign"})
         task = values.get("task")
         values["task"] = st.selectbox("Design task", list(choices), index=list(choices).index(task) if task in choices else 0,
@@ -555,6 +556,14 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""
             elif values.get(structure):
                 st.caption(Path(values[structure]).name)
         descriptors = [parameter for parameter in descriptors if parameter["name"] not in {"task", structure}]
+        if values["task"] == "cyclic_peptide_binder":
+            st.caption("The cyclic encoding applies to the generated peptide. This step saves backbones.")
+            values.setdefault("length_min", 12)
+            values.setdefault("length_max", 12)
+            values.setdefault("is_non_loopy", False)
+            for parameter in descriptors:
+                if parameter["name"] in {"length_min", "length_max", "num_designs"}:
+                    parameter["required"] = True
     if tile.workflow in {"design.rfantibody_mimosa", "design.boltzgen_mimosa"}:
         from mn_molecular_design_studio.target_editor import _target_storage_path
 
@@ -1331,6 +1340,11 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
             optional = [f for f in spec["fields"] if f not in primary]
             _, upstream = _connected_inputs(graph, node["id"])
             connected_target = next((n["data"]["params"] for n in upstream if n["data"]["kind"] == "target"), {})
+            if kind == "rfd4" and values["task"] == "cyclic_peptide_binder":
+                primary = [field for field in primary if field["name"] not in {"input_mode", "length_min", "length_max"}]
+                optional = [field for field in optional if field["name"] not in {"target_structure", "condition_spec", "input_files"}]
+                st.caption("Upload the annotated cyclic complex in the Target step. "
+                           "The receptor, ring and design conditions come from that file.")
             if kind in {"peptide_trap", "kejia_idr"} and connected_target.get("target_input") == "idr":
                 primary = [field for field in primary if field["name"] != "target_sequence"]
                 st.caption("The sequence comes from the connected Target step.")

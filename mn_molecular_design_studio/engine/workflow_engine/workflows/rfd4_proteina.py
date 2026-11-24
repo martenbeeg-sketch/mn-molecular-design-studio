@@ -27,7 +27,7 @@ from mn_molecular_design_studio.engine.workflow_engine.core.manifests import loa
 from mn_molecular_design_studio.engine.workflow_engine.runtime import reference_root
 from mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_oracle import OpenFold3Bridge
 
-Task = Literal['protein_binder','nanobody','antibody','tcr','motif_scaffolding','enzyme',
+Task = Literal['protein_binder','cyclic_peptide_binder','nanobody','antibody','tcr','motif_scaffolding','enzyme',
                'small_molecule_binder','dna_binder','rna_design','existing_structure',
                'custom_conditions','score_structures','unconditional']
 InputMode = Literal['guided','guided_binder','annotated_cif','condition_spec','unconditional']
@@ -89,7 +89,12 @@ def normalize_outputs(run_dir, prepared, task, requested):
         name=path.stem.removesuffix('_generated')
         ident=f'rfd4_{i:06d}_{name}'
         binder_path=path
-        if binder:
+        if task == inputs.CYCLIC_TASK:
+            from mn_molecular_design_studio.cyclic_topology import head_to_tail_chains
+
+            if len(binder) != 1 or not set(binder).issubset(head_to_tail_chains(path)):
+                raise ValueError("RFD4 output does not retain the designed peptide's recorded closure bond.")
+        elif binder:
             try:
                 class Designed(Select):
                     def accept_chain(self,chain): return chain.id in binder
@@ -120,12 +125,13 @@ def normalize_outputs(run_dir, prepared, task, requested):
         target_artifact=str(local_path(run_dir,target_reference)) if target_reference else None
         record={'candidate_id':ident,'source_tool':'rfd4_proteina','stage':stage,
                         'parents':[parent['candidate_id']] if parent.get('candidate_id') else [],
-                        'complex_pdb':str(path),'binder_pdb':str(binder_path),'binder_sequence':sequence,
+                        'complex_pdb':str(path),'binder_pdb':None if task == inputs.CYCLIC_TASK else str(binder_path),'binder_sequence':sequence,
                         'target_pdb':target_artifact,'target_chains':targets,'binder_chains':binder,
                         'metrics':metrics,'raw_metadata':{'task':task,'native_structure':str(path),
+                        **({'binder_format': 'cyclic_peptide', 'cyclic_bond_recorded': True} if task == inputs.CYCLIC_TASK else {}),
                         'source_candidate':parent,
                         'sequences_by_chain':item.get('sequences',{}),'engine_version':inputs.UPSTREAM_VERSION,
-                        'upstream_commit':inputs.UPSTREAM_COMMIT,'requested_designs':requested,
+                        'upstream_commit':inputs.runtime_for(task)[1],'requested_designs':requested,
                         'studio_molecule_id':ident,'components':components,'unsupported_chemistry':unsupported_chemistry,
                         'reference_constraints':{key:prepared['parameters'].get(key) for key in ('task','condition_spec','options')},
                         'folding_engine':prepared['parameters'].get('options',{}).get('folding_engine','openfold3_jax') if prepared['parameters'].get('options',{}).get('refold',True) else None}}
@@ -156,6 +162,7 @@ def run_rfd4_proteina_design(
         if (isinstance(distributed_campaign,dict) and distributed_campaign.get('enabled')) or task=='score_structures':
             raise ValueError('Native phase timing supports ordinary local generation only; campaign and scoring execution are unchanged.')
     parameters=json.loads(json.dumps(dict(locals()),default=str)); job=None
+    image, upstream_commit = inputs.runtime_for(task)
     try:
         if seed is None: parameters['seed']=secrets.randbelow(2**32)
         parameters['options']=dict(options or {})
@@ -186,11 +193,13 @@ def run_rfd4_proteina_design(
             parameters['target_structure']=str(sequence_structure(protein_sequences,job.run_dir/'artifacts/sequence_input.cif'))
         design_parameters={key:value for key,value in parameters.items() if key!='distributed_campaign'}
         prepared=inputs.prepare_request(design_parameters,run_dir=job.run_dir)
+        if task == inputs.CYCLIC_TASK:
+            parameters["options"] = prepared["parameters"]["options"]
         if distributed_enabled:
             if prepared.get('design_count') != 1:
                 raise ValueError('Each RFD4 campaign attempt must prepare exactly one native design input.')
             write_json(job.run_dir/'parameters.json',{**parameters,'engine_version':inputs.UPSTREAM_VERSION,
-                       'upstream_commit':inputs.UPSTREAM_COMMIT,'checkpoint_revision':inputs.HF_REVISION,'image':inputs.IMAGE})
+                       'upstream_commit':upstream_commit,'checkpoint_revision':inputs.HF_REVISION,'image':image})
             from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import run_rfd4_proteina_distributed_campaign
             return run_rfd4_proteina_distributed_campaign(job.run_dir)
         # Stage the exact adapter with every run for reproducibility and remote execution.
@@ -202,7 +211,7 @@ def run_rfd4_proteina_design(
             source=Path(__file__).with_name(name)
             if source.exists(): shutil.copy2(source,runtime/name)
         write_json(job.run_dir/'parameters.json',{**parameters,'engine_version':inputs.UPSTREAM_VERSION,
-                   'upstream_commit':inputs.UPSTREAM_COMMIT,'checkpoint_revision':inputs.HF_REVISION,'image':inputs.IMAGE})
+                   'upstream_commit':upstream_commit,'checkpoint_revision':inputs.HF_REVISION,'image':image})
         cache=Path(reference_root())/'rfd4-proteina/huggingface'; cache.mkdir(parents=True,exist_ok=True)
         temp=prepared['root']/'tmp'; temp.mkdir(exist_ok=True)
         o=parameters['options']
@@ -222,7 +231,7 @@ def run_rfd4_proteina_design(
                 mounts.append(oracle.mount)
                 env.update(AF3_LAUNCHER_SOCKET_TEMPLATE='/oracle/oracle.sock',
                            AF3_MODEL_DIR=('/cache/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/'+inputs.HF_REVISION+'/openfold3/weights') if oracle.engine=='openfold3_jax' else '/studio-prediction/'+oracle.engine)
-            manifest={**load_manifest('rfd4_proteina'),'entrypoint':'python'}
+            manifest={**load_manifest('rfd4_proteina'),'entrypoint':'python','image':image}
             args=['/work/'+(runtime/'rfd4_runtime.py').relative_to(job.run_dir).as_posix(),
                   '/work/'+prepared['request_path'].relative_to(job.run_dir).as_posix()]
             # RFD4 creates temporary AF3 manifests inside /work and hands their

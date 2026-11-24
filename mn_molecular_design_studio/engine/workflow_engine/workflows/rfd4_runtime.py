@@ -530,6 +530,22 @@ def common_conditions(aa, designed, options):
     return aa
 
 
+def validate_cyclic_complex(aa, designed, targets):
+    ring = aa.is_protein & np.isin(aa.chain_id, designed)
+    receptor = aa.is_protein & np.isin(aa.chain_id, targets)
+    fixed_sequence = C_SEQ.mask(aa, default='generate')
+    if not np.any(receptor) or not fixed_sequence[receptor].all() or not np.any(ring & ~fixed_sequence):
+        raise ValueError('The annotated mmCIF must retain the receptor sequence and allow design on the ring.')
+    n_atoms = np.flatnonzero(ring & (aa.atom_name == 'N'))
+    c_atoms = np.flatnonzero(ring & (aa.atom_name == 'C'))
+    if not len(n_atoms) or not len(c_atoms) or aa.bonds is None:
+        raise ValueError('The native input has no addressable head-to-tail ring bond.')
+    pair = sorted((n_atoms[0], c_atoms[-1]))
+    bonds = aa.bonds.as_array()
+    if not np.any(np.all(np.sort(bonds[:, :2], axis=1) == pair, axis=1) & (bonds[:, 2] == BondType.SINGLE)):
+        raise ValueError('The native input did not preserve the head-to-tail ring bond.')
+
+
 def prepare(request):
     p = request['parameters']; root = Path(request['root']); root.mkdir(parents=True, exist_ok=True)
     prepared = root / 'prepared'; prepared.mkdir(exist_ok=True)
@@ -585,6 +601,8 @@ def prepare(request):
         path = prepared / f'{name}.cif'
         to_cif_file(aa, str(path), save_standard_annotations=True, chain_disambiguation='chain_iid')
         reloaded = load(path, True)
+        if p['task'] == 'cyclic_peptide_binder':
+            validate_cyclic_complex(reloaded, designed, p['target_chains'])
         # Round-trip the conditions consumed by the model.
         for cls in [C_SEQ,C_CRD,C_CRDGRP,C_IDX]+[resolve_standard_annotation(name) for name in ('C_HOT','C_HB','C_PISTACK','C_PICATION','C_SALT','C_HPHOB','C_MCOORD','C_RAS','C_SEC')]:
             left=cls.annotation(aa,default='generate'); right=cls.annotation(reloaded,default='generate')
@@ -707,7 +725,7 @@ def compose_settings(command, p, root):
 
 def _require_output_target_chains(task, origin, sequences, output_name):
     """Reject PPI results that silently lost one or more uploaded targets."""
-    if task not in ('protein_binder','nanobody','antibody','tcr'):
+    if task not in ('protein_binder','cyclic_peptide_binder','nanobody','antibody','tcr'):
         return
     expected={str(chain) for chain in origin.get('target_chains') or []}
     missing=expected-set(sequences)

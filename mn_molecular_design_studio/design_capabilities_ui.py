@@ -25,8 +25,7 @@ def render(key):
     access = data["access"]
     st.markdown(
         "**Build pipeline** creates a connected draft. Configure its steps, then select **Run pipeline**. "
-        "**Add canvas step** means the tool is in the canvas library. "
-        "**Upstream only** is unavailable in Studio."
+        "**Add canvas step** means the tool is in the canvas library."
     )
     by_engine = {}
     for row in rows:
@@ -39,9 +38,7 @@ def render(key):
             for code, label in columns.items()}}
          for engine, cells in sorted(by_engine.items(), key=lambda entry: entry[0].casefold())]
     )
-    cell_styles = {access["pipeline"]: "color: #176044; background-color: #e7f5ee",
-                   access["canvas"]: "color: #176044; background-color: #e7f5ee",
-                   access["upstream"]: "color: #674d23; background-color: #fdf2df"}
+    cell_styles = {access[level]: "color: #176044; background-color: #e7f5ee" for level in ("pipeline", "canvas")}
     styled = matrix.style.map(lambda value: cell_styles.get(value, ""), subset=list(columns.values()))
     st.dataframe(styled, hide_index=True, width="stretch",
                  column_config={"Engine / checkpoint": st.column_config.TextColumn(pinned=True)})

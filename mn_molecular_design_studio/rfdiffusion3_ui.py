@@ -17,6 +17,7 @@ from mn_molecular_design_studio.target_editor import render_target_source, rende
 from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import StructureVisualization, molstar_custom_component
 
 EXAMPLES = {
+    "cyclic_peptide_binder": "5o45_cropped.pdb",
     "protein_binder": "5o45_cropped.pdb", "enzyme": "M0255_1mg5.pdb",
     "nucleic_acid_binder": "1bna.pdb", "ligand_binder": "IAI.pdb",
 }
@@ -113,6 +114,7 @@ def _render_setup_content(schema: dict, *, owner_id: str, header, project_select
     st.html('<div class="rfd3-section">DESIGN TASK</div>')
     task = st.pills("Task", list(inputs.TASKS), format_func=inputs.TASKS.get, selection_mode="single", default="protein_binder", key="rfd3-task-pills", label_visibility="collapsed") or "protein_binder"
     descriptions = {"protein_binder": "Design a new protein that binds a selected surface on your target.",
+                    "cyclic_peptide_binder": "Generate peptide backbones with cyclic positional encoding for a protein target.",
                     "enzyme": "Build a protein scaffold around catalytic residues and a bound molecule.",
                     "nucleic_acid_binder": "Design a protein binder around a DNA or RNA structure.",
                     "ligand_binder": "Build a protein binding pocket around a small molecule.",
@@ -148,7 +150,7 @@ def _render_setup_content(schema: dict, *, owner_id: str, header, project_select
                 p["target_structure"] = str(source.path)
                 try:
                     info = inputs.inventory(source.path)
-                    if task == "protein_binder":
+                    if task in inputs.PROTEIN_BINDER_TASKS:
                         target = render_target_editor(source, key_prefix=prefix+"-editor", show_structure_tools=False)
                         p.update(target_structure=str(target.design_path or source.path), target_chains=target.chains, hotspots=target.hotspots)
                     else:
@@ -186,9 +188,11 @@ def _render_setup_content(schema: dict, *, owner_id: str, header, project_select
             if not (task == "enzyme" and p.get("scaffolding_mode") == "residue"):
                 a,b = st.columns(2)
                 with a:
-                    p["length_min"] = int(st.number_input("Minimum scaffold length" if task == "enzyme" else "Minimum binder length", 1, 3000, 100, key=prefix+"-min"))
+                    p["length_min"] = int(st.number_input("Minimum scaffold length" if task == "enzyme" else "Minimum binder length",
+                                                          1, 3000, 12 if task == "cyclic_peptide_binder" else 100, key=prefix+"-min"))
                 with b:
-                    p["length_max"] = int(st.number_input("Maximum scaffold length" if task == "enzyme" else "Maximum binder length", 1, 3000, 150, key=prefix+"-max"))
+                    p["length_max"] = int(st.number_input("Maximum scaffold length" if task == "enzyme" else "Maximum binder length",
+                                                          1, 3000, 12 if task == "cyclic_peptide_binder" else 150, key=prefix+"-max"))
             if p.get("ligands"):
                 st.markdown("**Ligand atom conditions**")
                 st.caption("Use comma-separated atom names or ALL. A Fixed condition with empty atoms allows that ligand to diffuse. Other conditions need atoms or ALL.")
@@ -212,7 +216,8 @@ def _render_setup_content(schema: dict, *, owner_id: str, header, project_select
             p["step_scale"] = st.number_input("Step scale", 1., 5., 1.5, .1, key="rfd3-scale")
             p["gamma_0"] = st.number_input("Gamma 0", 0., 1., .6, .05, key="rfd3-gamma")
             if task != "json":
-                p["is_non_loopy"] = st.checkbox("Condition on non-loopy structures", True, key="rfd3-nonloopy")
+                p["is_non_loopy"] = st.checkbox("Condition on non-loopy structures", task != "cyclic_peptide_binder",
+                                                key=prefix+"-nonloopy")
         with b:
             p["seed"] = int(st.number_input("Random seed (0 = random)", 0, 2147483647, 0, key="rfd3-seed"))
             p["cpu_cores"] = int(st.number_input("CPU cores", 1, 256, 4, key="rfd3-cpus"))

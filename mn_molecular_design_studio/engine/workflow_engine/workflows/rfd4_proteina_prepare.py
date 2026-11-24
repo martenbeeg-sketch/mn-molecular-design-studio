@@ -41,7 +41,8 @@ def validate_inputs(parameters: dict[str, Any], *, timeout_seconds: int = 300) -
         runtime_path = runtime_dir / runtime_source.name
         shutil.copy2(runtime_source, runtime_path)
 
-        manifest = {**load_manifest("rfd4_proteina"), "entrypoint": "python", "gpu": False}
+        image, _ = inputs.runtime_for(payload.get("task", "protein_binder"))
+        manifest = {**load_manifest("rfd4_proteina"), "entrypoint": "python", "gpu": False, "image": image}
         args = [
             "/work/" + runtime_path.relative_to(run_dir).as_posix(),
             "/work/" + prepared["request_path"].relative_to(run_dir).as_posix(),

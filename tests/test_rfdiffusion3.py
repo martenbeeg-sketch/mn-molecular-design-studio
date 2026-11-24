@@ -17,11 +17,12 @@ from mn_molecular_design_studio.engine.workflow_engine.core import jobs
 
 def task_parameters(task, mode="atom"):
     p = {"task": task, "num_designs": 1, "length_min": 100, "length_max": 100}
-    names = {"protein_binder": "5o45_cropped.pdb", "enzyme": "M0255_1mg5.pdb", "nucleic_acid_binder": "1bna.pdb", "ligand_binder": "IAI.pdb"}
+    names = {"protein_binder": "5o45_cropped.pdb", "cyclic_peptide_binder": "5o45_cropped.pdb",
+             "enzyme": "M0255_1mg5.pdb", "nucleic_acid_binder": "1bna.pdb", "ligand_binder": "IAI.pdb"}
     if task == "json":
         return p | {"json_config": {"unconditional": {"length": "64-64", "is_non_loopy": True}}}
     p["target_structure"] = str(inputs.ASSETS / names[task])
-    if task == "protein_binder":
+    if task in inputs.PROTEIN_BINDER_TASKS:
         p.update(target_chains=["A"], hotspots="A56,A115,A123")
     elif task == "nucleic_acid_binder":
         p.update(target_chains=["A", "B"], ori_token=[24, 20, 10])
@@ -44,6 +45,9 @@ def test_all_task_forms_compile(task, mode):
         assert "A1-12,/0,B13-24" in spec["contig"]
     if task == "ligand_binder":
         assert spec["select_fixed_atoms"] == {"IAI": ""}
+    if task == "cyclic_peptide_binder":
+        assert spec["cyclic_chains"] == ["A"]
+        assert inputs.runtime_for(task_parameters(task))[0] == inputs.CYCLIC_IMAGE
 
 
 @pytest.mark.parametrize("changes", [
@@ -57,7 +61,8 @@ def test_bad_form_rejected_before_job(changes):
 
 
 @pytest.mark.parametrize("spec", [
-    {"length": "64", "cyclic_chains": ["A"]}, {"contig": "A1-10"}, {"length": "64", "ligand": "ATP"},
+    {"length": "64", "cyclic_chains": ["A", "B"]}, {"length": "64", "cyclic_chains": ["A"], "partial_t": 1},
+    {"contig": "A1-10"}, {"length": "64", "ligand": "ATP"},
     {"length": "64", "input": "/etc/passwd"}, {"length": "64", "dialect": 1}, {},
 ])
 def test_custom_json_cannot_bypass_input_validation(spec):

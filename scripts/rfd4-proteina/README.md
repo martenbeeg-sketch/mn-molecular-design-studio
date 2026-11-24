@@ -32,3 +32,16 @@ only a job-scoped Unix socket; it is not given access to the Docker socket.
 
 See [implementation and testing handoff](../../docs/integrations/rfd4-proteina.md)
 for task coverage, evidence, and remaining production validation.
+
+## Cyclic peptide design
+
+Build the source update used for the annotated cyclic peptide task:
+
+```bash
+bash scripts/rfd4-proteina/build_upstream_image.sh
+```
+
+This builds `mn-rfd4-proteina:0.0.3-6306a21-cu130` on top of the base image.
+Studio schedules the cyclic task on workstations with this tag and the shared RFD4
+checkpoint. Supply an annotated mmCIF containing a receptor and a peptide with a
+recorded head-to-tail bond. The cyclic task saves native co-design structures.

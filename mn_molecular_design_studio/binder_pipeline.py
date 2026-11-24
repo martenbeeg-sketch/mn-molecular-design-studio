@@ -84,6 +84,10 @@ ROUTES = (
           "Use RFD4's built-in nanobody framework, refold internally and apply Studio acceptance."),
     Route("rfpeptides", "RFpeptides", "Cyclic peptide backbone generation", "structure", "cyclic_peptide", "tile_design_rfpeptides",
           "Generate cyclic peptide backbones. Sequence design and refolding are separate steps."),
+    Route("rfd3-cyclic", "RFdiffusion3", "Cyclic peptide backbone generation", "structure", "cyclic_peptide",
+          "tile_design_rfd3_tasks", "Generate peptide backbones with cyclic positional encoding. Results retain the native CIF."),
+    Route("rfd4-cyclic", "RFD4-Proteina", "Annotated cyclic complex", "structure", "cyclic_peptide", "rfd4",
+          "Supply an annotated mmCIF containing the receptor and the head-to-tail ring bond for native co-design."),
     Route("rfantibody-vhh", "RFantibody", "Native antibody workflow", "structure", "vhh", "tile_design_rfantibody",
           "Use the VHH framework with native sequence design and structure evaluation."),
     Route("rfantibody-scfv", "RFantibody", "Native paired-domain workflow", "structure", "scfv", "tile_design_rfantibody",
@@ -190,7 +194,7 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
     if route.method == "rfd4":
         configuration["method_settings"] = {"rfd4": {"options_json": json.dumps({"refold": route.id != "rfd4-external"})}}
     rfd4_framework = route.method == "rfd4" and route.format in {"vhh", "antibody", "tcr"}
-    if route.method.startswith("tile_") or rfd4_framework:
+    if route.method.startswith("tile_") or rfd4_framework or route.id == "rfd4-cyclic":
         recipe = {"schema_version": SCHEMA, "id": uuid.uuid4().hex}
         values = {}
         if route.method == "tile_design_rfantibody":
@@ -202,6 +206,12 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
             values = {"workflow_parameters": {"task": "nanobody"}}
         elif route.method == "tile_design_bindcraft":
             values = {"workflow_parameters": {"binder_length": "60-100"}}
+        elif route.id == "rfd3-cyclic":
+            values = {"workflow_parameters": {"task": "cyclic_peptide_binder", "num_designs": 1,
+                                              "length_min": 12, "length_max": 12, "is_non_loopy": False}}
+        elif route.id == "rfd4-cyclic":
+            values = {"task": "cyclic_peptide_binder", "input_mode": "annotated_cif", "num_designs": 1,
+                      "options_json": '{"refold": false}'}
         elif rfd4_framework:
             values = {"task": "nanobody" if route.format == "vhh" else route.format, "num_designs": 1}
             if route.format == "vhh":
@@ -220,11 +230,12 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
     target = steps[0]
     target["data"]["params"].update(inputs or {})
     target["data"]["params"]["target_input"] = target_input
-    target["data"]["label"] = "Target sequence · IDR" if target_input == "idr" else "Target structure"
+    target["data"]["label"] = ("Target sequence · IDR" if target_input == "idr"
+                                else "Annotated cyclic complex" if route.id == "rfd4-cyclic" else "Target structure")
     engine = steps[1]["data"]
     engine["label"] = route.engine + " · " + (route.variant if route.method == "rfd4" else FORMATS[route.format])
     if (route.method not in {"bindcraft2", "boltzgen", "complexa", *TEMPLATE_IDR_STEPS}
-            and not route.method.startswith("tile_") and route.format not in {"antibody", "tcr"}):
+            and not route.method.startswith("tile_") and route.format not in {"antibody", "tcr", "cyclic_peptide"}):
         steps.extend([
             _node("candidate_merge", "candidates"),
             _node("shared_filter", "acceptance", {"binder_format": binder_format,

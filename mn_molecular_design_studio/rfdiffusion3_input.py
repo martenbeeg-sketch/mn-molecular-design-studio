@@ -13,6 +13,7 @@ from mn_molecular_design_studio.design_validation import read_structure
 
 TASKS = {
     "protein_binder": "Protein binder design",
+    "cyclic_peptide_binder": "Cyclic peptide backbone design",
     "enzyme": "Enzyme scaffolding",
     "nucleic_acid_binder": "Nucleic acid binder design",
     "ligand_binder": "Small molecule binder design",
@@ -20,6 +21,9 @@ TASKS = {
 }
 IMAGE = "mn-foundry:cu128"
 CODE_VERSION = "RFdiffusion3 a36d29c · Foundry 0.1.9"
+CYCLIC_IMAGE = "mn-foundry:rfd3-cyclic-8bffbcb-cu128"
+CYCLIC_VERSION = "RFdiffusion3 8bffbcb"
+PROTEIN_BINDER_TASKS = frozenset({"protein_binder", "cyclic_peptide_binder"})
 ASSETS = Path(__file__).parent / "assets/rfdiffusion3"
 DNA = {"DA", "DC", "DG", "DT", "DU", "DI"}
 RNA = {"A", "C", "G", "U", "I"}
@@ -29,10 +33,19 @@ SPEC_FIELDS = {
     "select_fixed_atoms", "select_unfixed_sequence", "select_buried", "select_partially_buried",
     "select_exposed", "select_hbond_acceptor", "select_hbond_donor", "select_hotspots",
     "redesign_motif_sidechains", "symmetry", "ori_token", "infer_ori_strategy", "plddt_enhanced",
-    "is_non_loopy", "partial_t",
+    "is_non_loopy", "partial_t", "cyclic_chains",
 }
 CONDITIONS = {"Fixed": "select_fixed_atoms", "Buried": "select_buried", "Exposed": "select_exposed",
               "H-bond donor": "select_hbond_donor", "H-bond acceptor": "select_hbond_acceptor"}
+
+
+def runtime_for(parameters):
+    specs = parameters.get("json_config")
+    cyclic = parameters.get("task") == "cyclic_peptide_binder" or (
+        parameters.get("task") == "json" and isinstance(specs, dict)
+        and any(isinstance(spec, dict) and spec.get("cyclic_chains") for spec in specs.values())
+    )
+    return (CYCLIC_IMAGE, CYCLIC_VERSION) if cyclic else (IMAGE, CODE_VERSION)
 
 
 def inventory(path: Path) -> dict:
@@ -175,16 +188,19 @@ def prepare_request(parameters: dict) -> dict:
         if ligands:
             spec["ligand"] = ",".join(ligands)
         chains = p.get("target_chains") or []
-        if task in {"protein_binder", "nucleic_acid_binder"}:
-            kinds = {"protein"} if task == "protein_binder" else {"dna", "rna"}
+        if task in PROTEIN_BINDER_TASKS or task == "nucleic_acid_binder":
+            protein = task in PROTEIN_BINDER_TASKS
+            kinds = {"protein"} if protein else {"dna", "rna"}
             if not chains:
                 raise ValueError("Select at least one target chain.")
             if any(c not in info["chains"] or info["chains"][c]["kind"] not in kinds for c in chains):
                 raise ValueError("Selected target chains do not match this task's molecule type.")
             target_contig = ",/0,".join(chain_contig(c, info["chains"][c]["residues"]) for c in chains)
-            spec["contig"] = f"{length},/0,{target_contig}" if task == "protein_binder" else f"{target_contig},/0,{length}"
+            spec["contig"] = f"{length},/0,{target_contig}" if protein else f"{target_contig},/0,{length}"
+            if task == "cyclic_peptide_binder":
+                spec["cyclic_chains"] = ["A"]
             if p.get("hotspots", "").strip():
-                spec["select_hotspots"] = {s.strip(): "CA" if task == "protein_binder" else "ALL" for s in p["hotspots"].split(",") if s.strip()}
+                spec["select_hotspots"] = {s.strip(): "CA" if protein else "ALL" for s in p["hotspots"].split(",") if s.strip()}
                 spec["infer_ori_strategy"] = "hotspots"
         elif task == "enzyme":
             if p.get("scaffolding_mode", "atom") == "residue":
@@ -229,9 +245,19 @@ def prepare_request(parameters: dict) -> dict:
     normalized = {}
     for index, (name, spec) in enumerate(specs.items(), 1):
         if not isinstance(spec, dict) or set(spec) - SPEC_FIELDS:
-            raise ValueError(f"{name}: unsupported specification fields for installed Foundry 0.1.9: {sorted(set(spec) - SPEC_FIELDS) if isinstance(spec, dict) else 'expected object'}")
+            raise ValueError(f"{name}: unsupported RFdiffusion3 specification fields: {sorted(set(spec) - SPEC_FIELDS) if isinstance(spec, dict) else 'expected object'}")
         if spec.get("dialect", 2) != 2:
             raise ValueError("Use RFdiffusion3 dialect 2.")
+        cyclic_chains = spec.get("cyclic_chains")
+        if cyclic_chains is not None:
+            if not isinstance(cyclic_chains, list) or len(cyclic_chains) > 1 or any(
+                not isinstance(chain, str) or not chain.strip() for chain in cyclic_chains
+            ):
+                raise ValueError(f"{name}: cyclic_chains must contain at most one assembled chain ID.")
+            if cyclic_chains and (spec.get("partial_t") is not None or spec.get("symmetry")):
+                raise ValueError(f"{name}: cyclic encoding requires a full generated chain with symmetry off.")
+        if not cyclic_chains:
+            spec.pop("cyclic_chains", None)
         if "length" in spec:
             spec["length"] = _length(spec["length"])
         if not any(spec.get(k) for k in ("contig", "length", "unindex")):
@@ -260,5 +286,8 @@ def prepare_request(parameters: dict) -> dict:
         identifier = f"spec_{index:03d}"
         normalized[identifier] = spec
         contexts[identifier] = {"name": str(name), "task": task, "source_path": str(by_name[filename]) if filename else None,
-                                "target_chains": list(p.get("target_chains") or []) if task in {"protein_binder", "nucleic_acid_binder"} else []}
-    return {"specifications": normalized, "files": by_name, "contexts": contexts}
+                                "target_chains": list(p.get("target_chains") or [])
+                                if task in PROTEIN_BINDER_TASKS or task == "nucleic_acid_binder" else [],
+                                "cyclic_chains": list(cyclic_chains or [])}
+    return {"specifications": normalized, "files": by_name, "contexts": contexts,
+            "engine_version": runtime_for(p)[1]}

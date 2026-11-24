@@ -33,7 +33,7 @@ def pills(app, key: str):
     raise AssertionError(f"No pills widget found with key {key!r}")
 
 
-@pytest.mark.parametrize("task", [*inputs.TASKS, "idr_peptide_binder", "cyclic_peptide_binder"])
+@pytest.mark.parametrize("task", [*inputs.TASKS, "idr_peptide_binder"])
 def test_each_design_task_page_renders(task):
     app = page()
     assert not app.exception, f"initial render: {app.exception}"
