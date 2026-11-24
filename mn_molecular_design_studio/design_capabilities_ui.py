@@ -197,16 +197,11 @@ def render_capabilities(key, open_binder, open_step):
     operations = {kind: spec for kind, spec in editor_tool_catalog().items()
                   if spec["category"] in _OPERATION_CATEGORIES[category] and not spec.get("hidden")
                   and (category != _PREDICTION_CATEGORY or kind in _PREDICTION_ENGINES)}
-    table = ["<table><thead><tr><th scope='col'>Tool or step</th><th scope='col'>Inputs</th>"
-             "<th scope='col'>Outputs</th><th scope='col'>Pipeline</th></tr></thead><tbody>"]
+    table = ["<table><thead><tr><th scope='col'>Tool or step</th>"
+             "<th scope='col'>Pipeline</th></tr></thead><tbody>"]
     for kind, spec in sorted(operations.items(), key=lambda item: item[1]["label"].casefold()):
         label = escape(spec["label"])
-        if category == _PREDICTION_CATEGORY and spec.get("molecule_tasks"):
-            inputs = "Existing protein complex" if kind == "af2" else "Molecular inputs or candidates"
-        else:
-            inputs = escape(", ".join(port["label"] for port in spec["inputs"]) or "—")
-        outputs = escape(", ".join(port["label"] for port in spec["outputs"]) or "—")
-        table.append(f'<tr><th scope="row">{label}</th><td>{inputs}</td><td>{outputs}</td>'
+        table.append(f'<tr><th scope="row">{label}</th>'
                      f'<td><button type="button" data-engine="{escape(kind)}" '
                      f'aria-label="Set up {label}">Set up</button></td></tr>')
     choice = _matrix(data="".join([*table, "</tbody></table>"]), key=f"{key}-operations-{category}",
@@ -221,6 +216,11 @@ def render_capabilities(key, open_binder, open_step):
     def details():
         st.write(spec["palette"]["description"])
         mode = _prediction_input(kind, key) if category == _PREDICTION_CATEGORY else None
+        with st.expander("Pipeline inputs and outputs"):
+            for direction in ("inputs", "outputs"):
+                if ports := spec[direction]:
+                    st.markdown(f"**{direction.title()}**")
+                    st.write(", ".join(port["label"] for port in ports))
         if st.button("Open pipeline draft", type="primary", key=f"{key}-open-operation-{kind}"):
             try:
                 open_step(kind, prediction_mode=mode)

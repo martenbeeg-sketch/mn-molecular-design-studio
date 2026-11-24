@@ -21,6 +21,7 @@ def test_prediction_capabilities_show_main_engines_and_open_connected_drafts(mon
 
     def click_engine(*, data, **_):
         assert 'Set up AlphaFold2 Initial Guess' in data
+        assert data.count("scope='col'") == 2
         assert 'data-engine="cofold_input"' not in data
         assert 'data-engine="prediction_esmfold2"' in data
         assert 'data-engine="prediction_esmfold2_fast"' not in data
@@ -37,6 +38,7 @@ if 'cap-graph' not in st.session_state:
 """)
     app.session_state["cap-capability"] = "Structure prediction & cofolding"
     app.run()
+    assert any(item.label == "Pipeline inputs and outputs" for item in app.expander)
     if kind == "boltz2":
         app.selectbox(key="cap-prediction-input-boltz2").set_value("protein_ligand").run()
     app.button(key=f"cap-open-operation-{kind}").click().run()
