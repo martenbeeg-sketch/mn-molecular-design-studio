@@ -722,6 +722,7 @@ def _binder_picker(key, *, connected_target=None):
         FORMATS, MULTIDOMAIN_TARGET, STRUCTURE_TARGET_INPUTS, TARGET_INPUTS, compatible_routes, legacy_sequence_carrier,
     )
     from mn_molecular_design_studio.design_capabilities import ACCESS, picker_tools
+    from mn_molecular_design_studio.design_capabilities_ui import render_binder_preset
 
     if connected_target:
         params = connected_target["data"]["params"]
@@ -765,13 +766,8 @@ def _binder_picker(key, *, connected_target=None):
         if entry.reference:
             st.markdown(f"[Project reference]({entry.reference})")
         return None
-    route = (st.selectbox("Workflow variant", variants, format_func=lambda item: item.variant,
-                          key=f"{key}-{target_input}-{binder_format}-refold")
-             if len(variants) > 1 else variants[0])
-    st.caption(route.summary)
-    if st.button("Add to canvas" if connected_target else "Create binder pipeline", type="primary", key=key + "-create"):
-        return route
-    return None
+    return render_binder_preset(f"{key}-{target_input}-{binder_format}-{engine}", variants,
+                                button_label="Add to canvas" if connected_target else "Create binder pipeline")
 
 
 def _show_binder_branch(prefix, graph, project_id, submit_api):
@@ -785,12 +781,11 @@ def _show_binder_branch(prefix, graph, project_id, submit_api):
 
     @st.dialog("Design a binder", on_dismiss=lambda: st.session_state.pop(open_key, None))
     def dialog():
-        route = _binder_picker(f"{prefix}-{graph['id']}-{target['id']}-binder", connected_target=target)
-        if route is None:
+        preset = _binder_picker(f"{prefix}-{graph['id']}-{target['id']}-binder", connected_target=target)
+        if preset is None:
             return
         try:
-            created = new_binder_pipeline(route.id, target_input=route.target_input, binder_format=route.format,
-                                          graph=graph, target_node_id=target["id"])
+            created = new_binder_pipeline(**preset, graph=graph, target_node_id=target["id"])
             revision = _draft_revision(prefix, graph)
             if project_id and revision:
                 saved = _save_draft(prefix, project_id, created, submit_api)
@@ -827,11 +822,11 @@ def _show_guided_pipeline_setup(prefix, graph, project_id, submit_api):
         if task == "targeted_protein_binder":
             from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline
 
-            route = _binder_picker(key + "-binder")
-            if route is None:
+            preset = _binder_picker(key + "-binder")
+            if preset is None:
                 return
             try:
-                created = new_binder_pipeline(route.id, target_input=route.target_input, binder_format=route.format)
+                created = new_binder_pipeline(**preset)
             except ValueError as exc:
                 st.error(str(exc))
                 return
@@ -1363,7 +1358,17 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
         if section == "Capabilities":
             from mn_molecular_design_studio.design_capabilities_ui import render
 
-            render(prefix + "-design-capabilities")
+            preset = render(prefix + "-design-capabilities")
+            if preset:
+                from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline
+
+                try:
+                    graph = new_binder_pipeline(**preset)
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    _activate_graph(prefix, graph)
+                    st.rerun()
             return
         if section == "Runs":
             _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs)

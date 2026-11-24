@@ -26,7 +26,7 @@ def test_registered_binder_routes_build_valid_graphs(route):
     else:
         assert (route.method.startswith("tile_design_")
                 or route.method in {"boltzgen", "complexa", "peptide_trap", "kejia_idr"}
-                or route.format in {"antibody", "tcr"} or route.id == "rfd4-cyclic")
+                or route.format in {"antibody", "tcr"} or route.id in {"rfd4-cyclic", "rfd4-generator"})
     if route.method == "boltzgen":
         assert _settings(graph, route.method)["task"] == {"vhh": "nanobody", "miniprotein": "protein"}.get(route.format, route.format)
     if route.method == "tile_design_rfantibody":
@@ -42,7 +42,7 @@ def test_registered_binder_routes_build_valid_graphs(route):
             assert settings["task"] == "cyclic_peptide_binder" and settings["input_mode"] == "annotated_cif"
             assert json.loads(settings["options_json"])["refold"] is False
         else:
-            assert json.loads(settings["options_json"])["refold"] == (not external)
+            assert json.loads(settings["options_json"])["refold"] == (route.id not in {"rfd4-generator", "rfd4-external"})
 
 
 def test_design_capabilities_match_registered_workflows_and_picker_routes():
@@ -100,6 +100,58 @@ def test_multidomain_target_reuses_verified_structural_routes():
     with pytest.raises(ValueError, match="selected Target step"):
         new_binder_pipeline("esmfold2-protein", target_input="structure", binder_format="miniprotein",
                             graph=graph, target_node_id=target["id"])
+
+
+@pytest.mark.parametrize("refolder", ["boltz2", "rf3", "prediction_openfold3_ob0"])
+def test_rfd4_modular_presets_connect_only_the_requested_stages(refolder):
+    arguments = {"target_input": "multidomain", "binder_format": "miniprotein"}
+    generation = new_binder_pipeline("rfd4-generator", **arguments)
+    assert [n["data"]["kind"] for n in generation["nodes"]] == ["target", "rfd4", "results"]
+    modular = new_binder_pipeline("rfd4-external", **arguments, refold_engine=refolder,
+                                  soluble_mpnn=True, interface_analysis=True)
+    assert [n["data"]["kind"] for n in modular["nodes"]] == [
+        "target", "rfd4", "ligandmpnn", refolder, "ipsae", "candidate_merge", "shared_filter", "results",
+    ]
+    assert _settings(modular, "ligandmpnn")["fix_interface_residues"] is True
+    assert json.loads(_settings(modular, "rfd4")["options_json"])["refold"] is False
+    native = new_binder_pipeline("rfd4-internal", **arguments, interface_analysis=True)
+    assert [n["data"]["kind"] for n in native["nodes"]] == [
+        "target", "rfd4", "ipsae", "candidate_merge", "shared_filter", "results",
+    ]
+    assert json.loads(_settings(native, "rfd4")["options_json"])["refold"] is True
+    with pytest.raises(ValueError, match="refolding engine"):
+        new_binder_pipeline("rfd4-generator", **arguments, refold_engine=refolder)
+
+
+def test_capability_cell_opens_rfd4_preset_controls():
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio.design_capabilities import catalogue
+
+    app = AppTest.from_string("""
+import streamlit as st
+from mn_molecular_design_studio.design_capabilities_ui import render
+from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline
+preset = render("cap")
+if preset:
+    st.json([node["data"]["kind"] for node in new_binder_pipeline(**preset)["nodes"]])
+""")
+    app.session_state["cap-target"] = "multidomain"
+    items = catalogue(target_input="multidomain")["items"]
+    engines = sorted({item["engine"] for item in items}, key=str.casefold)
+    app.session_state["cap-matrix-Protein binders-multidomain"] = {
+        "selection": {"cells": [[engines.index("RFD4-Proteina"), "Miniprotein"]]}
+    }
+    app.run()
+    key = "cap-multidomain-RFD4-Proteina-miniprotein"
+    selector = app.selectbox(key=key + "-variant")
+    assert selector.value.id == "rfd4-generator"
+    external = next(route for route in compatible_routes("multidomain", "miniprotein") if route.id == "rfd4-external")
+    selector.set_value(external).run()
+    app.selectbox(key=key + "-refold").set_value("rf3").run()
+    app.checkbox(key=key + "-analysis").check().run()
+    app.button(key=key + "-create").click().run()
+    assert not app.exception
+    assert json.loads(app.json[0].value) == ["target", "rfd4", "rf3", "ipsae", "candidate_merge", "shared_filter", "results"]
 
 
 def test_route_compatibility_and_branch_preserve_existing_target():

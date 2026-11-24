@@ -122,7 +122,9 @@ def install(app, current_user, *, validate_paths, resolve_job):
             if payload.source_job or payload.selected_candidate_ids:
                 raise HTTPException(422, "A binder starter uses a target structure or sequence.")
             config = payload.configuration or {"route": "rfd4-internal", "target_input": "structure", "binder_format": "miniprotein"}
-            if set(config) != {"route", "target_input", "binder_format"}:
+            required = {"route", "target_input", "binder_format"}
+            optional = {"refold_engine", "soluble_mpnn", "interface_analysis"}
+            if not required <= config.keys() or set(config) - required - optional:
                 raise HTTPException(422, "Choose route, target_input and binder_format from the binder builder catalog.")
             route = config["route"]
             target_input = config["target_input"]
@@ -136,7 +138,8 @@ def install(app, current_user, *, validate_paths, resolve_job):
                     params = call(stage_idr_target, params["target_sequence"], str(user["id"]), hotspots=params.get("hotspots", ""))
             elif "target_sequence" in params:
                 raise HTTPException(422, "Choose the IDR route to supply a target sequence.")
-            graph = call(new_binder_pipeline, route, target_input=target_input, binder_format=binder_format, inputs=params)
+            graph = call(new_binder_pipeline, route, target_input=target_input, binder_format=binder_format, inputs=params,
+                         **{key: config[key] for key in optional if key in config})
             return {"project_id": project, "graph": graph, "saved": False}
         if payload.template not in SUPPORTED_TEMPLATE_IDS:
             raise HTTPException(422, "Choose a template from /pipelines/templates.")

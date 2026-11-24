@@ -32,6 +32,13 @@ BC2_FORMATS = {
 
 SEQUENCE_TARGET_STEPS = frozenset({"rfd4", "bindcraft2", "bindcraft2_generator", "peptide_trap", "kejia_idr"})
 TEMPLATE_IDR_STEPS = frozenset({"peptide_trap", "kejia_idr"})
+RFD4_MODULAR_ROUTES = frozenset({"rfd4-generator", "rfd4-external"})
+RFD4_PRESET_ROUTES = RFD4_MODULAR_ROUTES | {"rfd4-internal"}
+RFD4_REFOLD_ENGINES = {
+    "boltz2": "Boltz-2",
+    "rf3": "RosettaFold3",
+    "prediction_openfold3_ob0": "OpenFold3 OpenBind-0",
+}
 
 
 @dataclass(frozen=True)
@@ -48,17 +55,19 @@ class Route:
     def target_inputs(self) -> tuple[str, ...]:
         if self.target_input == "structure" and (
             self.method in {"bindcraft2", "boltzgen"}
-            or self.id in {"rfd4-internal", "rfd4-external", "rfd3", "pxdesign", "genie3", "complexa"}
+            or self.id in RFD4_PRESET_ROUTES or self.id in {"rfd3", "pxdesign", "genie3", "complexa"}
         ):
             return STRUCTURE_TARGET_INPUTS
         return (self.target_input,)
 
 
 ROUTES = (
-    Route("rfd4-internal", "RFD4-Proteina", "Internal OpenFold3 refold", "structure", "miniprotein", "rfd4",
-          "Co-design sequence and structure, refold internally, then apply Studio acceptance."),
-    Route("rfd4-external", "RFD4-Proteina", "External Boltz-2 refold", "structure", "miniprotein", "rfd4",
-          "Co-design sequence and structure, add a visible Boltz-2 step, then apply Studio acceptance."),
+    Route("rfd4-generator", "RFD4-Proteina", "Generator only", "structure", "miniprotein", "rfd4",
+          "Generate binder sequences and structures. Add further steps on the canvas whenever needed."),
+    Route("rfd4-external", "RFD4-Proteina", "Generator + separate refolding", "structure", "miniprotein", "rfd4",
+          "Generate designs, refold them with an editable prediction step, then apply Studio acceptance."),
+    Route("rfd4-internal", "RFD4-Proteina", "Native workflow", "structure", "miniprotein", "rfd4",
+          "Co-design and refold with RFD4's internal OpenFold3 workflow, then apply Studio acceptance."),
     Route("bindcraft2", "BindCraft2", "Native validation and filters", "structure", "miniprotein", "bindcraft2",
           "Run the complete BindCraft2 workflow, including its native admission filters."),
     Route("rfd3", "RFdiffusion3", "Separate sequence design and refold", "structure", "miniprotein", "rfd3",
@@ -129,8 +138,20 @@ ROUTES = (
 
 
 def catalogue():
+    routes = []
+    for route in ROUTES:
+        item = {**asdict(route), "target_inputs": list(route.target_inputs)}
+        if route.id in RFD4_PRESET_ROUTES:
+            item["options"] = {}
+            if route.id in RFD4_MODULAR_ROUTES:
+                item["options"]["soluble_mpnn"] = False
+            if route.id != "rfd4-generator":
+                item["options"]["interface_analysis"] = False
+            if route.id == "rfd4-external":
+                item["options"]["refold_engine"] = {"default": "boltz2", "choices": RFD4_REFOLD_ENGINES.copy()}
+        routes.append(item)
     return {"template_id": "design_binder", "target_inputs": TARGET_INPUTS.copy(), "binder_formats": FORMATS.copy(),
-            "routes": [{**asdict(route), "target_inputs": list(route.target_inputs)} for route in ROUTES]}
+            "routes": routes}
 
 
 def compatible_routes(target_input, binder_format):
@@ -175,7 +196,8 @@ def stage_idr_target(sequence, owner_id, *, hotspots=""):
             "target_source_molecule_id": "", "target_source_structure_id": ""}
 
 
-def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, graph=None, target_node_id=None):
+def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, graph=None, target_node_id=None,
+                        refold_engine=None, soluble_mpnn=False, interface_analysis=False):
     """Build a new draft or graft an independent branch onto one existing target."""
     from mn_molecular_design_studio.pipeline_graph import SCHEMA, validate_graph
     from mn_molecular_design_studio.scientific_tasks import _node, new_task_graph
@@ -189,6 +211,16 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
         raise ValueError("Select a Target step to add a binder branch to this canvas.")
     if target_node_id and inputs:
         raise ValueError("Edit sequence or structure inputs on the connected Target step.")
+    if type(soluble_mpnn) is not bool or type(interface_analysis) is not bool:
+        raise ValueError("Optional sequence redesign and interface analysis must be true or false.")
+    if refold_engine is not None and (
+        route.id != "rfd4-external" or not isinstance(refold_engine, str) or refold_engine not in RFD4_REFOLD_ENGINES
+    ):
+        raise ValueError("Choose a supported separate refolding engine for the modular RFD4 preset.")
+    if soluble_mpnn and route.id not in RFD4_MODULAR_ROUTES:
+        raise ValueError("Optional sequence redesign is available in the modular RFD4 presets.")
+    if interface_analysis and route.id not in {"rfd4-internal", "rfd4-external"}:
+        raise ValueError("The optional interface analysis requires an RFD4 preset with refolding.")
     configuration = {"methods": [route.method]}
     if binder_format == "vhh" and route.method in {"bindcraft2_generator", "boltzgen_generator", "esm_binder"}:
         configuration["binder_format"] = binder_format
@@ -204,7 +236,13 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
     if route.id == "esmfold2-scfv":
         configuration["method_settings"] = {"esm_binder": {"binder_type": "scfv"}}
     if route.method == "rfd4":
-        configuration["method_settings"] = {"rfd4": {"options_json": json.dumps({"refold": route.id != "rfd4-external"})}}
+        configuration["method_settings"] = {"rfd4": {"options_json": json.dumps({"refold": route.id not in RFD4_MODULAR_ROUTES})}}
+    if refold_engine:
+        configuration["prediction"] = refold_engine
+    if soluble_mpnn:
+        configuration["soluble_mpnn"] = True
+    if interface_analysis:
+        configuration["interface_analysis"] = ["ipsae"]
     rfd4_framework = route.method == "rfd4" and route.format in {"vhh", "antibody", "tcr"}
     if route.method.startswith("tile_") or rfd4_framework or route.id == "rfd4-cyclic":
         recipe = {"schema_version": SCHEMA, "id": uuid.uuid4().hex}
@@ -246,9 +284,11 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
         target_input, "Annotated cyclic complex" if route.id == "rfd4-cyclic" else "Target structure"
     )
     engine = steps[1]["data"]
-    engine["label"] = route.engine + " · " + (route.variant if route.method == "rfd4" else FORMATS[route.format])
+    variant = "Generator" if route.id in RFD4_MODULAR_ROUTES else route.variant
+    engine["label"] = route.engine + " · " + (variant if route.method == "rfd4" else FORMATS[route.format])
     if (route.method not in {"bindcraft2", "boltzgen", "complexa", *TEMPLATE_IDR_STEPS}
-            and not route.method.startswith("tile_") and route.format not in {"antibody", "tcr", "cyclic_peptide"}):
+            and not route.method.startswith("tile_") and route.format not in {"antibody", "tcr", "cyclic_peptide"}
+            and route.id != "rfd4-generator"):
         steps.extend([
             _node("candidate_merge", "candidates"),
             _node("shared_filter", "acceptance", {"binder_format": binder_format,
