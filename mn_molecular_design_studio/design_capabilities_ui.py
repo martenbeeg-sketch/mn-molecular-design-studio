@@ -63,8 +63,9 @@ _matrix = st.components.v2.component(
 )
 
 
-def _matrix_markup(by_engine, columns, access):
-    headers = "".join(f'<th scope="col">{escape(label)}</th>' for label in columns.values())
+def _matrix_markup(by_engine, columns, access, *, action_column=False):
+    labels = ["Studio access"] if action_column else columns.values()
+    headers = "".join(f'<th scope="col">{escape(label)}</th>' for label in labels)
     table = [f'<table><thead><tr><th scope="col">Engine / checkpoint</th>{headers}</tr></thead><tbody>']
     for engine, cells in sorted(by_engine.items(), key=lambda entry: entry[0].casefold()):
         table.append(f'<tr><th scope="row">{escape(engine)}</th>')
@@ -108,26 +109,34 @@ def render(key, open_pipeline):
     st.subheader("Design capabilities")
     group = st.segmented_control("Design task group", ["Protein binders", "Other design tasks"],
                                  default="Protein binders", key=key + "-group")
-    columns = data["binder_formats"] if group != "Other design tasks" else data["other_tasks"]
-    rows = [row for row in data["items"] if row["output"] in columns]
-    selected = "all"
-    if group != "Other design tasks":
+    other_tasks = group == "Other design tasks"
+    if other_tasks:
+        available_outputs = {row["output"] for row in data["items"]}
+        tasks = {code: label for code, label in data["other_tasks"].items() if code in available_outputs}
+        if not tasks:
+            st.info("No other design tasks are available.")
+            return
+        selected = st.selectbox("Design task", list(tasks), format_func=tasks.get, key=key + "-task")
+        columns = {selected: tasks[selected]}
+    else:
+        columns = data["binder_formats"]
         targets = {"all": "All target inputs", **data["target_inputs"]}
         selected = st.selectbox("Target input", list(targets), index=1, format_func=targets.get, key=key + "-target")
-        if selected != "all":
-            rows = [row for row in rows if row["target_input"] == selected]
+    rows = [row for row in data["items"] if row["output"] in columns
+            and (other_tasks or selected == "all" or row["target_input"] == selected)]
     if not rows:
         st.info("No documented design workflows for this target input.")
         return
     access = data["access"]
-    st.caption("Choose Build pipeline to configure a workflow.")
+    if any(row["access"] == "pipeline" for row in rows):
+        st.caption("Choose Build pipeline to configure a workflow.")
     by_engine = {}
     for row in rows:
         cells = by_engine.setdefault(row["engine"], {})
         available = cells.setdefault(row["output"], set())
         available.add(row["access"])
     choice = _matrix(
-        data=_matrix_markup(by_engine, columns, access), key=f"{key}-matrix-{group}-{selected}",
+        data=_matrix_markup(by_engine, columns, access, action_column=other_tasks), key=f"{key}-matrix-{group}-{selected}",
         on_choose_change=lambda: None,
     ).get("choose")
     if not choice:

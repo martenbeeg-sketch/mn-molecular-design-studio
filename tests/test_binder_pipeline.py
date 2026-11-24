@@ -166,6 +166,33 @@ else:
         assert app.session_state[f"{prefix}-view"] == "editor"
 
 
+def test_other_design_tasks_show_only_engines_for_the_selected_task(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import design_capabilities_ui
+
+    def render_table(**kwargs):
+        import streamlit as st
+
+        st.text(kwargs["data"])
+        return {}
+
+    monkeypatch.setattr(design_capabilities_ui, "_matrix", render_table)
+    app = AppTest.from_string("""
+from mn_molecular_design_studio.design_capabilities_ui import render
+render("cap", lambda _: None)
+""").run()
+    app.button_group(key="cap-group").set_value("Other design tasks").run()
+    app.selectbox(key="cap-task").set_value("ligand_design").run()
+    assert not app.exception
+    assert 'data-engine="conDitar" data-output="ligand_design"' in app.text[0].value
+    assert 'data-engine="Genie3"' not in app.text[0].value
+    assert app.text[0].value.count('scope="col"') == 2
+    app.selectbox(key="cap-task").set_value("new_fold").run()
+    assert not app.exception
+    assert 'data-engine="Genie3" data-output="new_fold"' in app.text[0].value
+    assert 'data-engine="conDitar"' not in app.text[0].value
+
+
 def test_route_compatibility_and_branch_preserve_existing_target():
     assert [route.id for route in compatible_routes("idr", "cyclic_peptide")] == ["bindcraft2-idr-cyclic-peptide"]
     assert not compatible_routes("sequence", "vhh")
