@@ -723,10 +723,19 @@ def open_binder_preset(preset, *, prefix=None):
     _open_capability_graph(new_binder_pipeline(**preset), prefix)
 
 
-def _open_capability_step(kind, prefix):
+def _open_capability_step(kind, prefix, *, prediction_mode=None):
     from mn_molecular_design_studio.pipeline_blocks import add_block, blank_program
 
-    graph, _ = add_block(blank_program(), kind)
+    if prediction_mode:
+        from mn_molecular_design_studio.scientific_tasks import new_task_graph
+
+        graph = new_task_graph("molecular_structure_prediction", {"methods": [kind], "mode": prediction_mode})
+    elif kind == "af2":
+        graph, source = add_block(blank_program(), "project_design_source")
+        graph, predictor = add_block(graph, kind, source=source)
+        graph, _ = add_block(graph, "results", source=predictor)
+    else:
+        graph, _ = add_block(blank_program(), kind)
     graph["name"] = NODE_CATALOG[kind]["label"]
     _open_capability_graph(graph, prefix)
 
@@ -1385,7 +1394,7 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
 
             render_capabilities(prefix + "-design-capabilities",
                                 lambda preset: open_binder_preset(preset, prefix=prefix),
-                                lambda kind: _open_capability_step(kind, prefix))
+                                lambda kind, **options: _open_capability_step(kind, prefix, **options))
             return
         if section == "Runs":
             _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs)

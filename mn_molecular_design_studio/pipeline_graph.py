@@ -35,7 +35,7 @@ def _spec(key, label, category, description, *, output="backbone", accepts=None,
     return {"key": key, "label": label, "category": category, "description": description,
             "color": color, "workflow": workflow, "formats": list(formats),
             "inputs": [] if accepts is None else [{"id": "in", "label": "Target" if accepts == ["target"] else "MD segment" if key == "md_analysis" else "Results" if key == "results" else "Candidates", "accepts": accepts, "multiple": key == "results"}],
-            "outputs": [] if output is None else [{"id": "out", "label": {"target": "Target", "backbone": "Backbones", "sequence": "Sequences", "prediction": "Predictions", "candidates": "Candidates", "analysis": "Surface results", "md_trajectory": "Trajectory + topology", "md_analysis": "MD measurements"}.get(output, output), "type": output}],
+            "outputs": [] if output is None else [{"id": "out", "label": {"target": "Target", "backbone": "Backbones", "sequence": "Sequences", "prediction": "Predictions", "candidates": "Candidates", "molecule_task": "Molecules", "analysis": "Surface results", "md_trajectory": "Trajectory + topology", "md_analysis": "MD measurements"}.get(output, output), "type": output}],
             "fields": list(fields), **({"coldspot_support": coldspot_support} if coldspot_support else {}),
             **({"output_metrics": copy.deepcopy(list(output_metrics))} if output_metrics else {})}
 
@@ -73,7 +73,7 @@ NODE_CATALOG = {
         field("max_farep", "Maximum repulsive-energy increase", 10.0, minimum=0., maximum=10000.),
         field("keep_bidentates", "Retain template bidentate contacts", False, kind="boolean"),
         field("cpu_cores", "CPU cores", 4, minimum=1, maximum=256), SEED], formats=("pdb",)),
-    "cofold_input": _spec("cofold_input", "Cofolding Inputs", "Cofolding input", "Enter a protein target and any partner molecules for the selected prediction task.", output="molecule_task", color="#758f84", fields=[
+    "cofold_input": _spec("cofold_input", "Molecular inputs", "Cofolding input", "Enter a protein target and any partner molecules for the selected prediction task.", output="molecule_task", color="#758f84", fields=[
         field("task_type", "Prediction task", "protein_protein", kind="select", options=["protein", "protein_protein", "protein_ligand", "protein_dna", "protein_rna", "protein_macrocyclic"], section="basic"),
         field("target_protein_sequences", "Target protein sequence(s)", "", kind="text", section="basic", help="Enter one sequence per target chain. Separate chains with a colon or new line."),
         field("partner_protein_sequences", "Protein partner sequence(s)", "", kind="text", section="basic", help="Used for protein–protein and protein–macrocycle tasks. Separate partner chains with a colon or new line."),
@@ -171,7 +171,7 @@ NODE_CATALOG = {
         field("accept_alphafold3_terms", "Accept official AlphaFold3 weight terms", False, kind="boolean",
               help="Required only when the official AlphaFold3 weights are selected. Review those terms before enabling them."),
     ], color="#477e9b", formats=("cif",)),
-    "af2": _spec("af2", "AlphaFold2 evaluation", "Structure prediction", "Choose conditioned pose self-consistency or a less-conditioned target-only template prediction.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.af2_initial_guess", fields=[field("num_recycles", "Recycles", 3, minimum=1, maximum=30)], color="#477e9b"),
+    "af2": _spec("af2", "AlphaFold2 Initial Guess", "Structure prediction", "Initialize from a saved target–binder complex to check pose self-consistency. The Target only mode uses the target template and binder sequence without initializing binder coordinates.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.af2_initial_guess", fields=[field("num_recycles", "Recycles", 3, minimum=1, maximum=30)], color="#477e9b"),
     "esmfold": _spec("esmfold", "ESMFold · binder alone", "Structure prediction", "Predict each designed binder without the target.", accepts=["sequence", "prediction"], output="prediction", workflow="refolding.esmfold_monomer", fields=[], color="#477e9b"),
     "filter": _spec("filter", "Filter candidates", "Analysis", "Apply typed metric thresholds and ranking while retaining every decision for Results.", accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", color="#9a7854", fields=[
         field("passing_only", "Require an explicit native filter pass", False, kind="boolean"), field("metric", "Threshold measurement", "", kind="text"), field("operator", "Comparison", ">=", kind="select", options=[">=", "<=", ">", "<", "between"]), field("threshold", "Threshold (only used with a measurement)", 0.7), field("threshold_max", "Upper bound (for between)", 1.0), field("rule_logic", "Combine criteria", "all", kind="select", options=["all", "any"]), field("limit", "Shortlist per comparable protocol (0 = all)", 0, minimum=0, maximum=100000), field("higher_is_better", "Higher scores rank first", True, kind="boolean"),
@@ -2472,7 +2472,7 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
             params = node['data']['params']
             task = params.get('task_type')
             if not params.get('target_protein_sequences', '').strip() and not params.get('sequence_file'):
-                raise PipelineInputError(node_id, 'Enter at least one target protein sequence in Cofolding Inputs.')
+                raise PipelineInputError(node_id, 'Enter at least one target protein sequence in Molecular inputs.')
             target_count = len([part for part in re.split(r'[:\n\r]+', params.get('target_protein_sequences', '')) if part.strip()])
             partner_count = len([part for part in re.split(r'[:\n\r]+', params.get('partner_protein_sequences', '')) if part.strip()])
             if task == 'protein' and target_count != 1 and not params.get('sequence_file'):
@@ -2497,16 +2497,16 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
             optional_target_path = str(params.get('target_pdb') or '').strip()
             for selection_key in ('compound_set_file', 'sequence_file'):
                 if require_files and params.get(selection_key) and not Path(params[selection_key]).expanduser().is_file():
-                    raise PipelineInputError(node_id, f'The {selection_key} collection in Cofolding Inputs does not exist.')
+                    raise PipelineInputError(node_id, f'The {selection_key} collection in Molecular inputs does not exist.')
             if require_files and optional_target_path and not Path(optional_target_path).expanduser().is_file():
-                raise PipelineInputError(node_id, 'The optional target PDB path in Cofolding Inputs does not exist.')
+                raise PipelineInputError(node_id, 'The optional target PDB path in Molecular inputs does not exist.')
         if require_inputs and NODE_CATALOG[kind].get('requires_target_structure'):
             if cofold_task_context.get(node_id):
                 source_id = cofold_source_context.get(node_id)
                 source_input = nodes[source_id]['data']['params'] if source_id in nodes else None
                 path = str((source_input or {}).get('target_pdb') or '').strip()
                 if not path or (require_files and not Path(path).expanduser().is_file()):
-                    raise ValueError(f"{node['data']['label']} requires an existing target PDB path in Cofolding Inputs.")
+                    raise ValueError(f"{node['data']['label']} requires an existing target PDB path in Molecular inputs.")
                 if kind == 'af2' and Path(path).suffix.lower() != '.pdb':
                     raise ValueError('AlphaFold2 Initial Guess requires a PDB file (mmCIF is not supported by this input mode).')
         if (require_inputs or allow_incomplete) and cofold_task_context.get(node_id) and NODE_CATALOG[kind].get('molecule_tasks'):

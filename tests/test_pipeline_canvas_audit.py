@@ -14,6 +14,45 @@ def test_canvas_preserves_typed_prediction_choices():
         graph.clean_graph(definition)
 
 
+@pytest.mark.parametrize("kind,source_kind", [("af2", "project_design_source"), ("boltz2", "cofold_input")])
+def test_prediction_capabilities_show_main_engines_and_open_connected_drafts(monkeypatch, kind, source_kind):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import design_capabilities_ui
+
+    def click_engine(*, data, **_):
+        assert 'Set up AlphaFold2 Initial Guess' in data
+        assert 'data-engine="cofold_input"' not in data
+        assert 'data-engine="prediction_esmfold2"' in data
+        assert 'data-engine="prediction_esmfold2_fast"' not in data
+        assert 'data-engine="tile_af3_jax"' not in data
+        return {"choose": [kind, None]}
+
+    monkeypatch.setattr(design_capabilities_ui, "_matrix", click_engine)
+    app = AppTest.from_string("""
+import streamlit as st
+from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
+from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_step
+if 'cap-graph' not in st.session_state:
+    render_capabilities('cap', lambda _: None, lambda step, **options: _open_capability_step(step, 'cap', **options))
+""")
+    app.session_state["cap-capability"] = "Structure prediction & cofolding"
+    app.run()
+    if kind == "boltz2":
+        app.selectbox(key="cap-prediction-input-boltz2").set_value("protein_ligand").run()
+    app.button(key=f"cap-open-operation-{kind}").click().run()
+    assert not app.exception
+    draft = app.session_state["cap-graph"]
+    source, predictor, results = draft["nodes"]
+    assert [node["data"]["kind"] for node in draft["nodes"]] == [source_kind, kind, "results"]
+    assert [(edge["source"], edge["target"]) for edge in draft["edges"]] == [
+        (source["id"], predictor["id"]), (predictor["id"], results["id"]),
+    ]
+    if kind == "boltz2":
+        assert source["data"]["params"]["task_type"] == "protein_ligand"
+    else:
+        assert predictor["data"]["params"]["af2_validation_mode"] == "conditioned_self_consistency"
+
+
 def test_campaign_stop_waits_for_the_canvas_ipsae_step_before_counting_passes():
     target, generator = node("target", "target"), node("rfd4", "generator")
     generator["data"]["params"].update(task="protein_binder", num_designs=1000)

@@ -11,8 +11,13 @@ from mn_molecular_design_studio.binder_pipeline import (
 from mn_molecular_design_studio.design_capabilities import catalogue
 
 
+_PREDICTION_CATEGORY = "Structure prediction & cofolding"
+_PREDICTION_ENGINES = frozenset({
+    "af2", "af3", "boltz2", "rf3", "rfd4_fold", "prediction_chai1", "prediction_colabfold",
+    "prediction_esmfold2", "prediction_openfold3_ob0", "prediction_protenix_v2",
+})
 _OPERATION_CATEGORIES = {
-    "Structure prediction & cofolding": {"Structure prediction", "Cofolding input"},
+    _PREDICTION_CATEGORY: {"Structure prediction"},
     "Docking & affinity": {"Docking"},
     "Molecular dynamics": {"Molecular dynamics"},
     "Library preparation": {"Ligand library"},
@@ -190,12 +195,16 @@ def render_capabilities(key, open_binder, open_step):
         return
 
     operations = {kind: spec for kind, spec in editor_tool_catalog().items()
-                  if spec["category"] in _OPERATION_CATEGORIES[category] and not spec.get("hidden")}
+                  if spec["category"] in _OPERATION_CATEGORIES[category] and not spec.get("hidden")
+                  and (category != _PREDICTION_CATEGORY or kind in _PREDICTION_ENGINES)}
     table = ["<table><thead><tr><th scope='col'>Tool or step</th><th scope='col'>Inputs</th>"
              "<th scope='col'>Outputs</th><th scope='col'>Pipeline</th></tr></thead><tbody>"]
     for kind, spec in sorted(operations.items(), key=lambda item: item[1]["label"].casefold()):
         label = escape(spec["label"])
-        inputs = escape(", ".join(port["label"] for port in spec["inputs"]) or "—")
+        if category == _PREDICTION_CATEGORY and spec.get("molecule_tasks"):
+            inputs = "Existing protein complex" if kind == "af2" else "Molecular inputs or candidates"
+        else:
+            inputs = escape(", ".join(port["label"] for port in spec["inputs"]) or "—")
         outputs = escape(", ".join(port["label"] for port in spec["outputs"]) or "—")
         table.append(f'<tr><th scope="row">{label}</th><td>{inputs}</td><td>{outputs}</td>'
                      f'<td><button type="button" data-engine="{escape(kind)}" '
@@ -211,10 +220,26 @@ def render_capabilities(key, open_binder, open_step):
     @st.dialog(spec["label"])
     def details():
         st.write(spec["palette"]["description"])
+        mode = _prediction_input(kind, key) if category == _PREDICTION_CATEGORY else None
         if st.button("Open pipeline draft", type="primary", key=f"{key}-open-operation-{kind}"):
             try:
-                open_step(kind)
+                open_step(kind, prediction_mode=mode)
             except ValueError as exc:
                 st.error(str(exc))
 
     details()
+
+
+def _prediction_input(kind, key):
+    from mn_molecular_design_studio.scientific_tasks import PREDICTION_MODES, prediction_methods
+
+    modes = {mode: label for mode, label in PREDICTION_MODES.items() if kind in prediction_methods(mode)}
+    if not modes:
+        return None
+    options = {**modes, "upstream": "Upstream pipeline step"}
+    selected = st.selectbox("Start from", list(options), format_func=options.get,
+                            key=f"{key}-prediction-input-{kind}")
+    if selected == "upstream":
+        return None
+    st.caption("Enter sequences and any partner molecules in the Molecular inputs block on the canvas.")
+    return selected
