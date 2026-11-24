@@ -2433,6 +2433,7 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
                 tile_workflows.validate_parameters(
                     tile_workflows.TILES[kind], node["data"]["params"]["workflow_parameters"],
                     {edge.get("targetHandle", "in") for edge in incoming_edges[node_id]}, runnable=require_inputs,
+                    design_mode=node["data"]["params"].get("ligand_design_mode", ""),
                 )
             except ValueError as exc:
                 raise PipelineInputError(node_id, str(exc)) from exc
@@ -3105,6 +3106,9 @@ for _kind, _tile in tile_workflows.TILES.items():
                       help="Settings from the registered workflow. Connected inputs supply their corresponding fields.")],
     )
     _node["fields"][0]["workflow"] = _tile.workflow
+    if _tile.design_modes:
+        _node["fields"].append(field("ligand_design_mode", "Design mode", "", kind="select",
+                                     options=["", *_tile.design_modes], section="basic"))
     _node["inputs"] = [
         {"id": handle, "label": tile_workflows.PORT_LABELS[artifact],
          "accepts": [artifact, "backbone", "sequence", "prediction"] if artifact == "candidates" else [artifact],

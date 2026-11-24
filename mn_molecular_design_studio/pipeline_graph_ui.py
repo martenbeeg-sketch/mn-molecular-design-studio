@@ -723,9 +723,10 @@ def open_binder_preset(preset, *, prefix=None):
     _open_capability_graph(new_binder_pipeline(**preset), prefix)
 
 
-def _open_capability_step(kind, prefix, *, prediction_mode=None):
-    from mn_molecular_design_studio.pipeline_blocks import add_block, blank_program
+def _open_capability_step(kind, prefix, *, prediction_mode=None, ligand_design_mode=""):
+    from mn_molecular_design_studio.pipeline_blocks import add_block, blank_program, connect_blocks
 
+    name = NODE_CATALOG[kind]["label"]
     if prediction_mode:
         from mn_molecular_design_studio.scientific_tasks import new_task_graph
 
@@ -734,9 +735,21 @@ def _open_capability_step(kind, prefix, *, prediction_mode=None):
         graph, source = add_block(blank_program(), "project_design_source")
         graph, predictor = add_block(graph, kind, source=source)
         graph, _ = add_block(graph, "results", source=predictor)
+    elif ligand_design_mode:
+        from mn_molecular_design_studio.pipeline_tile_workflows import LIGAND_DESIGN_MODES, TILES, ligand_mode_fields
+
+        mode_fields = ligand_mode_fields(TILES[kind], ligand_design_mode)
+        graph, target = add_block(blank_program(), "target")
+        graph, generator = add_block(graph, kind, source=target, target_port="target")
+        if "reference_ligand_sdf" in mode_fields:
+            graph, reference = add_block(graph, "ligand_sdf_input")
+            graph = connect_blocks(graph, reference, "out", generator, "reference_ligand")
+        graph, _ = add_block(graph, "results", source=generator)
+        next(node for node in graph["nodes"] if node["id"] == generator)["data"]["params"]["ligand_design_mode"] = ligand_design_mode
+        name = f"{name} · {LIGAND_DESIGN_MODES[ligand_design_mode]}"
     else:
         graph, _ = add_block(blank_program(), kind)
-    graph["name"] = NODE_CATALOG[kind]["label"]
+    graph["name"] = name
     _open_capability_graph(graph, prefix)
 
 

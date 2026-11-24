@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from mn_molecular_design_studio.binder_pipeline import FORMATS, ROUTES, TARGET_INPUTS
 
 
-ACCESS = {"pipeline": "Build pipeline", "canvas": "Add canvas step", "tile": "Open tool", "api": "API only"}
+ACCESS = {"pipeline": "Build pipeline", "canvas": "Pipeline Builder", "tile": "Open tool", "api": "API only"}
 OTHER_TASKS = {
     "protein_small_molecule": "Protein binder for a small molecule",
     "enzyme": "Enzyme or catalytic scaffold",
@@ -66,6 +66,15 @@ def picker_tools(target_input, binder_format):
                  and row.access != "pipeline")
 
 
+def small_molecule_catalogue():
+    from mn_molecular_design_studio.pipeline_tile_workflows import LIGAND_DESIGN_MODES, TILES
+
+    return {"modes": LIGAND_DESIGN_MODES.copy(), "items": [
+        {"engine": tile.label, "workflow": tile.workflow, "operation": kind, "modes": list(tile.design_modes)}
+        for kind, tile in TILES.items() if tile.design_modes
+    ]}
+
+
 def catalogue(*, target_input=None, binder_format=None):
     if target_input is not None and target_input not in TARGET_INPUTS:
         raise ValueError("Unknown target input.")
@@ -75,6 +84,9 @@ def catalogue(*, target_input=None, binder_format=None):
     rows = [row for row in _capabilities()
             if (target_input is None or row.target_input == target_input)
             and (binder_format is None or row.output in binder_outputs)]
-    return {"schema": "studio.design-capabilities.v1", "target_inputs": TARGET_INPUTS.copy(),
+    data = {"schema": "studio.design-capabilities.v1", "target_inputs": TARGET_INPUTS.copy(),
             "binder_formats": FORMATS.copy(), "other_tasks": OTHER_TASKS.copy(), "access": ACCESS.copy(),
             "items": [asdict(row) for row in rows]}
+    if target_input is None and binder_format is None:
+        data["small_molecule_design"] = small_molecule_catalogue()
+    return data

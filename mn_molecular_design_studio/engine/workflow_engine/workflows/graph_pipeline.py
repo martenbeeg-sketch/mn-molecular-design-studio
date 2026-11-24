@@ -515,6 +515,7 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
         inputs = {"candidates": source} if source.get("deferred_run_source") else source.get("workflow_inputs", {})
         return pipeline_tile_workflows.workflow_request(
             pipeline_tile_workflows.TILES[kind], params["workflow_parameters"], inputs, name,
+            design_mode=params.get("ligand_design_mode", ""),
         )
     if source.get("deferred_run_source") and kind in OPTIMIZED_PREDICTION_NODE_ENGINES:
         return _optimized_prediction_request(OPTIMIZED_PREDICTION_NODE_ENGINES[kind], params, source, name)

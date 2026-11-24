@@ -182,15 +182,12 @@ from mn_molecular_design_studio.design_capabilities_ui import render_design_task
 render_design_tasks("cap", lambda _: None)
 """).run()
     assert app.selectbox(key="cap-task").value == "protein_binders"
-    app.selectbox(key="cap-task").set_value("ligand_design").run()
-    assert not app.exception
-    assert 'data-engine="conDitar" data-output="ligand_design"' in app.text[0].value
-    assert 'data-engine="Genie3"' not in app.text[0].value
-    assert app.text[0].value.count('scope="col"') == 2
+    assert "Small-molecule generation" not in app.selectbox(key="cap-task").options
     app.selectbox(key="cap-task").set_value("new_fold").run()
     assert not app.exception
     assert 'data-engine="Genie3" data-output="new_fold"' in app.text[0].value
-    assert 'data-engine="conDitar"' not in app.text[0].value
+    assert 'data-engine="AbMPNN"' not in app.text[0].value
+    assert app.text[0].value.count('scope="col"') == 2
 
 
 def test_route_compatibility_and_branch_preserve_existing_target():

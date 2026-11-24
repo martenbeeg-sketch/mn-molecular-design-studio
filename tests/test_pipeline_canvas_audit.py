@@ -55,6 +55,40 @@ if 'cap-graph' not in st.session_state:
         assert predictor["data"]["params"]["af2_validation_mode"] == "conditioned_self_consistency"
 
 
+@pytest.mark.parametrize("engine,mode,kind", [("LDDM", "reference_ligand", "tile_generation_lddm"),
+                                             ("OMTRA", "pharmacophore", "tile_generation_omtra")])
+def test_small_molecule_modes_open_the_matching_pipeline_draft(monkeypatch, engine, mode, kind):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import design_capabilities_ui
+
+    def click_mode(*, data, **_):
+        assert 'data-engine="LDDM" data-output="reference_ligand"' in data
+        assert 'data-engine="LDDM" data-output="pharmacophore"' not in data
+        for omtra_mode in ("pocket", "reference_ligand", "pharmacophore"):
+            assert f'data-engine="OMTRA" data-output="{omtra_mode}"' in data
+        assert 'aria-label="Pipeline Builder · LDDM' in data
+        return {"choose": [engine, mode]}
+
+    monkeypatch.setattr(design_capabilities_ui, "_matrix", click_mode)
+    app = AppTest.from_string("""
+import streamlit as st
+from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
+from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_step
+if 'cap-graph' not in st.session_state:
+    render_capabilities('cap', lambda _: None, lambda step, **options: _open_capability_step(step, 'cap', **options))
+""")
+    app.session_state["cap-capability"] = "Small-molecule design"
+    app.run()
+    app.button(key="cap-open-ligand-mode").click().run()
+    assert not app.exception
+    draft = app.session_state["cap-graph"]
+    nodes = {node["data"]["kind"]: node for node in draft["nodes"]}
+    assert nodes[kind]["data"]["params"]["ligand_design_mode"] == mode
+    assert "target" in nodes and "results" in nodes
+    assert ("ligand_sdf_input" in nodes) == (mode == "reference_ligand")
+    graph.validate_graph(draft)
+
+
 def test_campaign_stop_waits_for_the_canvas_ipsae_step_before_counting_passes():
     target, generator = node("target", "target"), node("rfd4", "generator")
     generator["data"]["params"].update(task="protein_binder", num_designs=1000)

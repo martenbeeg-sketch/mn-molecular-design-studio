@@ -15,6 +15,7 @@ class TileWorkflow:
     output: str = "tool_result"
     inputs: tuple[tuple[str, str], ...] = ()
     cpu: bool = False
+    design_modes: tuple[str, ...] = ()
 
 
 TARGET = (("target", "target"),)
@@ -22,6 +23,12 @@ CANDIDATES = (("candidates", "candidates"),)
 COMPOUNDS = (("compounds", "compound_set"),)
 REFERENCE_LIGAND = (("reference_ligand", "ligand_sdf"),)
 LIGAND = (("ligand", "ligand_sdf"),)
+LIGAND_DESIGN_MODES = {
+    "pocket": "Target or pocket-guided generation",
+    "reference_ligand": "Reference ligand-guided generation",
+    "pharmacophore": "Pharmacophore-guided generation",
+    "admet": "ADMET-guided optimization",
+}
 TILES = {
     **{
         "tile_docking_" + engine: TileWorkflow(label, "ligand.docking." + engine, "Docking",
@@ -34,11 +41,14 @@ TILES = {
     },
     **{
         "tile_generation_" + engine: TileWorkflow(label, "ligand.generation." + engine,
-            "Ligand generation", "compound_set", TARGET + (REFERENCE_LIGAND if engine == "lddm" else ()))
-        for engine, label in (
-            ("conditar", "conDitar"), ("drugrpg", "DrugRPG"), ("flowr_root", "FLOWR.root"),
-            ("lddm", "LDDM"), ("omtra", "OMTRA"), ("paopt", "paOPT"), ("pfm", "PFM"),
-            ("pgmg", "PGMG"), ("pocketflow", "PocketFlow"), ("pocketxmol", "PocketXMol"),
+            "Ligand generation", "compound_set", TARGET + (REFERENCE_LIGAND if engine in {"lddm", "flowr_root", "omtra", "paopt"} else ()),
+            design_modes=modes)
+        for engine, label, modes in (
+            ("conditar", "conDitar", ("pocket",)), ("drugrpg", "DrugRPG", ("pocket",)),
+            ("flowr_root", "FLOWR.root", ("reference_ligand",)), ("lddm", "LDDM", ("reference_ligand",)),
+            ("omtra", "OMTRA", ("pocket", "reference_ligand", "pharmacophore")), ("paopt", "paOPT", ("admet",)),
+            ("pfm", "PFM", ("pocket",)), ("pgmg", "PGMG", ("pharmacophore",)),
+            ("pocketflow", "PocketFlow", ("pocket",)), ("pocketxmol", "PocketXMol", ("pocket",)),
         )
     },
     **{
@@ -119,7 +129,22 @@ def connected_parameter_names(tile: TileWorkflow, port: str) -> set[str]:
     return names.intersection(dict(parameters_for(tile.workflow)))
 
 
-def validate_parameters(tile: TileWorkflow, settings: dict, connected_ports: set[str], *, runnable: bool) -> None:
+def ligand_mode_fields(tile: TileWorkflow, mode: str) -> tuple[str, ...]:
+    if not mode:
+        return ()
+    if mode not in tile.design_modes:
+        raise ValueError(f"Choose a supported small-molecule design mode for {tile.label}.")
+    if mode == "pharmacophore":
+        return ("pharmacophore_posp" if tile.workflow == "ligand.generation.pgmg" else "pharmacophore_json",)
+    if mode == "admet":
+        return ("reference_ligand_sdf", "engine_settings")
+    if mode == "reference_ligand":
+        return ("reference_ligand_sdf",)
+    return ()
+
+
+def validate_parameters(tile: TileWorkflow, settings: dict, connected_ports: set[str], *, runnable: bool,
+                        design_mode: str = "") -> None:
     parameters = dict(parameters_for(tile.workflow))
     unknown = set(settings) - parameters.keys()
     if unknown:
@@ -132,7 +157,8 @@ def validate_parameters(tile: TileWorkflow, settings: dict, connected_ports: set
         supplied.update(connected_parameter_names(tile, port))
     if "target" in connected_ports:
         supplied.add("chain_id")  # A single connected chain can fill this optional override.
-    missing = [name for name, required in parameters.items() if required and name not in supplied]
+    mode_fields = ligand_mode_fields(tile, design_mode)
+    missing = [name for name, required in parameters.items() if (required or name in mode_fields) and name not in supplied]
     if runnable and missing:
         raise ValueError(f"{tile.label} needs {', '.join(missing)}.")
     if runnable and tile.workflow == "analysis.binderscope":
@@ -144,7 +170,7 @@ def validate_parameters(tile: TileWorkflow, settings: dict, connected_ports: set
         validate_request(settings, require_files=False)
 
 
-def workflow_request(tile: TileWorkflow, settings: dict, inputs: dict, name: str) -> dict:
+def workflow_request(tile: TileWorkflow, settings: dict, inputs: dict, name: str, *, design_mode: str = "") -> dict:
     parameters = dict(settings)
     accepted = dict(parameters_for(tile.workflow))
     for handle, source in inputs.items():
@@ -182,7 +208,7 @@ def workflow_request(tile: TileWorkflow, settings: dict, inputs: dict, name: str
         parameters.setdefault("job_name", name)
     if "campaign_name" in accepted:
         parameters.setdefault("campaign_name", name)
-    validate_parameters(tile, parameters, set(), runnable=True)
+    validate_parameters(tile, parameters, set(), runnable=True, design_mode=design_mode)
     if tile.workflow == "design.bindcraft" and Path(parameters["target_pdb"]).suffix.lower() not in {".pdb", ".ent"}:
         raise ValueError("Classic BindCraft needs a PDB target structure.")
     return {"schema_version": 1, "workflow": tile.workflow, "parameters": parameters}

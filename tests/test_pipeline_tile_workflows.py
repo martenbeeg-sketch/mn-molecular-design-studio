@@ -153,6 +153,16 @@ def test_pipeline_tools_reject_undeclared_parameters_and_missing_inputs():
         tiles.validate_parameters(tile, {}, {"complex"}, runnable=True)
 
 
+def test_omtra_pharmacophore_mode_requires_the_pharmit_input():
+    tile = tiles.TILES["tile_generation_omtra"]
+    params = {"target_pdb": "/work/target.pdb"}
+    with pytest.raises(ValueError, match="pharmacophore_json"):
+        tiles.workflow_request(tile, params, {}, "OMTRA", design_mode="pharmacophore")
+    params["pharmacophore_json"] = "/work/pharmacophore.json"
+    request = tiles.workflow_request(tile, params, {}, "OMTRA", design_mode="pharmacophore")
+    assert request["parameters"] == params
+
+
 @pytest.mark.parametrize("empty", [None, "", "  "])
 def test_md_starter_requires_a_ligand_input_before_queuing(empty):
     from mn_molecular_design_studio.pipeline_graph import PipelineInputError, new_graph, validate_graph

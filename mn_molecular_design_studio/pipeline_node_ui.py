@@ -508,8 +508,10 @@ def _render_workflow_parameter(parameter, value, key):
     return parsed
 
 
-def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""):
-    from mn_molecular_design_studio.pipeline_tile_workflows import connected_parameter_names, parameter_descriptors
+def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id="", *, design_mode=""):
+    from mn_molecular_design_studio.pipeline_tile_workflows import (
+        connected_parameter_names, ligand_mode_fields, parameter_descriptors,
+    )
 
     parents = {item["id"]: item["data"]["label"] for item in graph["nodes"]}
     sources = {}
@@ -525,6 +527,10 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""
 
     descriptors = [dict(parameter) for parameter in parameter_descriptors(tile.workflow)
                    if parameter["name"] not in sources]
+    mode_fields = ligand_mode_fields(tile, design_mode)
+    for parameter in descriptors:
+        if parameter["name"] in mode_fields:
+            parameter["required"] = True
     if tile.workflow == "analysis.binderscope":
         st.caption("Use Data browser to analyze saved designs. This step accepts native campaign folders.")
         for parameter in descriptors:
@@ -533,6 +539,17 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""
 
     values = dict(settings)
     ready = True
+    ligand_uploads = {}
+    if design_mode and owner_id:
+        from mn_molecular_design_studio.ligand_tools_ui import (
+            _save_omtra_pharmacophore_upload, _save_pgmg_pharmacophore_upload, _save_target_upload,
+        )
+
+        ligand_uploads = {
+            "pocket_pdb": ("Pocket structure", ["pdb", "ent"], _save_target_upload),
+            "pharmacophore_posp": ("PGMG pharmacophore", ["posp"], _save_pgmg_pharmacophore_upload),
+            "pharmacophore_json": ("Pharmit pharmacophore", ["json"], _save_omtra_pharmacophore_upload),
+        }
     if node["data"].get("kind") in {"tile_design_rfd3_tasks", "tile_design_boltzgen_tasks"}:
         from mn_molecular_design_studio.target_editor import _target_storage_path
 
@@ -620,8 +637,18 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""
                 default = parameter.get("default")
                 with columns[index % 2]:
                     try:
-                        value = _render_workflow_parameter(parameter, settings.get(name, default), key)
-                    except ValueError as exc:
+                        value = settings.get(name, default)
+                        if name in ligand_uploads:
+                            label, extensions, save = ligand_uploads[name]
+                            upload = st.file_uploader(label + (" *" if required else ""), type=extensions,
+                                                      key=f"{key}-{name}-upload")
+                            if upload:
+                                value = str(save(owner_id, upload.name, upload.getvalue()))
+                            elif value:
+                                st.caption(Path(value).name)
+                        else:
+                            value = _render_workflow_parameter(parameter, value, key)
+                    except (ValueError, OSError) as exc:
                         st.error(str(exc))
                         ready = False
                         continue
@@ -737,8 +764,19 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
         label = st.text_input("Step name", value=node["data"]["label"], key=key+"-label").strip() or spec["label"]
         ready = True
         if kind in TILES:
+            tile = TILES[kind]
+            if tile.design_modes:
+                from mn_molecular_design_studio.pipeline_tile_workflows import LIGAND_DESIGN_MODES
+
+                modes = {"": "Automatic from inputs", **{mode: LIGAND_DESIGN_MODES[mode] for mode in tile.design_modes}}
+                selected = values.get("ligand_design_mode", "")
+                values["ligand_design_mode"] = st.selectbox(
+                    "Design mode", list(modes), index=list(modes).index(selected),
+                    format_func=modes.get, key=key + "-ligand-design-mode",
+                )
             values["workflow_parameters"], ready = _render_tile_workflow_settings(
-                TILES[kind], values["workflow_parameters"], node, graph, key, owner_id,
+                tile, values["workflow_parameters"], node, graph, key, owner_id,
+                design_mode=values.get("ligand_design_mode", ""),
             )
         elif kind == "active_results":
             _render_connection_card(node, graph)

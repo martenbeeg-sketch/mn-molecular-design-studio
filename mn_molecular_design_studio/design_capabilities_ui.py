@@ -8,10 +8,11 @@ import streamlit as st
 from mn_molecular_design_studio.binder_pipeline import (
     RFD4_MODULAR_ROUTES, RFD4_REFOLD_ENGINES, compatible_routes,
 )
-from mn_molecular_design_studio.design_capabilities import catalogue
+from mn_molecular_design_studio.design_capabilities import ACCESS, catalogue, small_molecule_catalogue
 
 
 _PREDICTION_CATEGORY = "Structure prediction & cofolding"
+_SMALL_MOLECULE_CATEGORY = "Small-molecule design"
 _PREDICTION_ENGINES = frozenset({
     "af2", "af3", "boltz2", "rf3", "rfd4_fold", "prediction_chai1", "prediction_colabfold",
     "prediction_esmfold2", "prediction_openfold3_ob0", "prediction_protenix_v2",
@@ -122,7 +123,8 @@ def render_design_tasks(key, open_pipeline):
     data = catalogue()
     available_outputs = {row["output"] for row in data["items"]}
     tasks = {"protein_binders": "Protein binders", **{
-        code: label for code, label in data["other_tasks"].items() if code in available_outputs
+        code: label for code, label in data["other_tasks"].items()
+        if code in available_outputs and code != "ligand_design"
     }}
     task = st.selectbox("Design task", list(tasks), format_func=tasks.get, key=key + "-task")
     other_tasks = task != "protein_binders"
@@ -180,7 +182,7 @@ def render_design_tasks(key, open_pipeline):
             if row["access"] == "canvas":
                 from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
 
-                st.caption(f"Add **{NODE_CATALOG[row['canvas_node']]['label']}** from the canvas tool library.")
+                st.caption(f"Add **{NODE_CATALOG[row['canvas_node']]['label']}** from the Pipeline Builder tool library.")
 
     details()
 
@@ -189,9 +191,12 @@ def render_capabilities(key, open_binder, open_step):
     from mn_molecular_design_studio.tool_connections import editor_tool_catalog
 
     st.subheader("Capabilities")
-    category = st.selectbox("Capability", ["Design", *_OPERATION_CATEGORIES], key=key + "-capability")
+    category = st.selectbox("Capability", ["Design", _SMALL_MOLECULE_CATEGORY, *_OPERATION_CATEGORIES], key=key + "-capability")
     if category == "Design":
         render_design_tasks(key, open_binder)
+        return
+    if category == _SMALL_MOLECULE_CATEGORY:
+        _render_small_molecule_design(key, open_step)
         return
 
     operations = {kind: spec for kind, spec in editor_tool_catalog().items()
@@ -224,6 +229,35 @@ def render_capabilities(key, open_binder, open_step):
         if st.button("Open pipeline draft", type="primary", key=f"{key}-open-operation-{kind}"):
             try:
                 open_step(kind, prediction_mode=mode)
+            except ValueError as exc:
+                st.error(str(exc))
+
+    details()
+
+
+def _render_small_molecule_design(key, open_step):
+    from mn_molecular_design_studio.tool_connections import editor_tool_catalog
+
+    data = small_molecule_catalogue()
+    modes = data["modes"]
+    engines = {row["engine"]: row for row in data["items"]}
+    matrix = {name: {mode: {"canvas"} for mode in row["modes"]} for name, row in engines.items()}
+    choice = _matrix(data=_matrix_markup(matrix, modes, ACCESS), key=key + "-small-molecule-modes",
+                     on_choose_change=lambda: None).get("choose")
+    if not choice:
+        return
+    engine, mode = choice
+    row = engines.get(engine)
+    if row is None or mode not in row["modes"]:
+        return
+    operation = row["operation"]
+
+    @st.dialog(f"{engine} · {modes[mode]}")
+    def details():
+        st.write(editor_tool_catalog()[operation]["palette"]["description"])
+        if st.button("Open in Pipeline Builder", type="primary", key=key + "-open-ligand-mode"):
+            try:
+                open_step(operation, ligand_design_mode=mode)
             except ValueError as exc:
                 st.error(str(exc))
 
