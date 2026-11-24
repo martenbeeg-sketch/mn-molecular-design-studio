@@ -279,6 +279,14 @@ def create_server(client=None):
         return await call(ctx, "GET", "/api/v1/pipelines/templates")
 
     @server.tool(annotations=read)
+    async def design_capabilities(ctx: Context, target_input: str | None = None,
+                                  binder_format: str | None = None) -> dict[str, Any]:
+        """Read Studio's design capability matrix. Filter by target_input (structure, idr, sequence) or a binder format key from the unfiltered response."""
+        query = {key: value for key, value in {"target_input": target_input, "binder_format": binder_format}.items()
+                 if value is not None}
+        return await call(ctx, "GET", "/api/v1/pipelines/design-capabilities", query=query)
+
+    @server.tool(annotations=read)
     async def create_pipeline_draft(template: str, project_id: str, ctx: Context, parameters: dict | None = None,
                                     source_job: str | None = None, selected_candidate_ids: list[str] | None = None,
                                     configuration: dict | None = None) -> dict[str, Any]:

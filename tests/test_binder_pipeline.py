@@ -3,7 +3,7 @@ import json
 import pytest
 import yaml
 
-from mn_molecular_design_studio.binder_pipeline import ROUTES, compatible_routes, new_binder_pipeline, stage_idr_target
+from mn_molecular_design_studio.binder_pipeline import BC2_FORMATS, ROUTES, compatible_routes, new_binder_pipeline, stage_idr_target
 from mn_molecular_design_studio.pipeline_graph import validate_graph
 from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import node_request
 
@@ -20,13 +20,47 @@ def test_registered_binder_routes_build_valid_graphs(route):
     assert route.method in kinds
     if route.method == "bindcraft2":
         assert "shared_filter" not in kinds
-        assert _settings(graph, route.method)["modality"] == ("binder" if route.format == "miniprotein" else route.format)
-    else:
+        assert _settings(graph, route.method)["modality"] == BC2_FORMATS[route.format]
+    elif "shared_filter" in kinds:
         assert _settings(graph, "shared_filter")["binder_format"] == route.format
+    else:
+        assert route.method in {"boltzgen", "complexa", "tile_design_rfpeptides", "tile_design_rfantibody"}
+    if route.method == "boltzgen":
+        assert _settings(graph, route.method)["task"] == {"vhh": "nanobody", "miniprotein": "protein"}.get(route.format, route.format)
+    if route.method == "tile_design_rfantibody":
+        parameters = _settings(graph, route.method)["workflow_parameters"]
+        assert parameters["task"] == ("nanobody" if route.format == "vhh" else "antibody")
     if route.method == "rfd4":
         external = route.id == "rfd4-external"
         assert ("boltz2" in kinds) == external
         assert json.loads(_settings(graph, "rfd4")["options_json"])["refold"] == (not external)
+
+
+def test_design_capabilities_match_registered_workflows_and_picker_routes():
+    from mn_molecular_design_studio.design_capabilities import catalogue
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS
+    from mn_molecular_design_studio.tool_catalog import TOOL_CATALOG_WORKFLOW_IDS
+
+    data = catalogue()
+    assert len({route.id for route in ROUTES}) == len(ROUTES)
+    assert set(data["binder_formats"]) == {row["output"] for row in data["items"]
+                                            if row["output"] in data["binder_formats"]}
+    assert {row["route_id"] for row in data["items"] if row["access"] == "pipeline"} == {route.id for route in ROUTES}
+    assert {row["workflow"] for row in data["items"]} <= set(WORKFLOWS)
+    assert {workflow for workflow in TOOL_CATALOG_WORKFLOW_IDS if workflow.startswith(("design.", "ligand.generation."))} <= {
+        row["workflow"] for row in data["items"]}
+    cyclic = catalogue(target_input="structure", binder_format="cyclic_peptide")["items"]
+    assert {row["engine"] for row in cyclic if row["access"] == "pipeline"} == {"BindCraft2", "BoltzGen", "RFpeptides"}
+    assert {row["engine"] for row in cyclic if row["access"] == "upstream"} == {"RFdiffusion3", "RFD4-Proteina"}
+
+
+def test_cyclic_binder_tile_inherits_connected_target():
+    graph = new_binder_pipeline("rfpeptides", target_input="structure", binder_format="cyclic_peptide")
+    target = {"target_pdb": "fixture.pdb", "target_chains": ["A"], "hotspots": "A3"}
+    kind = "tile_design_rfpeptides"
+    request = node_request(kind, _settings(graph, kind), {"workflow_inputs": {"target": {"target": target}}}, "fixture")
+    assert request["workflow"] == "design.rfpeptides"
+    assert all(request["parameters"][key] == value for key, value in target.items())
 
 
 def test_route_compatibility_and_branch_preserve_existing_target():

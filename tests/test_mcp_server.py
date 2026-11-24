@@ -124,6 +124,26 @@ def test_result_presentation_retries_large_pages_without_skipping_rows():
     asyncio.run(check())
 
 
+def test_design_capabilities_mcp_is_read_only_and_forwards_filters():
+    from mcp import Client
+    from mn_molecular_design_studio.mcp_server import create_server
+
+    class Recorder:
+        async def request(self, method, path, *, query, **kwargs):
+            assert method == "GET" and path == "/api/v1/pipelines/design-capabilities"
+            return {"filters": query}
+
+    async def check():
+        async with Client(create_server(Recorder())) as client:
+            tool = next(tool for tool in (await client.list_tools()).tools if tool.name == "design_capabilities")
+            assert tool.annotations.model_dump(by_alias=True)["readOnlyHint"] is True
+            filters = {"binder_format": "vhh", "target_input": "structure"}
+            result = await client.call_tool(tool.name, filters)
+            assert result.structured_content == {"filters": filters}
+
+    asyncio.run(check())
+
+
 def test_stdio_tools_explain_missing_login(monkeypatch, tmp_path):
     from mcp import Client
     from mn_molecular_design_studio.mcp_server import create_server

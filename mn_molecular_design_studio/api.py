@@ -1157,6 +1157,14 @@ def pipeline_workflow_compatibility(user: dict[str, Any] = Depends(_current_user
     return _call(compatibility_catalog)
 
 
+@app.get("/api/v1/pipelines/design-capabilities")
+def pipeline_design_capabilities(target_input: str | None = None, binder_format: str | None = None,
+                                 user: dict[str, Any] = Depends(_current_user)):
+    from mn_molecular_design_studio.design_capabilities import catalogue
+
+    return _call(catalogue, target_input=target_input, binder_format=binder_format)
+
+
 @app.post("/api/v1/pipelines/save")
 def save_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(_current_user)):
     from mn_molecular_design_studio.pipeline_graph import PipelineDraftConflictError, save_definition

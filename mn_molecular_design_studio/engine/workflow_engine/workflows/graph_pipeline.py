@@ -728,6 +728,8 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
             from mn_molecular_design_studio.pipeline_graph import bindcraft2_native_overrides
             overrides = bindcraft2_native_overrides(p)
             p.pop("engine_overrides_json", None)
+            if not str(p.get("scaffold_edits") or "").strip():
+                p.pop("scaffold_edits", None)
             if overrides:
                 p["engine_overrides"] = overrides
             attempts = int(p.pop("num_designs"))
@@ -742,6 +744,8 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
                 from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
                 p["distributed_campaign"]=validate_campaign_config(campaign)
         elif kind == "bindcraft2_generator":
+            if not str(p.get("scaffold_edits") or "").strip():
+                p.pop("scaffold_edits", None)
             trajectories = int(p.pop("num_designs")); p.update(number_of_final_designs=1, max_trajectories=trajectories)
         elif kind == "boltzgen_generator":
             # The generator workflow pins the generation-only contract in the

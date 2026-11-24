@@ -697,6 +697,7 @@ def _binder_picker(key, *, connected_target=None):
     from mn_molecular_design_studio.binder_pipeline import (
         FORMATS, TARGET_INPUTS, compatible_routes, idr_target, legacy_sequence_carrier,
     )
+    from mn_molecular_design_studio.design_capabilities import ACCESS, picker_tools
 
     if connected_target:
         params = connected_target["data"]["params"]
@@ -716,18 +717,28 @@ def _binder_picker(key, *, connected_target=None):
                                         key=key + "-context")
             if target_input is None:
                 return None
-    binder_format = st.pills("Binder format", list(FORMATS), format_func=FORMATS.get,
-                             default="miniprotein", key=key + "-format")
-    if binder_format is None:
-        return None
+    binder_format = st.selectbox("Binder format", list(FORMATS), format_func=FORMATS.get, key=key + "-format")
     routes = compatible_routes(target_input, binder_format)
-    if not routes:
-        st.info("Studio has no registered binder-design route for this input and format.")
+    additional = picker_tools(target_input, binder_format)
+    engines = {}
+    for route in routes:
+        engines[route.engine] = route.engine if route.format == binder_format else f"{route.engine} · {FORMATS[route.format]}"
+    for entry in additional:
+        engines.setdefault(entry.engine, f"{entry.engine} · {ACCESS[entry.access]}")
+    if not engines:
+        st.info("No documented binder-design engine for this target input and format.")
         return None
-    engines = list(dict.fromkeys(route.engine for route in routes))
-    engine = st.selectbox("Design engine", engines, key=f"{key}-{target_input}-{binder_format}-engine")
+    engine = st.selectbox("Design engine", list(engines), format_func=engines.get,
+                          key=f"{key}-{target_input}-{binder_format}-engine")
     variants = [route for route in routes if route.engine == engine]
-    route = (st.selectbox("Refolding", variants, format_func=lambda item: item.variant,
+    if not variants:
+        for entry in additional:
+            if entry.engine == engine:
+                st.info(entry.note or ACCESS[entry.access])
+                if entry.reference:
+                    st.markdown(f"[Project reference]({entry.reference})")
+        return None
+    route = (st.selectbox("Workflow variant", variants, format_func=lambda item: item.variant,
                           key=f"{key}-{target_input}-{binder_format}-refold")
              if len(variants) > 1 else variants[0])
     st.caption(route.summary)
@@ -1317,11 +1328,16 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
             st.session_state[prefix + "-guided-open"] = graph["id"]
             st.rerun()
         section = st.segmented_control(
-            "Pipeline library view", ["Saved pipelines", "Templates", "Runs", "Trash"],
+            "Pipeline library view", ["Saved pipelines", "Templates", "Runs", "Capabilities", "Trash"],
             selection_mode="single", label_visibility="collapsed", key=section_key,
         ) or "Saved pipelines"
         if notice := st.session_state.pop(prefix + "-library-notice", None):
             st.success(notice)
+        if section == "Capabilities":
+            from mn_molecular_design_studio.design_capabilities_ui import render
+
+            render(prefix + "-design-capabilities")
+            return
         if section == "Runs":
             _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs)
             return

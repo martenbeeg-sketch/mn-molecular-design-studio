@@ -1265,8 +1265,14 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
                 st.caption("Protein binder design · the connected Target block provides structure, chains and hotspots.")
             primary = [f for f in spec["fields"] if f.get("section")=="basic" or spec["category"]=="Analysis"]
             optional = [f for f in spec["fields"] if f not in primary]
-            if kind == "bindcraft2_generator":
+            bindcraft = kind in {"bindcraft2", "bindcraft2_generator"}
+            if bindcraft:
+                from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import (
+                    BC2_PRESET_LENGTHS, BC2_SCAFFOLD_FORMATS, BC2_SCAFFOLD_EDIT_DEFAULTS,
+                )
                 primary = sorted(primary, key=lambda item: item["name"] != "modality")
+            elif kind == "boltzgen":
+                primary = sorted(primary, key=lambda item: item["name"] != "task")
             if primary:
                 with st.container(border=True):
                     st.markdown("**Design settings**" if spec["category"].startswith("Design") else "**Prediction settings**" if spec["category"]=="Structure prediction" else "**Step settings**")
@@ -1286,28 +1292,39 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
                             ready = False
                         fields = [f for f in primary if f["name"]!="binder_length"]
                     columns = st.columns(2)
+                    scaffold = False
                     for i,field in enumerate(fields):
-                        if kind == "bindcraft2_generator" and field["name"] == "binder_length":
-                            if values.get("modality") == "VHH":
+                        name = field["name"]
+                        if bindcraft and name == "binder_length":
+                            modality = values["modality"]
+                            scaffold = modality in BC2_SCAFFOLD_FORMATS
+                            if scaffold:
                                 values["binder_length"] = ""
                                 continue
-                            if not values.get("binder_length"):
-                                values["binder_length"] = "60-100"
-                        if kind == "bindcraft2_generator" and field["name"] == "scaffold_edits":
-                            if values.get("modality") != "VHH":
+                            if modality != node["data"]["params"].get("modality", "binder") or not values.get(name):
+                                values[name] = "-".join(map(str, BC2_PRESET_LENGTHS[modality]))
+                            with columns[i%2]:
+                                values[name] = _render_field(field, values, key + "-" + modality)
+                            continue
+                        if bindcraft and name == "scaffold_edits":
+                            if not scaffold:
                                 values["scaffold_edits"] = ""
                                 continue
-                            if not values.get("scaffold_edits"):
-                                from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import BC2_SCAFFOLD_EDIT_DEFAULTS
-                                values["scaffold_edits"] = BC2_SCAFFOLD_EDIT_DEFAULTS["VHH"]
+                            existing = values[name] if modality == node["data"]["params"].get("modality") else ""
+                            with columns[i%2]:
+                                values[name] = st.text_area("Scaffold edit regions", value=existing, height=95,
+                                    key=f"{key}-{modality}-{name}", placeholder=BC2_SCAFFOLD_EDIT_DEFAULTS[modality],
+                                    help="Leave blank to use the native preset for this scaffold.")
+                            continue
+                        if kind == "boltzgen":
+                            task_fields = {"binder_length": "protein", "peptide_sequence": "peptide",
+                                           "cyclotide_sequence": "cyclotide", "scaffold_name": "nanobody"}
+                            if name in task_fields and task_fields[name] != values["task"]:
+                                continue
                         with columns[i%2]:
-                            if kind == "bindcraft2_generator" and field["name"] == "scaffold_edits":
-                                values[field["name"]] = st.text_area(field["label"], value=str(values[field["name"]]), height=95,
-                                    key=key+"-"+field["name"], help=field.get("help"))
-                            else:
-                                values[field["name"]] = _render_field(field,values,key)
-                    if kind == "bindcraft2_generator" and values.get("modality") == "VHH":
-                        st.caption("VHH scaffold mode fixes the framework; the edit ranges above define the CDR and loop regions to design.")
+                            values[name] = _render_field(field, values, key)
+                    if scaffold:
+                        st.caption("The scaffold defines the framework. The edit regions specify which positions can change.")
             if optional:
                 with st.expander("Optional settings", expanded=False):
                     columns = st.columns(2)

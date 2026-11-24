@@ -473,6 +473,11 @@ if cluster_config.enabled():
 def _render_tool_catalog() -> None:
     st.title("All tools")
     st.caption("Explore tools by modality, function, or input type.")
+    with st.expander("Design capabilities"):
+        if st.toggle("Show capability matrix", key="show-design-capability-matrix"):
+            from mn_molecular_design_studio.design_capabilities_ui import render
+
+            render("all-tools-capabilities")
     st.markdown(
         """
         <style>

@@ -156,6 +156,8 @@ def workflow_request(tile: TileWorkflow, settings: dict, inputs: dict, name: str
                     parameters[key] = chains
             if "chain_id" in accepted and "chain_id" not in parameters and len(chains) == 1:
                 parameters["chain_id"] = chains[0]
+            if "hotspots" in accepted and target.get("hotspots") and not parameters.get("hotspots"):
+                parameters["hotspots"] = target["hotspots"]
         elif handle == "candidates":
             if source.get("run_sources") or not source.get("candidates_jsonl"):
                 raise ValueError("Connect a materialized, local candidate collection for this tool.")

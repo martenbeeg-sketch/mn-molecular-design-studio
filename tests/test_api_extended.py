@@ -451,6 +451,17 @@ def test_binder_picker_catalog_and_draft_use_the_same_routes(api_data):
     assert client.post("/api/v1/pipelines/drafts", json=request).status_code == 422
 
 
+def test_design_capabilities_api_uses_shared_catalog_and_validates_filters(api_data):
+    from mn_molecular_design_studio.design_capabilities import catalogue
+
+    client = api_data["client"]
+    endpoint = "/api/v1/pipelines/design-capabilities"
+    filters = {"target_input": "structure", "binder_format": "cyclic_peptide"}
+    assert client.get(endpoint, params=filters).json() == catalogue(**filters)
+    assert client.get(endpoint, params={"binder_format": "unknown"}).status_code == 422
+    assert client.get(endpoint, headers={"Authorization": "Bearer invalid-token"}).status_code == 401
+
+
 @pytest.mark.parametrize("tool", ["kejia_idr", "peptide_trap"])
 def test_pipeline_continuation_validates_source_candidate_and_project(api_data, tool):
     data, client = api_data, api_data["client"]
