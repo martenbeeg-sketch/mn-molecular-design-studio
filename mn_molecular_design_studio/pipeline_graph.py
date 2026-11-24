@@ -82,6 +82,7 @@ NODE_CATALOG = {
         field("ligand_input_type", "Ligand notation", "smiles", kind="select", options=["smiles", "ccd"], help="SMILES works across the broadest set of ligand-capable models; CCD-only inputs exclude models that accept SMILES only."),
         field("ligand_ccd_codes", "Ligand CCD code(s)", "", kind="text", help="One or more CCD component IDs, separated by colons or new lines."),
         field("ligand_smiles", "Ligand SMILES", "", kind="text", help="Enter one SMILES string per line."),
+        field("compound_name", "Compound name", "", kind="text", help="Name for a manually entered ligand. Compound collections supply their own names."),
         field("compound_set_file", "Compound collection", "", kind="text", help="A Database compound snapshot. Each compound is predicted independently in one batch against the shared target."),
         field("sequence_file", "Sequence collection", "", kind="text", help="FASTA records or one sequence per line. Every record is one independent prediction; colon-separated chains within a record form one complex."),
         field("cyclic_partner", "Treat the protein partner as cyclic", False, kind="boolean", section="basic", help="Only engines with native cyclic-protein support are included in the macrocyclic template."),
@@ -158,6 +159,8 @@ NODE_CATALOG = {
         field("num_recycles", "Recycles", 3, minimum=1, maximum=100),
         field("sampling_steps", "Diffusion steps", 200, minimum=1, maximum=1000),
         field("seed_count", "Number of seeds", 1, minimum=1, maximum=16),
+        field("predict_affinity", "Predict small-molecule binding affinity", False, kind="boolean", section="basic",
+              help="Use Molecular inputs in Protein–ligand complex mode with one ligand per prediction."),
         SEED, field("target_use_msa", "Use cached target MSA; fetch if missing", True, kind="boolean"),
         TEMPLATE,
     ], color="#477e9b", formats=("cif",)),
@@ -2501,6 +2504,20 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
                     raise PipelineInputError(node_id, f'The {selection_key} collection in Molecular inputs does not exist.')
             if require_files and optional_target_path and not Path(optional_target_path).expanduser().is_file():
                 raise PipelineInputError(node_id, 'The optional target PDB path in Molecular inputs does not exist.')
+        if require_inputs and kind == "boltz2" and node["data"]["params"].get("predict_affinity"):
+            source_id = cofold_source_context.get(node_id)
+            if not source_id or cofold_task_context.get(node_id) != "protein_ligand":
+                raise PipelineInputError(node_id, "Connect Molecular inputs set to Protein–ligand complex for Boltz-2 affinity.")
+            source = nodes[source_id]["data"]["params"]
+            if not source.get("compound_set_file"):
+                if not source.get("compound_name", "").strip():
+                    raise PipelineInputError(source_id, "Enter a compound name for the ligand in Molecular inputs.")
+                try:
+                    codes, smiles = _optimized_prediction._parse_ligands(source["ligand_ccd_codes"], source["ligand_smiles"])
+                except ValueError as exc:
+                    raise PipelineInputError(source_id, str(exc)) from exc
+                if len(codes) + len(smiles) != 1:
+                    raise PipelineInputError(source_id, "Enter one ligand for Boltz-2 affinity or choose a compound collection.")
         if require_inputs and NODE_CATALOG[kind].get('requires_target_structure'):
             if cofold_task_context.get(node_id):
                 source_id = cofold_source_context.get(node_id)

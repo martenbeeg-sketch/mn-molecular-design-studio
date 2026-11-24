@@ -14,13 +14,15 @@ from mn_molecular_design_studio.design_capabilities import ACCESS, catalogue, sm
 _PROTEIN_DESIGN_CATEGORY = "Protein design"
 _PREDICTION_CATEGORY = "Structure prediction & cofolding"
 _SMALL_MOLECULE_CATEGORY = "Small-molecule design"
+_DOCKING_CATEGORY = "Docking & affinity"
+_BOLTZ_AFFINITY_LABEL = "Boltz-2 affinity"
 _PREDICTION_ENGINES = frozenset({
     "af2", "af3", "boltz2", "rf3", "rfd4_fold", "prediction_chai1", "prediction_colabfold",
     "prediction_esmfold2", "prediction_openfold3_ob0", "prediction_protenix_v2",
 })
 _OPERATION_CATEGORIES = {
     _PREDICTION_CATEGORY: {"Structure prediction"},
-    "Docking & affinity": {"Docking"},
+    _DOCKING_CATEGORY: {"Docking"},
     "Molecular dynamics": {"Molecular dynamics"},
     "Library preparation": {"Ligand library"},
     "Analysis & validation": {"Analysis", "Antibody analysis", "Collection"},
@@ -201,16 +203,19 @@ def render_capabilities(key, open_binder, open_step):
         _render_small_molecule_design(key, open_step)
         return
 
-    operations = {kind: spec for kind, spec in editor_tool_catalog().items()
+    catalog = editor_tool_catalog()
+    operations = {kind: spec for kind, spec in catalog.items()
                   if spec["category"] in _OPERATION_CATEGORIES[category] and not spec.get("hidden")
                   and (category != _PREDICTION_CATEGORY or kind in _PREDICTION_ENGINES)}
+    if category == _DOCKING_CATEGORY:
+        operations["boltz2"] = {**catalog["boltz2"], "label": _BOLTZ_AFFINITY_LABEL}
     table = ["<table><thead><tr><th scope='col'>Tool or step</th>"
              "<th scope='col'>Pipeline</th></tr></thead><tbody>"]
     for kind, spec in sorted(operations.items(), key=lambda item: item[1]["label"].casefold()):
         label = escape(spec["label"])
         table.append(f'<tr><th scope="row">{label}</th>'
                      f'<td><button type="button" data-engine="{escape(kind)}" '
-                     f'aria-label="Set up {label}">Set up</button></td></tr>')
+                     f'data-pipeline="true" aria-label="Pipeline Builder · {label}">Pipeline Builder</button></td></tr>')
     choice = _matrix(data="".join([*table, "</tbody></table>"]), key=f"{key}-operations-{category}",
                      on_choose_change=lambda: None).get("choose")
     if not choice or choice[0] not in operations:
@@ -221,16 +226,22 @@ def render_capabilities(key, open_binder, open_step):
 
     @st.dialog(spec["label"])
     def details():
-        st.write(spec["palette"]["description"])
-        mode = _prediction_input(kind, key) if category == _PREDICTION_CATEGORY else None
+        affinity = category == _DOCKING_CATEGORY and kind == "boltz2"
+        if affinity:
+            st.write("Predict a protein–ligand complex and its binding affinity with Boltz-2. "
+                     "Enter one small molecule or choose a compound collection to score compounds individually.")
+            mode = "protein_ligand"
+        else:
+            st.write(spec["palette"]["description"])
+            mode = _prediction_input(kind, key) if category == _PREDICTION_CATEGORY else None
         with st.expander("Pipeline inputs and outputs"):
             for direction in ("inputs", "outputs"):
                 if ports := spec[direction]:
                     st.markdown(f"**{direction.title()}**")
                     st.write(", ".join(port["label"] for port in ports))
-        if st.button("Open pipeline draft", type="primary", key=f"{key}-open-operation-{kind}"):
+        if st.button("Open in Pipeline Builder", type="primary", key=f"{key}-open-operation-{kind}"):
             try:
-                open_step(kind, prediction_mode=mode)
+                open_step(kind, prediction_mode=mode, predict_affinity=affinity)
             except ValueError as exc:
                 st.error(str(exc))
 

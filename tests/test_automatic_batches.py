@@ -61,6 +61,36 @@ def test_compound_collection_is_native_prediction_batch(compound_file, engine):
         assert [task["source_compound_id"] for task in prepared.normalized_tasks] == [f"compound_{i}" for i in range(40)]
 
 
+@pytest.mark.parametrize("input_type", ["smiles", "ccd", "collection"])
+def test_boltz_affinity_pipeline_selects_one_ligand_chain_per_prediction(compound_file, input_type):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import node_request
+    from mn_molecular_design_studio.pipeline_graph import validate_graph
+    from mn_molecular_design_studio.scientific_tasks import new_task_graph
+
+    inputs = {"target_protein_sequences": "ACDEFGHIK:LMNPQRSTV"}
+    if input_type == "collection":
+        inputs["compound_set_file"] = str(compound_file(count=2))
+    elif input_type == "ccd":
+        inputs.update(ligand_input_type="ccd", ligand_ccd_codes="ATP", compound_name="ATP")
+    else:
+        inputs.update(ligand_smiles="CCO", compound_name="Ethanol")
+    graph = new_task_graph("molecular_structure_prediction", {
+        "mode": "protein_ligand", "methods": ["boltz2"], "inputs": inputs,
+        "method_settings": {"boltz2": {"predict_affinity": True}},
+    })
+    validate_graph(graph, require_inputs=True)
+    source, predictor, _ = graph["nodes"]
+    request = node_request("boltz2", predictor["data"]["params"],
+                           {"molecule_task": source["data"]["params"]}, "Affinity")
+    prepared = optimized_prediction._prepare_prediction(**request["parameters"], resolve_random_seed=False)
+    assert len(prepared.normalized_tasks) == (2 if input_type == "collection" else 1)
+    assert all(task["affinity_binder"] == "C" for task in prepared.normalized_tasks)
+    if input_type == "smiles":
+        source["data"]["params"]["ligand_smiles"] += "\nCC"
+        with pytest.raises(ValueError, match="Enter one ligand for Boltz-2 affinity"):
+            validate_graph(graph, require_inputs=True)
+
+
 def test_multiple_ligand_chains_in_one_complex_are_not_split():
     prepared = optimized_prediction._prepare_prediction(
         engine="boltz2", protein_sequences="ACDEFGHIK:KLMNPQ", ligand_smiles="CCO\nCCN",

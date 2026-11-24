@@ -14,18 +14,24 @@ def test_canvas_preserves_typed_prediction_choices():
         graph.clean_graph(definition)
 
 
-@pytest.mark.parametrize("kind,source_kind", [("af2", "project_design_source"), ("boltz2", "cofold_input")])
-def test_prediction_capabilities_show_main_engines_and_open_connected_drafts(monkeypatch, kind, source_kind):
+@pytest.mark.parametrize("kind,source_kind,affinity", [("af2", "project_design_source", False),
+    ("boltz2", "cofold_input", False), ("boltz2", "cofold_input", True)])
+def test_prediction_capabilities_show_main_engines_and_open_connected_drafts(monkeypatch, kind, source_kind, affinity):
     from streamlit.testing.v1 import AppTest
     from mn_molecular_design_studio import design_capabilities_ui
 
     def click_engine(*, data, **_):
-        assert 'Set up AlphaFold2 Initial Guess' in data
         assert data.count("scope='col'") == 2
-        assert 'data-engine="cofold_input"' not in data
-        assert 'data-engine="prediction_esmfold2"' in data
-        assert 'data-engine="prediction_esmfold2_fast"' not in data
-        assert 'data-engine="tile_af3_jax"' not in data
+        assert data.count('data-pipeline="true"') == data.count('type="button"') > 0
+        if affinity:
+            assert 'Pipeline Builder · Boltz-2 affinity' in data
+            assert 'Pipeline Builder · AutoDock Vina' in data
+        else:
+            assert 'Pipeline Builder · AlphaFold2 Initial Guess' in data
+            assert 'data-engine="cofold_input"' not in data
+            assert 'data-engine="prediction_esmfold2"' in data
+            assert 'data-engine="prediction_esmfold2_fast"' not in data
+            assert 'data-engine="tile_af3_jax"' not in data
         return {"choose": [kind, None]}
 
     monkeypatch.setattr(design_capabilities_ui, "_matrix", click_engine)
@@ -36,10 +42,10 @@ from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_step
 if 'cap-graph' not in st.session_state:
     render_capabilities('cap', lambda _: None, lambda step, **options: _open_capability_step(step, 'cap', **options))
 """)
-    app.session_state["cap-capability"] = "Structure prediction & cofolding"
+    app.session_state["cap-capability"] = "Docking & affinity" if affinity else "Structure prediction & cofolding"
     app.run()
     assert any(item.label == "Pipeline inputs and outputs" for item in app.expander)
-    if kind == "boltz2":
+    if kind == "boltz2" and not affinity:
         app.selectbox(key="cap-prediction-input-boltz2").set_value("protein_ligand").run()
     app.button(key=f"cap-open-operation-{kind}").click().run()
     assert not app.exception
@@ -51,6 +57,7 @@ if 'cap-graph' not in st.session_state:
     ]
     if kind == "boltz2":
         assert source["data"]["params"]["task_type"] == "protein_ligand"
+        assert predictor["data"]["params"]["predict_affinity"] is affinity
     else:
         assert predictor["data"]["params"]["af2_validation_mode"] == "conditioned_self_consistency"
 

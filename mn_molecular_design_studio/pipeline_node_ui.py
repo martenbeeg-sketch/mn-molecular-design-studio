@@ -946,7 +946,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
             if task_type in {"protein_protein", "protein_macrocyclic"}:
                 visible.add("partner_protein_sequences")
             elif task_type == "protein_ligand":
-                visible.update({"ligand_input_type", "ligand_ccd_codes", "ligand_smiles", "compound_set_file"})
+                visible.update({"ligand_input_type", "ligand_ccd_codes", "ligand_smiles", "compound_name", "compound_set_file"})
             elif task_type == "protein_dna":
                 visible.add("dna_sequences")
             elif task_type == "protein_rna":

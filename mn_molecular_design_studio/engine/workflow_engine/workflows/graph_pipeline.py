@@ -221,6 +221,9 @@ def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list
 
     profile = ENGINE_PROFILES[engine]
     direct_input = source.get("molecule_task")
+    predict_affinity = engine == "boltz2" and params.get("predict_affinity", False)
+    if predict_affinity and (not isinstance(direct_input, dict) or direct_input.get("task_type") != "protein_ligand"):
+        raise ValueError("Connect Molecular inputs set to Protein–ligand complex for Boltz-2 affinity.")
     if isinstance(direct_input, dict):
         task_input = copy.deepcopy(direct_input)
         task_type = str(task_input.get("task_type") or "")
@@ -280,6 +283,8 @@ def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list
 
         for molecule_key in ("dna_sequences", "rna_sequences", "ligand_ccd_codes", "ligand_smiles"):
             task[molecule_key] = str(task_input.get(molecule_key) or "")
+        if task_type == "protein_ligand" and task_input.get("compound_name"):
+            task["compound_name"] = str(task_input["compound_name"]).strip()
         if profile.get("supports_msa"):
             task["molecule_chain_options"] = [
                 {"id": chain_id, "use_msa": bool(params.get("target_use_msa", params.get("use_target_msa", True)))}
@@ -331,10 +336,26 @@ def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list
                 })
             task["structure_templates"] = templates
         from mn_molecular_design_studio.batching import prediction_collection_tasks
-        return prediction_collection_tasks(
+        tasks = prediction_collection_tasks(
             task, compound_set_file=task_input.get("compound_set_file"),
             sequence_file=task_input.get("sequence_file"),
         )
+        if predict_affinity:
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import (
+                _assign_molecule_chain_ids, _parse_ligands, _parse_proteins,
+            )
+
+            for item in tasks:
+                codes, smiles = _parse_ligands(item["ligand_ccd_codes"], item["ligand_smiles"])
+                if len(codes) + len(smiles) != 1 or item["dna_sequences"].strip() or item["rna_sequences"].strip():
+                    raise ValueError("Boltz-2 affinity needs a protein target and one small molecule per prediction.")
+                if not item.get("compound_name"):
+                    raise ValueError("Enter a compound name for the ligand in Molecular inputs.")
+                _, _, _, ccd_entities, smiles_entities = _assign_molecule_chain_ids(
+                    _parse_proteins(item["protein_sequences"]), [], [], codes, smiles, task_index=1,
+                )
+                item["affinity_binder"] = (ccd_entities or smiles_entities)[0]["id"]
+        return tasks
 
     rows = _absolute_candidates(source)
     if not rows:
@@ -1973,7 +1994,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         task = {key: copy.deepcopy(params.get(key, '')) for key in (
                             'task_type', 'target_protein_sequences', 'partner_protein_sequences',
                             'dna_sequences', 'rna_sequences', 'ligand_input_type', 'ligand_ccd_codes', 'ligand_smiles', 'compound_set_file', 'sequence_file',
-                            'cyclic_partner', 'target_chain_id',
+                            'cyclic_partner', 'target_chain_id', 'compound_name',
                         )}
                         target_pdb = str(params.get('target_pdb') or '').strip()
                         task['target_pdb'] = str(_path(target_pdb)) if target_pdb else ''

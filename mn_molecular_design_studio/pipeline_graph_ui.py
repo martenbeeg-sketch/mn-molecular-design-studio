@@ -723,14 +723,18 @@ def open_binder_preset(preset, *, prefix=None):
     _open_capability_graph(new_binder_pipeline(**preset), prefix)
 
 
-def _open_capability_step(kind, prefix, *, prediction_mode=None, ligand_design_mode=""):
+def _open_capability_step(kind, prefix, *, prediction_mode=None, ligand_design_mode="", predict_affinity=False):
     from mn_molecular_design_studio.pipeline_blocks import add_block, blank_program, connect_blocks
 
     name = NODE_CATALOG[kind]["label"]
     if prediction_mode:
         from mn_molecular_design_studio.scientific_tasks import new_task_graph
 
-        graph = new_task_graph("molecular_structure_prediction", {"methods": [kind], "mode": prediction_mode})
+        config = {"methods": [kind], "mode": prediction_mode}
+        if predict_affinity:
+            config["method_settings"] = {kind: {"predict_affinity": True}}
+            name = f"{name} affinity"
+        graph = new_task_graph("molecular_structure_prediction", config)
     elif kind == "af2":
         graph, source = add_block(blank_program(), "project_design_source")
         graph, predictor = add_block(graph, kind, source=source)
