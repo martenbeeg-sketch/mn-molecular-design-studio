@@ -160,13 +160,39 @@ def test_manual_complex_entry_does_not_change_acceptance_or_selection(tmp_path):
         build_collection(tmp_path, 'invalid', merged, {'entry_mode': 'manual_selection'})
 
 
-def test_existing_analysis_tool_preserves_rejected_and_unknown_review(tmp_path, design_source_factory):
+@pytest.mark.parametrize("through_chaperone", [False, True])
+def test_existing_analysis_tool_preserves_rejected_and_unknown_review(
+    tmp_path, design_source_factory, monkeypatch, through_chaperone,
+):
     source, rows = fixture_source(tmp_path, design_source_factory)
     output = build_collection(tmp_path, 'analysis', filtered(tmp_path, merged_source(tmp_path, source, rows)), {})
-    measured = sets.write_collection(tmp_path, 'biotite', list(sets.iter_candidates(output)), output['target'])
+    handoff_manifest = output["complex_analysis_handoff"]
+    if through_chaperone:
+        from mn_molecular_design_studio import chaperone_adapter
+
+        def roundtrip(rows):
+            restored = copy.deepcopy(rows)
+            for row in restored:
+                row["raw_metadata"]["chaperone_interop"] = {"design_id": row["candidate_id"]}
+            return restored
+
+        monkeypatch.setattr(chaperone_adapter, "worker_configuration", lambda: {"python": "/worker/python"})
+        monkeypatch.setattr(chaperone_adapter, "roundtrip_candidates", roundtrip)
+        output = sets.chaperone_handoff(tmp_path, "biotite", output)
+
+    active = list(sets.iter_candidates(output))
+    assert len(active) == 1
+    active[0]["metrics"]["qc_interface_contact_pairs"] = 12
+    measured = sets.write_collection(tmp_path, 'biotite', active, output['target'])
     result = inherit_review(tmp_path, 'biotite', measured, output)
+    assert result["complex_analysis_handoff"] == handoff_manifest
     assert len(list(sets.iter_candidates(result))) == 1
-    assert len(list(sets.iter_candidates(result, review=True))) == 3
+    reviewed = {row["raw_metadata"]["validation_acceptance"]["status"]: row
+                for row in sets.iter_candidates(result, review=True)}
+    assert set(reviewed) == {"accepted", "rejected", "unresolved"}
+    assert reviewed["accepted"]["metrics"]["qc_interface_contact_pairs"] == 12
+    assert all("qc_interface_contact_pairs" not in reviewed[state]["metrics"]
+               for state in ("rejected", "unresolved"))
 
 
 @pytest.mark.parametrize('include_tools', [False, True])

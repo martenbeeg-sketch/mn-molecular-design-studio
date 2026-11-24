@@ -1743,6 +1743,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 "worker": worker,
                                 "source_revision": worker_config.get("source_revision", ""),
                             }
+                            if source.get("complex_analysis_handoff"):
+                                key_params["chaperone_handoff"]["review_adapter_digest"] = file_digest(
+                                    Path(candidate_sets.__file__)
+                                )
                     if node["data"].get("evidence_namespace"):
                         key_params["evidence_namespace"] = node["data"]["evidence_namespace"]
                     if settings["mode"] != "native":

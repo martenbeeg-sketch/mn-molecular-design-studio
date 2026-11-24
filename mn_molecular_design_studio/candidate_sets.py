@@ -384,7 +384,9 @@ def chaperone_handoff(parent, node_id, source):
         review_path.write_text("".join(json.dumps(json_safe(normalize_candidate(row)), sort_keys=True, allow_nan=False) + "\n"
                                                  for row in review_rows))
         result["review_candidates_jsonl"] = str(review_path)
-    for key in ("require_native_passing", "deferred_run_source"):
+    # Review inheritance after the tool uses this manifest to distinguish
+    # excluded candidates from the input rows sent for analysis.
+    for key in ("require_native_passing", "deferred_run_source", "complex_analysis_handoff"):
         if key in source:
             result[key] = source[key]
     result["chaperone_handoff"] = {"handler": "PipelineDataHandler", "node": node_id,
