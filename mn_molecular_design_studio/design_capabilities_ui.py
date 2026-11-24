@@ -54,6 +54,7 @@ _ANALYSIS_TASKS = {
         "foldseek": "Compare and cluster structures by shape similarity",
     },
     "Protein–ligand pose analysis": {
+        "native_ligand_interactions": "Classify hydrogen bonds, hydrophobic contacts, water bridges, and salt bridges in a pose",
         "plip": "Identify protein–ligand contacts",
         "pandamap": "Map contacts between a ligand and binding-site residues",
         "posebusters": "Check ligand geometry and clashes in a pose",
@@ -66,7 +67,7 @@ _ANALYSIS_TASKS = {
         "tile_detection_surf2spot": "Predict binding-site hotspots on a protein surface",
     },
     "MD trajectory analysis": {
-        "md_analysis": "Measure RMSD, RMSF, radius of gyration, and contacts over a trajectory",
+        "md_analysis": "Measure motion and classify protein–ligand interactions across trajectory frames",
     },
     _CANDIDATE_SELECTION_TASK: {
         "candidate_merge": "Combine design lists for the same target and keep each design's source.",

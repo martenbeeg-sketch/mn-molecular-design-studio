@@ -468,6 +468,40 @@ def _csv_rows(text: str | None, *, limit: int = 20000) -> list[dict[str, str]]:
         return []
 
 
+def render_classified_interactions(st, report, *, pairs_csv="", ligand_pdb="", ligand_smiles="", key_prefix):
+    from mn_molecular_design_studio.md_atom_interactions import INTERACTIONS, render_interaction_diagram
+
+    pose = report.get("input_type") == "pose"
+    scope = "Selected structure" if pose else "Selected trajectory frames"
+    st.markdown("**Native Ligand Interactions**")
+    render_interaction_diagram(st, report, ligand_smiles=ligand_smiles or report.get("ligand_smiles", ""),
+        ligand_pdb=ligand_pdb, key_prefix=key_prefix, scope=scope)
+    if not pose:
+        _render_recorded_occupancies(st, report)
+    pairs = _csv_rows(pairs_csv)
+    if pairs:
+        records = [{
+            "Interaction": INTERACTIONS.get(row["interaction"], (row["interaction"],))[0],
+            "Residue": row["protein_residue"], "Protein atom": row["protein_atom"],
+            "Ligand atom": row["ligand_atom"],
+            "Evidence": row["evidence"].replace("_", " "),
+            "Minimum distance (Å)": _finite(row["minimum_distance_angstrom"]),
+            **({} if pose else {"Frames": int(row["frames"]), "Occupancy (%)": _finite(row["occupancy_percent"])}),
+        } for row in pairs]
+        with st.expander("Protein–ligand atom pairs", expanded=pose):
+            st.caption("Water bridges report the longer of the two water–partner distances for each event.")
+            st.dataframe(records, hide_index=True, use_container_width=True)
+            st.download_button("Download atom pairs CSV", pairs_csv, file_name="ligand_atom_pairs.csv",
+                               mime="text/csv", key=key_prefix + "-pairs-csv")
+    with st.expander("Interaction methods and input chemistry"):
+        st.dataframe([{"Interaction": INTERACTIONS.get(kind, (kind,))[0],
+                       "Method": method or "Unavailable for this input"}
+                      for kind, method in (report.get("methods") or {}).items()],
+                     hide_index=True, use_container_width=True)
+        if source := report.get("formal_charge_source"):
+            st.caption(source)
+
+
 def _render_md_analysis_summary(st, summary: dict[str, Any], *, run_root: Path | None = None, text_loader=None, key_prefix="md-results") -> None:
     """Render the standalone MDTraj summary and its small CSV outputs."""
     if summary.get("success") is not True:
@@ -520,6 +554,31 @@ def _render_md_analysis_summary(st, summary: dict[str, Any], *, run_root: Path |
             st.caption(str(summary.get("radius_of_gyration_semantics") or "Recorded radius of gyration."))
             st.line_chart(gyration, x="Time (ns)")
     artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+    classified_report = None
+    if artifacts.get("ligand_interactions_json"):
+        try:
+            def load_artifact(key):
+                path = artifacts.get(key)
+                return _artifact_text(run_root, path, text_loader=text_loader, description=key) if path else None
+
+            raw = load_artifact("ligand_interactions_json")
+            classified_report = json.loads(raw) if raw else None
+            if classified_report:
+                render_classified_interactions(st, classified_report,
+                    pairs_csv=load_artifact("ligand_atom_pairs_csv") or "",
+                    ligand_pdb=load_artifact("selected_ligand_pdb") or "",
+                    ligand_smiles=summary.get("ligand_smiles", ""),
+                    key_prefix=key_prefix + "-classified-contacts")
+                if timeseries:
+                    columns = {kind + "_residues": kind.replace("_", " ").capitalize()
+                               for kind, method in classified_report["methods"].items() if method and kind != "contact"}
+                    if columns:
+                        st.markdown("**Classified contacts over time**")
+                        st.line_chart([{"Time (ns)": _finite(row.get("time_ns")),
+                            **{label: _finite(row.get(field)) for field, label in columns.items()}}
+                            for row in timeseries], x="Time (ns)")
+        except (OSError, ValueError, KeyError) as exc:
+            st.warning(f"Classified interactions are unavailable: {exc}")
     if artifacts.get("rmsf_csv"):
         rmsf = _csv_rows(_artifact_text(run_root, str(artifacts["rmsf_csv"]), text_loader=text_loader, description="MD RMSF CSV"))
         st.caption(str(summary.get("rmsf_semantics") or "Recorded RMSF."))
@@ -535,7 +594,7 @@ def _render_md_analysis_summary(st, summary: dict[str, Any], *, run_root: Path |
             st.info("MD RMSF CSV is loading or unavailable.")
     contacts_path = "artifacts/md_analysis/residue_contacts.csv"
     contacts = _csv_rows(_artifact_text(run_root, contacts_path, text_loader=text_loader, description="MD residue contact CSV"))
-    if contacts:
+    if contacts and not classified_report:
         from mn_molecular_design_studio.md_atom_interactions import render_interaction_diagram
 
         structural = {"contacts": {"residues": [
@@ -545,6 +604,7 @@ def _render_md_analysis_summary(st, summary: dict[str, Any], *, run_root: Path |
         render_interaction_diagram(st, structural, key_prefix=key_prefix + "-native-contacts",
             scope="Selected trajectory-analysis window; geometric contacts only")
         _render_recorded_occupancies(st, structural)
+    if contacts:
         st.markdown("**Geometric ligand contact occupancy**")
         st.caption(str(summary.get("contact_map_semantics") or "Geometric contact occupancy; not hydrogen-bond analysis."))
         st.dataframe(contacts, use_container_width=True, hide_index=True)

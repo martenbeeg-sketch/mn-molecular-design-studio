@@ -486,11 +486,24 @@ def test_real_container_batch(tool, tmp_path, design_source_factory):
         from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import prepare
         assets = Path(__file__).resolve().parents[1] / "mn_molecular_design_studio/assets/vina"
         compound = json.loads((assets / "imatinib.json").read_text())[0]
-        for item in items:
-            prepare(item, {"complex_pdb": str(assets / "1iep.pdb"), "raw_metadata": {"ligand_smiles": compound["smiles"], "ligand_chain": "A"}}, work)
+        candidate = {"complex_pdb": str(assets / "1iep.pdb"),
+                     "raw_metadata": {"ligand_smiles": compound["smiles"], "ligand_chain": "A"}}
+        if tool == "native_ligand_interactions":
+            ligand, receptor = prepare(items[0], candidate.copy(), work, keep_interaction_context=True)
+            prepare(items[1], {"complex_pdb": str(ligand), "target_pdb": str(receptor)}, work,
+                    keep_interaction_context=True)
+        else:
+            for item in items:
+                prepare(item, candidate.copy(), work)
     manifest = {"schema": "studio.qc.v1", "tool": tool, "items": items, "settings": {"workers": 2, "ph": 7.4, "similarity_threshold": .5}, "output": "/work/output"}
     (work / "manifest.json").write_text(json.dumps(manifest))
     module = Path(quality_runner.__file__).parent
+    if tool == "native_ligand_interactions":
+        runtime = work / "runtime"
+        runtime.mkdir()
+        shutil.copyfile(module / "quality_runner.py", runtime / "quality_runner.py")
+        shutil.copyfile(module.parent / "tools/ligand_interactions.py", runtime / "ligand_interactions.py")
+        module = runtime
     result = subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "python3", "--cpus", "2", *quality.docker_user_args(),
         "-e", "OPENBLAS_NUM_THREADS=1", "-e", "OMP_NUM_THREADS=1", "-v", f"{work}:/work", "-v", f"{module}:/opt/studio-qc:ro", "-w", "/work",
         TOOLS[tool]["image"], "/opt/studio-qc/quality_runner.py", "--manifest", "/work/manifest.json"], capture_output=True, text=True, timeout=180)
@@ -499,3 +512,12 @@ def test_real_container_batch(tool, tmp_path, design_source_factory):
     assert result.returncode == 0, result.stdout + result.stderr + json.dumps(status)
     assert status["finished"] == 2
     assert all(item["status"] == "completed" for item in status["items"]), status
+    if tool == "native_ligand_interactions":
+        child = work / "output/item_000000"
+        report = json.loads((child / "ligand_interactions.json").read_text())
+        assert report["input_type"] == "pose"
+        assert report["methods"]["hydrogen_bond"]
+        assert any(row["contact_occupancy"] == 1.0 for row in report["contacts"]["residues"])
+        pairs = (child / "ligand_atom_pairs.csv").read_text()
+        assert "distance_only" in pairs
+        assert "hydrophobic" in pairs

@@ -149,7 +149,7 @@ _SPECS = (
     _spec("ligand.generation.pgmg", "ligand_tools", "run_ligand_pgmg", "ligand-generation", "pgmg_generation", "ligand_generation", "Generate compounds from a PGMG-compatible pharmacophore hypothesis."),
     _spec("ligand.md.gromacs", "ligand_tools", "run_ligand_gromacs_md", "ligand-md", "gromacs_md", "ligand_md", "Prepare a bound protein–ligand complex and run explicit-solvent GROMACS dynamics."),
     _spec("ligand.md.openmm", "ligand_tools", "run_ligand_openmm_md", "ligand-md", "openmm_md", "ligand_md", "Prepare a bound protein–ligand complex and run explicit-solvent OpenMM dynamics."),
-    _spec("ligand.md.analysis", "md_analysis", "run_md_analysis", "md-analysis", "md_analysis", "md_analysis", "Analyze a recorded MD segment with protein-aligned RMSD, Cα/ligand RMSF, mass-weighted radius of gyration and geometric residue-contact occupancy."),
+    _spec("ligand.md.analysis", "md_analysis", "run_md_analysis", "md-analysis", "md_analysis", "md_analysis", "Analyze a recorded MD segment with RMSD, RMSF, radius of gyration and classified protein–ligand interactions across frames."),
     _spec("target.prepare", "target_prep", "enqueue_target_preparation", "target-prep", "internal_pdb_cleaner", "target_preparation", "Clean, trim, and optionally prepare MSAs for a PDB target.", "target_prepare"),
     _spec("target.crop", "target_crop", "run_target_crop", "target-crop", "internal_pdb_cropper", "target_cropping", "Crop a prepared target by residue ranges or Mol* selection coordinates."),
     _spec("target.mask", "target_masking", "create_masked_target", "target-prep", "internal_target_masker", "target_masking", "Create a mutation/masked-target job with recorded mutation details.", "direct"),

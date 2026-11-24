@@ -19,6 +19,9 @@ from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import app
 from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import _analysis_job, _allocated_cpu_cores, _resolve_path
 
 
+_INTERACTION_SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "ligand_interactions.py"
+
+
 def _digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -30,6 +33,7 @@ def protocol_revision():
     module = Path(__file__).parent
     runtime_files = [module / "quality.py", module / "quality_runner.py", module / "quality_ligands.py",
                      *sorted((module / "qc_ovo").glob("*.py")), *sorted((module / "qc_ovo").glob("*.json"))]
+    runtime_files.append(_INTERACTION_SCRIPT)
     digest = hashlib.sha256()
     for path in runtime_files:
         digest.update(path.name.encode())
@@ -238,7 +242,8 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
         if profile["kind"] == "ligand" and not item.get("input_error"):
             from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import prepare
             try:
-                prepare(item, candidate, run, ligand_selection=candidate_ligand_selection)
+                preparation_options = {"keep_interaction_context": True} if tool == "native_ligand_interactions" else {}
+                prepare(item, candidate, run, ligand_selection=candidate_ligand_selection, **preparation_options)
                 item["structure_digest"] = _digest(candidate["complex_pdb"])
                 item["target_key"] = _digest(candidate["target_pdb"])
             except (OSError, ValueError, RuntimeError, StopIteration) as exc:
@@ -263,6 +268,8 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
     runtime.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(module / "quality_runner.py", runtime / "quality_runner.py")
     shutil.copyfile(module / "quality_ligands.py", runtime / "quality_ligands.py")
+    if tool == "native_ligand_interactions":
+        shutil.copyfile(_INTERACTION_SCRIPT, runtime / _INTERACTION_SCRIPT.name)
     shutil.copyfile(Path(__file__), runtime / "quality.py")
     shutil.copytree(module / "qc_ovo", runtime / "qc_ovo", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     gpu_args = []
@@ -419,6 +426,25 @@ def run_plip(source_run_dir: Path, candidates_jsonl: Path | None = None, cpu_cor
         selected_model_id=selected_model_id, ligand_selection=ligand_selection,
         source_job_reference=source_job_reference, source_workstation_id=source_workstation_id,
         source_workstation=source_workstation, **ligand_parameters)
+
+
+def run_native_ligand_interactions(
+    source_run_dir: Path, candidates_jsonl: Path | None = None, cpu_cores: int = 4,
+    candidate_ids: list[str] | None = None, selected_structure_path: Path | None = None,
+    selected_model_id: str | None = None, selected_model_ids: dict[str, str] | None = None,
+    ligand_selection: dict | None = None, ligand_selections: dict[str, dict] | None = None,
+    source_job_reference: str | None = None, source_workstation_id: str | None = None,
+    source_workstation: str | None = None,
+) -> Path:
+    """Classify protein–ligand interactions in selected docking or cofolding poses."""
+    return run_quality(
+        source_run_dir, candidates_jsonl, tool="native_ligand_interactions", settings={},
+        cpu_cores=cpu_cores, candidate_ids=candidate_ids, selected_structure_path=selected_structure_path,
+        selected_model_id=selected_model_id, selected_model_ids=selected_model_ids,
+        ligand_selection=ligand_selection, ligand_selections=ligand_selections,
+        source_job_reference=source_job_reference, source_workstation_id=source_workstation_id,
+        source_workstation=source_workstation,
+    )
 
 
 def run_pandamap(source_run_dir: Path, candidates_jsonl: Path | None = None, cpu_cores: int = 4,

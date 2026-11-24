@@ -366,7 +366,7 @@ def _load_preparation_records(source):
     return {}
 
 
-def prepare(item, candidate, run_dir, *, ligand_selection=None):
+def prepare(item, candidate, run_dir, *, ligand_selection=None, keep_interaction_context=False):
     """Select exactly one ligand, then match its graph to the declared SMILES.
 
     Ambiguous complexes and failed topology assignment are explicit failures;
@@ -396,14 +396,17 @@ def prepare(item, candidate, run_dir, *, ligand_selection=None):
     smiles = ligand_smiles or raw.get("ligand_smiles") or raw.get("smiles") or (ligands[0].get("smiles") if len(ligands) == 1 else "")
     if isinstance(smiles, list):
         smiles = smiles[0] if len(smiles) == 1 else ""
-    if not isinstance(smiles, str) or not smiles:
+    source = Path(candidate["complex_pdb"])
+    explicit_ligand_pose = source.suffix.lower() in {".sdf", ".mol"}
+    if not isinstance(smiles, str):
+        smiles = ""
+    if not smiles and not (keep_interaction_context and explicit_ligand_pose):
         raise ValueError("Declare one ligand SMILES in the source prediction; multiple ligands require an explicit ligand selection.")
-    template = Chem.MolFromSmiles(smiles)
-    if template is None:
+    template = Chem.MolFromSmiles(smiles) if smiles else None
+    if smiles and template is None:
         raise ValueError("The source ligand SMILES is invalid.")
     directory = Path(run_dir) / "artifacts/input" / item["id"]
     directory.mkdir(parents=True, exist_ok=True)
-    source = Path(candidate["complex_pdb"])
     source_digest = item.get("source_structure_digest") or _digest(source)
     receptor = Path(candidate["target_pdb"]) if candidate.get("target_pdb") else None
     requested_chain = ligand_selection.get("chain") or raw.get("ligand_chain") or (
@@ -412,7 +415,7 @@ def prepare(item, candidate, run_dir, *, ligand_selection=None):
     requested_residue = ligand_selection.get("residue_key") or (selected_component or {}).get("residue_key") or ""
     requested_ccd = ligand_selection.get("ccd") or (selected_component or {}).get("ccd") or ""
     selected_model_id = str(item.get("model_id") or saved_selection.get("model_id") or "").strip()
-    if source.suffix.lower() in {".sdf", ".mol"}:
+    if explicit_ligand_pose:
         poses = [m for m in Chem.SDMolSupplier(str(source), removeHs=False) if m is not None]
         if len(poses) != 1:
             raise ValueError("Select one coordinate-bearing ligand pose per analysis input.")
@@ -432,7 +435,11 @@ def prepare(item, candidate, run_dir, *, ligand_selection=None):
             protein_text = ""
         protein_lines = [line for line in text.splitlines() if line.startswith("ATOM  ") and gemmi.find_tabulated_residue(line[17:20].strip()).is_amino_acid()]
         if protein_lines:
-            protein_text = "\n".join(protein_lines) + "\nEND\n"
+            water_lines = [
+                line for line in text.splitlines()
+                if line.startswith(("ATOM  ", "HETATM")) and line[17:20].strip() in {"HOH", "WAT", "DOD"}
+            ] if keep_interaction_context else []
+            protein_text = "\n".join([*protein_lines, *water_lines, "END", ""])
         elif not protein_text and receptor:
             protein_text = receptor.read_text()
         ligand_rows = [line for line in text.splitlines() if line.startswith(("ATOM  ", "HETATM")) and not gemmi.find_tabulated_residue(line[17:20].strip()).is_amino_acid() and line[17:20].strip() not in {"HOH", "WAT", "DOD"}]
@@ -457,9 +464,22 @@ def prepare(item, candidate, run_dir, *, ligand_selection=None):
         molecule = Chem.MolFromPDBBlock(block, removeHs=False, sanitize=False)
     if molecule is None or not protein_text:
         raise ValueError("A coordinate-bearing ligand and receptor are both required.")
-    molecule = AllChem.AssignBondOrdersFromTemplate(Chem.RemoveHs(template), Chem.RemoveHs(molecule, sanitize=False))
+    use_pose_graph = keep_interaction_context and explicit_ligand_pose and (
+        template is None or Chem.MolToSmiles(Chem.RemoveHs(molecule), isomericSmiles=True)
+        == Chem.MolToSmiles(template, isomericSmiles=True)
+    )
+    if use_pose_graph:
+        smiles = Chem.MolToSmiles(Chem.RemoveHs(molecule), isomericSmiles=True)
+    else:
+        molecule = AllChem.AssignBondOrdersFromTemplate(Chem.RemoveHs(template), Chem.RemoveHs(molecule, sanitize=False))
     if molecule.GetNumConformers() != 1:
         raise ValueError("Ligand coordinates are missing.")
+    if keep_interaction_context:
+        ligand_atom_lines = [line for line in Chem.MolToPDBBlock(molecule).splitlines()
+                             if line.startswith(("ATOM  ", "HETATM"))]
+        for atom, line in zip(molecule.GetAtoms(), ligand_atom_lines, strict=True):
+            atom.SetProp("studio_atom_name", line[12:16].strip())
+        Chem.CreateAtomStringPropertyList(molecule, "studio_atom_name")
     ligand_file = directory / "ligand.sdf"
     with Chem.SDWriter(str(ligand_file)) as writer:
         writer.write(molecule)
@@ -482,7 +502,9 @@ def prepare(item, candidate, run_dir, *, ligand_selection=None):
                 receptor_digest=receptor_digest, ligand_identity=ligand_provenance["identity"],
                 ligand_provenance=ligand_provenance)
     item.update(smiles=smiles, ligand_file="/work/" + str(ligand_file.relative_to(run_dir)), receptor_file="/work/" + str(receptor_file.relative_to(run_dir)))
-    protein_lines = [line for line in protein_text.splitlines() if line.startswith("ATOM  ")]
+    protein_lines = [line for line in protein_text.splitlines()
+                     if line.startswith("ATOM  ") or (keep_interaction_context
+                         and line.startswith("HETATM") and line[17:20].strip() in {"HOH", "WAT", "DOD"})]
     chains = {line[21:22] for line in protein_lines}
     ligand_chain = next(c for c in "LZBCDEFGHIJKLMNOPQRSTUVWXYAabcdefghijklmnopqrstuvwxyz" if c not in chains)
     ligand_lines = []
@@ -497,6 +519,8 @@ def prepare(item, candidate, run_dir, *, ligand_selection=None):
                                  "compound_id": raw.get("source_compound_id") or raw.get("compound_id") or item["candidate_id"],
                                  "compound_name": raw.get("compound_name") or raw.get("name") or item["candidate_id"]}
     item["structure"] = "/work/" + str(complex_file.relative_to(run_dir))
+    if keep_interaction_context:
+        (directory / "selected_ligand.pdb").write_text("\n".join([*ligand_lines, "END", ""]))
     return ligand_file, receptor_file
 
 
@@ -513,7 +537,7 @@ def _selected_model_pdb(source, selected_model_id):
         raise ValueError("The selected structure contains no coordinate model.")
     if len(structure) > 1:
         models = list(structure)
-        selected = next((model for model in models if selected_model_id and str(model.name) == selected_model_id), None)
+        selected = next((model for model in models if selected_model_id and str(getattr(model, "num", getattr(model, "name", ""))) == selected_model_id), None)
         if selected is None and str(selected_model_id).isdigit():
             index = int(selected_model_id) - 1
             selected = models[index] if 0 <= index < len(models) else None

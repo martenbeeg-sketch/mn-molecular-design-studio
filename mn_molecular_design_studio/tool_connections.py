@@ -20,7 +20,7 @@ _STANDALONE_HANDOFFS = (
     ("library.centroids", "library.seed_dock", "centroid_manifest", "parameters.centroid_manifest",
      ("library_id", "target_pdb", "center_x", "center_y", "center_z")),
     *(("ligand.docking.vina", consumer, "docking_pose_and_receptor", "source_job", ())
-      for consumer in ("analysis.plip", "analysis.pandamap", "analysis.posebusters")),
+      for consumer in ("analysis.native_ligand_interactions", "analysis.plip", "analysis.pandamap", "analysis.posebusters")),
     ("refolding.optimized_prediction", "analysis.ipsae", "predicted_complex_with_pae", "source_job",
      ("binder_chains", "target_chains")),
     *(("refolding.optimized_prediction", consumer, "predicted_complex", "source_job", ("binder_chains", "target_chains"))

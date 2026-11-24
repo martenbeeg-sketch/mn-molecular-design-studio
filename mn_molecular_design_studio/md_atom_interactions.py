@@ -46,6 +46,7 @@ def interaction_residues(structural):
             if (value := _occupancy(row.get(field))) is not None}
         grouped.setdefault(residue, []).append({"residue": residue, "occupancies": values,
             "ligand_atom": str(row.get("top_ligand_atom") or "").strip(),
+            "atom_endpoints": row.get("atom_endpoints") if isinstance(row.get("atom_endpoints"), dict) else {},
             "protein_atom": str(row.get("top_protein_atom") or "").strip()})
     return [rows[0] for _, rows in sorted(grouped.items()) if all(row == rows[0] for row in rows)]
 
@@ -162,37 +163,52 @@ def build_interaction_diagram(structural, *, ligand_smiles="", ligand_pdb="", li
     selected.sort(key=lambda row: (-max(row["occupancies"].values()), row["residue"]))
     eligible = len(selected)
     selected = selected[:residue_limit]
-    drawing = ligand_drawing(ligand_smiles, ligand_pdb=ligand_pdb,
-        label_atoms={row["ligand_atom"] for row in selected}) if selected else None
+    def ligand_atom(row, kind):
+        endpoint = row["atom_endpoints"].get(kind) or {}
+        return endpoint.get("ligand_atom") or row["ligand_atom"]
+
+    atom_names = {ligand_atom(row, kind) for row in selected for kind in row["occupancies"]}
+    drawing = ligand_drawing(ligand_smiles, ligand_pdb=ligand_pdb, label_atoms=atom_names) if selected else None
+    pose = structural.get("input_type") == "pose"
+    if pose:
+        description = "Interactions in one static pose."
+    elif structural.get("method_version"):
+        description = "Percentages report residue-level trajectory occupancy. Lines use one representative atom pair per interaction type."
+    else:
+        description = ("Endpoints use recorded representative ligand atoms (top_ligand_atom). "
+                       "Percentages are residue-level occupancies, not atom-pair occupancies or atom-specific bonds.")
     note = drawing.atom_mapping_note if drawing else "Chemical depiction and atom-name mapping are unavailable."
     atom_positions = drawing.atoms if drawing else {}
-    mapped = sum(row["ligand_atom"] in atom_positions for row in selected)
+    mapped = sum(any(ligand_atom(row, kind) in atom_positions for kind in row["occupancies"]) for row in selected)
     positions = _node_positions(selected, drawing)
     parts = ['<svg xmlns="http://www.w3.org/2000/svg" width="900" height="790" viewBox="0 0 900 790" role="img">',
         '<title>Recorded ligand atom–residue associations</title>',
-        '<desc>' + escape(str(scope) + ". Endpoints: recorded representative ligand atoms (top_ligand_atom). Percentages: residue-level occupancies, not atom-pair occupancies or atom-specific bonds. "
-            "Recorded analysis window: " + str(structural.get("analysis_window") or "not recorded")) + '</desc>',
+        '<desc>' + escape(str(scope) + ". " + description + " Recorded analysis window: " +
+            str(structural.get("analysis_window") or "not recorded")) + '</desc>',
         '<rect width="900" height="790" rx="24" fill="#f8fafc"/>',
         '<g font-family="Arial, sans-serif" fill="#1e293b">',
         '<text x="450" y="35" text-anchor="middle" font-size="23" font-weight="bold">Ligand atom–residue associations</text>',
-        '<text x="450" y="61" text-anchor="middle" font-size="14" fill="#475569">Named atom = recorded representative · % = residue occupancy</text>']
+        '<text x="450" y="61" text-anchor="middle" font-size="14" fill="#475569">' +
+        ("One saved pose · named atoms from the interaction pairs" if pose else "Named atom = representative · % = residue occupancy") + '</text>']
     radius = 42 if len(selected) > 12 else 49
     for row, (node_x, node_y) in zip(selected, positions):
-        atom = atom_positions.get(row["ligand_atom"])
-        if atom is None:
-            continue
-        direction_x, direction_y = node_x - atom[0], node_y - atom[1]
-        distance = math.hypot(direction_x, direction_y)
-        if distance <= radius:
-            continue
-        end_x, end_y = node_x - radius * direction_x / distance, node_y - radius * direction_y / distance
         for offset, (kind, occupancy) in enumerate(row["occupancies"].items()):
+            name = ligand_atom(row, kind)
+            atom = atom_positions.get(name)
+            if atom is None:
+                continue
+            direction_x, direction_y = node_x - atom[0], node_y - atom[1]
+            distance = math.hypot(direction_x, direction_y)
+            if distance <= radius:
+                continue
+            end_x, end_y = node_x - radius * direction_x / distance, node_y - radius * direction_y / distance
             bend = (offset - (len(row["occupancies"]) - 1) / 2) * 24
             control_x = (atom[0] + end_x) / 2 - direction_y / distance * bend
             control_y = (atom[1] + end_y) / 2 + direction_x / distance * bend
             color = INTERACTIONS[kind][2]
-            title = escape(f'{row["residue"]}: {INTERACTIONS[kind][0]} {occupancy:.1%}; recorded representative ligand atom {row["ligand_atom"]}, not a measured atom-pair occupancy')
-            parts.append(f'<path data-ligand-atom="{escape(row["ligand_atom"])}" data-residue="{escape(row["residue"])}" '
+            measure = "" if pose else f" {occupancy:.1%} residue occupancy"
+            title = escape(f'{row["residue"]} · {INTERACTIONS[kind][0]}{measure} · ligand atom {name}')
+            parts.append(f'<path data-ligand-atom="{escape(name)}" data-residue="{escape(row["residue"])}" '
                 f'd="M {atom[0]:.2f},{atom[1]:.2f} Q {control_x:.2f},{control_y:.2f} {end_x:.2f},{end_y:.2f}" '
                 f'stroke="{color}" stroke-width="{1.2 + 2.5 * occupancy:.2f}" stroke-dasharray="5 4" opacity="0.72" fill="none"><title>{title}</title></path>')
     if drawing:
@@ -207,14 +223,18 @@ def build_interaction_diagram(structural, *, ligand_smiles="", ligand_pdb="", li
         values = row["occupancies"]
         dominant = max(values, key=values.get)
         residue, separator, chain = row["residue"].partition(" · ")
-        atom_name = row["ligand_atom"] if row["ligand_atom"] in atom_positions else "unmapped"
-        title = escape(row["residue"] + ": " + "; ".join(f"{INTERACTIONS[kind][0]} {value:.1%}" for kind, value in values.items()))
+        mapped_names = sorted({ligand_atom(row, kind) for kind in values} & set(atom_positions))
+        atom_name = ", ".join(mapped_names) or "unmapped"
+        title = escape(row["residue"] + ": " + "; ".join(
+            INTERACTIONS[kind][0] if pose else f"{INTERACTIONS[kind][0]} {value:.1%}" for kind, value in values.items()
+        ))
+        measure = "" if pose else f"{max(values.values()):.1%}"
         parts.extend([f'<g><title>{title}</title><circle cx="{node_x:.2f}" cy="{node_y:.2f}" r="{radius}" fill="white" stroke="{INTERACTIONS[dominant][2]}" stroke-width="2"/>',
             f'<text x="{node_x:.2f}" y="{node_y - 18:.2f}" text-anchor="middle" font-size="14" font-weight="bold">{escape(residue[:17])}</text>',
             f'<text x="{node_x:.2f}" y="{node_y - 1:.2f}" text-anchor="middle" font-size="11" fill="#64748b">{escape(chain[:18] if separator else "Residue")}</text>',
-            f'<text x="{node_x:.2f}" y="{node_y + 16:.2f}" text-anchor="middle" font-size="14">{max(values.values()):.1%}</text>',
+            f'<text x="{node_x:.2f}" y="{node_y + 16:.2f}" text-anchor="middle" font-size="14">{measure}</text>',
             f'<text x="{node_x:.2f}" y="{node_y + 33:.2f}" text-anchor="middle" font-size="11">atom: {escape(atom_name[:16])}</text></g>'])
-    for atom_name in sorted({row["ligand_atom"] for row in selected} & set(atom_positions)):
+    for atom_name in sorted(atom_names & set(atom_positions)):
         atom_x, atom_y = atom_positions[atom_name]
         parts.append(f'<circle data-atom-name="{escape(atom_name)}" cx="{atom_x:.2f}" cy="{atom_y:.2f}" r="4" fill="none" stroke="#0f766e" stroke-width="1.5"/>')
     used_kinds = {kind for row in selected for kind in row["occupancies"]}
@@ -227,7 +247,8 @@ def build_interaction_diagram(structural, *, ligand_smiles="", ligand_pdb="", li
     atom_rows = tuple({"Residue": row["residue"], "Recorded representative ligand atom": row["ligand_atom"] or "not recorded",
         "Reported protein atom (separate statistic)": row["protein_atom"] or "not recorded",
         "Atom endpoint": "mapped" if row["ligand_atom"] in atom_positions else "unavailable / ambiguous",
-        **{INTERACTIONS[kind][0] + " residue occupancy (%)": 100 * value for kind, value in row["occupancies"].items()}}
+        **({INTERACTIONS[kind][0]: ligand_atom(row, kind) for kind in row["occupancies"]} if pose else
+           {INTERACTIONS[kind][0] + " residue occupancy (%)": 100 * value for kind, value in row["occupancies"].items()})}
         for row in selected)
     return InteractionDiagram("".join(parts), len(selected), eligible, drawing is not None, mapped, note, atom_rows)
 
@@ -241,14 +262,20 @@ def render_interaction_diagram(st, structural, *, ligand_smiles="", ligand_pdb="
     with st.expander("Interaction diagram options"):
         interaction = st.selectbox("Interaction type", ["all", *INTERACTIONS],
             format_func=lambda value: "All recorded types" if value == "all" else INTERACTIONS[value][0], key=key_prefix + "-interaction-kind")
-        threshold = st.slider("Minimum occupancy (%)", 0, 100, 10, key=key_prefix + "-interaction-threshold")
+        threshold = 0 if structural.get("input_type") == "pose" else st.slider(
+            "Minimum occupancy (%)", 0, 100, 10, key=key_prefix + "-interaction-threshold")
         limit = st.slider("Maximum residues shown", 4, 16, 12, key=key_prefix + "-interaction-limit")
     diagram = build_interaction_diagram(structural, ligand_smiles=ligand_smiles, ligand_pdb=ligand_pdb,
         ligand_label=ligand_label, interaction=interaction, minimum_occupancy=threshold / 100, residue_limit=limit, scope=scope)
     if not diagram.shown:
         st.info("No recorded interactions match these display settings. Lower the occupancy threshold or select another interaction type.")
         return
-    caption = (scope + ". Dashed lines end at each residue's recorded representative ligand atom (top_ligand_atom). "
+    if structural.get("input_type") == "pose":
+        caption = scope + ". Dashed lines link the residue to a measured ligand atom. The pair table identifies distance-only evidence."
+    elif structural.get("method_version"):
+        caption = scope + ". Each line ends at the most frequent ligand atom for that interaction type. The pair table lists occupancies for individual atom pairs."
+    else:
+        caption = (scope + ". Dashed lines end at each residue's recorded representative ligand atom (top_ligand_atom). "
         "Percentages are residue-level trajectory occupancies, not atom-pair occupancies. "
         "The archive does not identify the exact ligand atom for each hydrogen bond; these are representative atom associations, not proven atom-specific bonds.")
     st.caption(caption)

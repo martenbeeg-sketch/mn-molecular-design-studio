@@ -129,19 +129,28 @@ library. Imported studies retain their recorded source-study link for SQL
 attachment. A native run without a verified study link remains available in
 Results rather than being assigned to an inferred SQL molecule.
 
-Current executable calculations are backbone-fitted protein/ligand RMSD,
-population RMSF about the aligned selected-window mean (protein Cα and ligand
-heavy atoms), mass-weighted heavy-atom radius of gyration (protein, ligand,
-complex), minimum protein–ligand distances and geometric residue-contact
-occupancy. Each selected frame is processed in bounded chunks; RMSF accumulation
-uses memory proportional to atom count, not trajectory length. Units, selections,
-PBC policy, DCD timing, sampling window and exact input hashes are retained.
+MD Analysis streams the selected trajectory window and reports RMSD, RMSF,
+radius of gyration, and frame-by-frame protein–ligand interactions. It writes
+per-frame residue counts, per-residue occupancies, and an atom-pair CSV with
+protein and ligand atom names, frame counts, and occupancies. A residue is
+counted only once per class per frame, even if several of its atoms interact.
+Units, sampling, timing, imaging policy, and input hashes are retained.
 
-This is **not yet full MN-Ligand analysis parity**: hydrogen-bond classification,
-hydrophobic/water/salt-bridge calculations, DSSP, hypothesis-retention analysis,
-replica aggregation and new GB/PB endpoint calculations are not performed by this
-tile. Existing imported values remain source-attributed; geometric contacts are
-never labelled as hydrogen bonds. The visual pipeline must run where the
+In **Pipelines → Capabilities → Analysis & validation → Protein–ligand pose
+analysis**, **Native Ligand Interactions** applies the same interaction classes
+to one docked or cofolded pose. It is also available from **Analyze this pose**
+or **Analyze selected structure** in My results. Use an exact ligand selection
+when a structure has multiple ligands. Pose results show atom pairs and measured
+distances. With typed donor and acceptor sites but no hydrogen coordinates,
+hydrogen-bond and water-bridge candidates are marked as distance-only evidence.
+
+The classifier uses MN-Ligand's geometric rules for hydrophobic and salt-bridge
+contacts. MD hydrogen bonds and water bridges use bonded hydrogens with
+Wernet–Nilsson geometry. Waters contribute only when their coordinates are
+present. Salt bridges require ligand formal charges from the selected topology,
+a verified match to the linked study ligand, or an explicit atom-name charge
+map. The report records which method was available for each interaction class.
+The visual pipeline runs where the
 trajectory already resides; remote trajectory transfer or automatic relocation
 of the graph coordinator is not implemented. Standalone MD Analysis retains its
 existing authenticated owner-workstation submission route.

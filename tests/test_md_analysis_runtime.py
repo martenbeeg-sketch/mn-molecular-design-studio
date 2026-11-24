@@ -103,6 +103,11 @@ def test_streaming_analysis_writes_unit_labeled_outputs_and_exact_source_identit
     }
     assert summary["success"] is True
     assert summary["analysis_version"] == 2
+    interaction_report = json.loads((output_dir / "ligand_interactions.json").read_text())
+    assert interaction_report["analysis_window"]["analyzed_frames"] == 3
+    assert interaction_report["contacts"]["residues"][0]["contact_occupancy"] == pytest.approx(1.0)
+    assert interaction_report["contacts"]["residues"][0]["salt_bridge_occupancy"] is None
+    assert summary["artifacts"]["ligand_atom_pairs_csv"].endswith("ligand_atom_pairs.csv")
     with (output_dir / "rmsf.csv").open() as handle:
         rmsf = list(csv.DictReader(handle))
     assert len(rmsf) == 3

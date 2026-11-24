@@ -195,7 +195,7 @@ NODE_CATALOG = {
         field("source_run_dir", "Source MD job", "", kind="text", section="basic"),
         field("option_id", "Recorded production segment", "", kind="text", section="basic"),
         field("topology_relative_path", "Matching topology", "", kind="text", section="basic")]),
-    "md_analysis": _spec("md_analysis", "MD Analysis", "Analysis", "Run streamed protein-aligned RMSD, protein/ligand RMSF, radius of gyration and geometric residue-contact analysis. Outputs remain attached to the exact source study, trajectory and sampling window.", accepts=["md_trajectory"], output="md_analysis", workflow="ligand.md.analysis", formats=(), fields=[
+    "md_analysis": _spec("md_analysis", "MD Analysis", "Analysis", "Run streamed protein-aligned RMSD, protein/ligand RMSF, radius of gyration and classified ligand interactions. Outputs remain attached to the exact source study, trajectory and sampling window.", accepts=["md_trajectory"], output="md_analysis", workflow="ligand.md.analysis", formats=(), fields=[
         field("ligand_selection", "Ligand atom selection (MDTraj)", "resname LIG", kind="text", section="basic"),
         field("protein_selection", "Protein atom selection (MDTraj)", "protein", kind="text", section="basic"),
         field("stride", "Frame stride", 1, minimum=1, maximum=100000, section="basic"),
@@ -205,6 +205,8 @@ NODE_CATALOG = {
         field("pbc_mode", "Periodic-boundary handling", "auto", kind="select", options=["auto", "require", "none"]),
         field("dcd_frame_interval_ps", "DCD timing override: interval (ps)", "", kind="text"),
         field("dcd_first_time_ps", "DCD timing override: first frame (ps)", "", kind="text"),
+        field("ligand_formal_charges_json", "Ligand formal charges by atom name (optional JSON)", "", kind="text",
+              help='For known topology atom identities, enter e.g. {"N1": 1, "O2": -1}. Leave blank to use explicit topology charges.'),
         field("chunk_size", "Frames per chunk", 100, minimum=1, maximum=10000),
         field("cpu_cores", "CPU threads", 8, minimum=1, maximum=256)]),
     "results": _spec("results", "Results & comparison", "Results", "Collect candidate structures, measurements and linked analysis runs from connected branches.", accepts=["backbone", "sequence", "prediction", "candidates", "analysis", "md_analysis"], output=None, color="#5d7b6c"),
@@ -418,7 +420,7 @@ for _key, _profile in QUALITY_TOOLS.items():
     if _key == "foldseek":
         _fields.append(field("coverage", "Alignment coverage", .8, minimum=.01, maximum=1.))
     NODE_CATALOG[_key] = _spec(_key, _profile["name"], "Analysis", "Analyze one collection as a batch; retain all candidates and their per-item outcomes.",
-        accepts=["sequence", "prediction", "candidates"], output="prediction", workflow="analysis." + _key, fields=_fields, color="#9a7854")
+        accepts=["prediction", "candidates"] if _key == "native_ligand_interactions" else ["sequence", "prediction", "candidates"], output="prediction", workflow="analysis." + _key, fields=_fields, color="#9a7854")
 
 
 # These are the same public workflow parameters used by the standalone input

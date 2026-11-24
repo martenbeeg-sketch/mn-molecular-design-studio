@@ -7502,6 +7502,9 @@ def _render_job_details() -> None:
             from mn_molecular_design_studio.quality_ui import render_progress, render_contact_maps
             render_progress(run_dir, str(job.get("status") or ""), run_id)
             render_contact_maps(run_dir, run_id)
+            if analysis_tool == "native_ligand_interactions":
+                from mn_molecular_design_studio.quality_ui import render_native_ligand_poses
+                render_native_ligand_poses(run_dir, run_id)
         batch_rows = result.get("outputs", {}).get("batch_items")
         if isinstance(batch_rows, list):
             st.subheader("Selected inputs")

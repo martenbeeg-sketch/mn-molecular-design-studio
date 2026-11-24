@@ -2,12 +2,31 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path
 
 
+def parse_ligand_formal_charges(value):
+    """Validate a JSON object mapping exact topology atom names to charges."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            raise ValueError("Ligand formal charges must be a JSON object of atom names and integers.") from None
+    if not isinstance(value, dict) or any(not isinstance(name, str) or not name.strip()
+            or name != name.strip() or type(charge) is not int for name, charge in value.items()):
+        raise ValueError("Ligand formal charges must map exact atom names to integer charges.")
+    return value
+
+
 def validate_analysis_parameters(params):
     params = dict(params)
+    charges = parse_ligand_formal_charges(params.pop("ligand_formal_charges_json", None))
+    if charges is not None:
+        params["ligand_formal_charges"] = charges
     for field in ("end_ns", "dcd_frame_interval_ps", "dcd_first_time_ps"):
         try:
             if isinstance(params.get(field), bool):

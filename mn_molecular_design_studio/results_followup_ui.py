@@ -79,7 +79,7 @@ def _render_docking(job, selection, user, workflow_schema, submit):
     st.caption(f"Pose file: {pose['pose_relative_path']} · receptor: {Path(pose['receptor_path']).name}")
     st.caption(f"Source run: {job.get('run_id')} · {job.get('node_name') or 'This workstation'}")
     methods = {workflow: WORKFLOWS[workflow]["name"]
-               for workflow in ("analysis.plip", "analysis.pandamap", "analysis.posebusters")}
+               for workflow in ("analysis.native_ligand_interactions", "analysis.plip", "analysis.pandamap", "analysis.posebusters")}
     workflow = st.selectbox("Analysis method", list(methods), format_func=methods.get, key="followup-docking-method")
     if st.button("Queue pose analysis", type="primary", key="followup-docking-submit"):
         try:

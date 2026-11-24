@@ -214,6 +214,8 @@ def run_item(item, tool, settings, output):
             metrics = proteinsol(item, destination)
         elif tool == "pep_patch":
             metrics = pep_patch(item, settings, destination)
+        elif tool == "native_ligand_interactions":
+            metrics = native_ligand_interactions(item, destination)
         elif tool in {"plip", "pandamap", "posebusters"}:
             metrics = ligand_analysis(item, tool, destination)
         else:
@@ -225,6 +227,23 @@ def run_item(item, tool, settings, output):
         os.chdir(previous_directory)
     write_json(destination / "result.json", result)
     return result
+
+
+def native_ligand_interactions(item, destination):
+    if __package__:
+        from ..tools.ligand_interactions import PAIR_COLUMNS, classify_pose
+    else:
+        from ligand_interactions import PAIR_COLUMNS, classify_pose
+
+    occupancy, counts = classify_pose(item["receptor_file"], item["ligand_file"])
+    report = occupancy.report()
+    report.update(input_type="pose", ligand_smiles=item["smiles"], ligand_identity=item.get("ligand_identity"))
+    write_json(destination / "ligand_interactions.json", report)
+    with (destination / "ligand_atom_pairs.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, PAIR_COLUMNS)
+        writer.writeheader()
+        writer.writerows(occupancy.pair_rows())
+    return {"native_ligand_" + name: value for name, value in counts.items() if value is not None}
 
 
 def ligand_analysis(item, tool, destination):

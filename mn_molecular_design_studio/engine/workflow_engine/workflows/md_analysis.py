@@ -22,6 +22,7 @@ from mn_molecular_design_studio.engine.workflow_engine.runtime import runs_root
 
 
 _RUNTIME_SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "md_analysis.py"
+_INTERACTION_SCRIPT = _RUNTIME_SCRIPT.with_name("ligand_interactions.py")
 
 
 def _source_study(
@@ -125,8 +126,9 @@ def run_md_analysis(
     cpu_cores: int = 8,
     source_segments: list[dict[str, Any]] | None = None,
     expected_source_sha256: dict[str, str] | None = None,
+    ligand_formal_charges: dict[str, int] | None = None,
 ) -> Path:
-    """Run streamed, protein-aligned RMSD and geometric contact analysis.
+    """Run streamed trajectory dynamics and classified ligand interactions.
 
     The source topology and trajectory remain in the owning Results job and are
     mounted read-only for the duration of this analysis.  ``source_segments``
@@ -181,6 +183,9 @@ def run_md_analysis(
             or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
                 for value in expected_source_sha256.values())):
         raise ValueError("Expected MD source hashes must identify exactly the topology and trajectory SHA-256 values.")
+    from mn_molecular_design_studio.md_pipeline import parse_ligand_formal_charges
+
+    ligand_formal_charges = parse_ligand_formal_charges(ligand_formal_charges)
     source, topology, trajectory = _resolve_source_paths(source_run_dir, topology_path, trajectory_path)
     source_ref = source.relative_to(runs_root().expanduser().resolve()).as_posix()
     trajectory_rel = trajectory.relative_to(source).as_posix()
@@ -199,6 +204,7 @@ def run_md_analysis(
         "cpu_cores": cpu_cores,
         "source_segments": source_segments or [],
         "expected_source_sha256": expected_source_sha256,
+        "ligand_formal_charges": ligand_formal_charges,
     }
     inputs = {
         "source_run_dir": str(source),
@@ -212,8 +218,12 @@ def run_md_analysis(
     input_root.mkdir(parents=True, exist_ok=True)
     staged_runtime = input_root / "md_analysis.py"
     shutil.copy2(_RUNTIME_SCRIPT, staged_runtime)
+    shutil.copy2(_INTERACTION_SCRIPT, input_root / _INTERACTION_SCRIPT.name)
+    source_study = _source_study(source, source_segments or [], source_ref)
+    source_smiles = (source_study or {}).get("ligand_smiles") or (source_study or {}).get("identity_smiles") or ""
     config = {
         **params,
+        "source_ligand_smiles": source_smiles,
         "topology_path": f"/source/{topology_rel}",
         "trajectory_path": f"/source/{trajectory_rel}",
         "topology_source_path": str(topology),
@@ -247,7 +257,10 @@ def run_md_analysis(
             {"name": "analysis_summary", "type": "md_analysis_summary/v1", "path": "artifacts/md_analysis/summary.json"},
             {"name": "timeseries", "type": "md_analysis_timeseries_csv/v1", "path": "artifacts/md_analysis/timeseries.csv"},
             {"name": "residue_contacts", "type": "md_residue_contact_map_csv/v1", "path": "artifacts/md_analysis/residue_contacts.csv"},
+            {"name": "ligand_interactions", "type": "md_ligand_interactions_json/v1", "path": "artifacts/md_analysis/ligand_interactions.json"},
+            {"name": "ligand_atom_pairs", "type": "md_ligand_atom_pairs_csv/v1", "path": "artifacts/md_analysis/ligand_atom_pairs.csv"},
             {"name": "rmsf", "type": "md_rmsf_csv/v1", "path": "artifacts/md_analysis/rmsf.csv"},
+            {"name": "selected_ligand", "type": "md_selected_ligand_pdb/v1", "path": "artifacts/md_analysis/selected_ligand.pdb"},
             {"name": "representative_frame", "type": "md_representative_frame_pdb/v1", "path": "artifacts/md_analysis/representative_frame.pdb"},
         ],
         "structure_output": True,
@@ -265,9 +278,9 @@ def run_md_analysis(
     summary = read_json(summary_path) if summary_path.is_file() else {}
     success = bool(return_code == 0 and summary.get("schema_version") == 1 and summary.get("success") is True)
     summary["success"] = success
-    source_study = _source_study(source, source_segments or [], source_ref) if success else None
-    if source_study is not None:
+    if success and source_study is not None:
         summary["source_study_id"] = source_study["study_id"]
+        summary["ligand_smiles"] = source_smiles
         analysis_manifest = {
             "schema_version": 1,
             "studies": [source_study],
@@ -290,6 +303,10 @@ def run_md_analysis(
         "timeseries": "artifacts/md_analysis/timeseries.csv",
         "residue_contacts": "artifacts/md_analysis/residue_contacts.csv",
     }
+    for name, filename in (("ligand_interactions", "ligand_interactions.json"), ("ligand_atom_pairs", "ligand_atom_pairs.csv"),
+                           ("selected_ligand", "selected_ligand.pdb")):
+        if (artifact_root / filename).is_file():
+            expected_outputs[name] = "artifacts/md_analysis/" + filename
     if (artifact_root / "rmsf.csv").is_file():
         expected_outputs["rmsf"] = "artifacts/md_analysis/rmsf.csv"
     if (artifact_root / "representative_frame.pdb").is_file():

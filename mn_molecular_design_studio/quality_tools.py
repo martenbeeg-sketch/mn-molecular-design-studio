@@ -11,6 +11,10 @@ TOOLS = {
         "references": ["esm_models/esm1v_t33_650M_UR90S_" + str(i) + ".pt" for i in range(1, 6)], "metrics": ["esm1v_native_probability"]},
     "esmif_score": {"name": "ESM-IF1 Scoring", "image": "mn-esm-if1-opt:2.0.1-2b369911", "kind": "structure", "gpu": True,
         "references": ["esm_models/esm_if1_gvp4_t16_142M_UR50.pt"], "metrics": ["esmif_native_log_likelihood"]},
+    "native_ligand_interactions": {
+        "name": "Native Ligand Interactions", "image": "mn-md:cu128", "kind": "ligand",
+        "metrics": ["native_ligand_contact_residues"],
+    },
     "plip": {"name": "PLIP", "image": "mn-plip:latest", "kind": "ligand", "metrics": ["plip_interaction_count"]},
     "pandamap": {"name": "PandaMap", "image": "mn-pandamap:0007347", "kind": "ligand", "metrics": ["pandamap_interaction_count"]},
     "posebusters": {"name": "PoseBusters", "image": "mn-posebusters:1a5f26a", "kind": "ligand", "metrics": ["posebusters_passed_all"]},

@@ -17,6 +17,11 @@ from typing import Any, Iterable
 
 import numpy as np
 
+if __package__:
+    from .ligand_interactions import KINDS, PAIR_COLUMNS, trajectory_classifier
+else:  # The scheduler stages these two scripts together in the MD image.
+    from ligand_interactions import KINDS, PAIR_COLUMNS, trajectory_classifier
+
 
 _AKMA_PS = 0.04888821
 
@@ -277,6 +282,11 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
         if int(residue.index) in set(residue_indices.tolist())
     }
 
+    interactions = trajectory_classifier(
+        first.topology, topology_path, protein_heavy, ligand_heavy, _residue_label, cutoff,
+        formal_charge_override=config.get("ligand_formal_charges"), ligand_smiles=config.get("source_ligand_smiles"),
+    )
+
     output_dir.mkdir(parents=True, exist_ok=True)
     before_hashes = {}
     for name, path in (("topology", topology_path), ("trajectory", trajectory_path)):
@@ -310,6 +320,7 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
         "ligand_rmsd_angstrom", "protein_ligand_minimum_distance_angstrom",
         "geometric_residue_contacts",
         "protein_rg_angstrom", "ligand_rg_angstrom", "complex_rg_angstrom",
+        *(kind + "_residues" for kind in KINDS if kind != "contact"),
     ]
     frame_handle = frame_path.open("w", newline="", encoding="utf-8")
     frame_writer = csv.DictWriter(frame_handle, fieldnames=frame_headers)
@@ -425,6 +436,9 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
                 **{name + "_rg_angstrom": radius_of_gyration(aligned[indices], gyration_masses[name])
                     for name, indices in gyration_indices.items()},
             }
+            box = np.asarray(chunk.unitcell_vectors[frame_index]) * 10.0 if has_cell and pbc_mode != "none" else None
+            classified = interactions.update(interactions.classifier.frame(coordinates_angstrom, box=box))
+            row.update({key: value for key, value in classified.items() if key != "contact_residues"})
             frame_writer.writerow(row)
             backbone_rmsd_sum += protein_rmsd
             ligand_rmsd_sum += ligand_rmsd
@@ -482,6 +496,10 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
         })
     contact_path = output_dir / "residue_contacts.csv"
     _write_csv(contact_path, list(contact_rows[0].keys()) if contact_rows else [], contact_rows)
+    interaction_report = interactions.report()
+    interaction_report["analysis_window"].update(trajectory_stride=stride, start_ns=selected_start_ns, end_ns=selected_end_ns)
+    (output_dir / "ligand_interactions.json").write_text(json.dumps(interaction_report, indent=2), encoding="utf-8")
+    _write_csv(output_dir / "ligand_atom_pairs.csv", list(PAIR_COLUMNS), interactions.pair_rows())
     rmsf_values = fluctuations.rmsf()
     rmsf_rows = [{"selection": "protein_ca" if position < len(ca_indices) else "ligand_heavy",
         "atom_index": int(atom_index), "atom": first.topology.atom(int(atom_index)).name,
@@ -492,6 +510,16 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
 
     representative_path = output_dir / "representative_frame.pdb"
     representative_saved = False
+    ligand_block_saved = False
+    if first_selected is not None:
+        ligand_residues = {first.topology.atom(int(index)).residue.index for index in ligand_heavy}
+        if len(ligand_residues) == 1 and len(ligand_heavy) <= 300:
+            ligand_path = output_dir / "selected_ligand.pdb"
+            try:
+                first_selected.atom_slice(ligand_heavy).save_pdb(str(ligand_path))
+                ligand_block_saved = ligand_path.is_file()
+            except (OSError, ValueError) as exc:
+                pbc_notes.append(f"Ligand diagram coordinates could not be saved: {exc}")
     if first_selected is not None and atom_count <= int(config.get("representative_atom_limit", 250_000)):
         try:
             representative = first_selected
@@ -502,7 +530,7 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
     summary = {
         "schema_version": 1,
         "success": True,
-        "analysis": "protein-aligned RMSD, Cα/ligand RMSF, mass-weighted heavy-atom radius of gyration and geometric ligand-contact occupancy",
+        "analysis": "RMSD, RMSF, radius of gyration and classified protein–ligand interactions",
         "analysis_version": 2,
         "units": {
             "time": "ns", "distance": "angstrom", "rmsd": "angstrom",
@@ -534,6 +562,7 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
             "pbc_mode_requested": pbc_mode, "periodic_unit_cell_present": pbc_observed,
             "pbc_imaging_applied": pbc_applied,
         },
+        "ligand_interaction_methods": interaction_report["methods"],
         "contact_map_semantics": "Per-residue minimum distance among selected heavy atoms; occupancy is the fraction of selected frames with distance <= cutoff. This is a geometric contact measure, not a hydrogen-bond analysis.",
         "rmsf_semantics": "Population RMSF about the selected-window mean coordinates after backbone alignment to the first selected frame. Protein Cα and ligand heavy atoms only; one frame gives zero fluctuation, not evidence of stability.",
         "radius_of_gyration_semantics": "Mass-weighted heavy-atom radius of gyration, separately for the selected protein, ligand and combined complex.",
@@ -541,6 +570,9 @@ def analyze(config: dict[str, Any]) -> dict[str, Any]:
             "timeseries_csv": "artifacts/md_analysis/timeseries.csv",
             "residue_contacts_csv": "artifacts/md_analysis/residue_contacts.csv",
             "rmsf_csv": "artifacts/md_analysis/rmsf.csv",
+            "selected_ligand_pdb": "artifacts/md_analysis/selected_ligand.pdb" if ligand_block_saved else None,
+            "ligand_interactions_json": "artifacts/md_analysis/ligand_interactions.json",
+            "ligand_atom_pairs_csv": "artifacts/md_analysis/ligand_atom_pairs.csv",
             "representative_frame_pdb": "artifacts/md_analysis/representative_frame.pdb" if representative_saved else None,
         },
         "warnings": pbc_notes,

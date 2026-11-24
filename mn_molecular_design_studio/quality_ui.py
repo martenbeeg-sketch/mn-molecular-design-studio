@@ -32,6 +32,39 @@ def render_progress(run_dir, status, key):
     progress()
 
 
+def render_native_ligand_poses(run_dir, key, *, candidate_id=None):
+    from mn_molecular_design_studio.md_results_ui import render_classified_interactions
+
+    root = Path(run_dir)
+    batch = _read(root / "artifacts/analysis/batch_manifest.json")
+    paths = {}
+    for item in batch.get("items", []):
+        item_id = str(item.get("id") or "")
+        if not item_id.startswith("item_") or not item_id[5:].isdigit():
+            continue
+        if candidate_id is not None and str(item.get("candidate_id")) != str(candidate_id):
+            continue
+        path = root / "artifacts/analysis" / item_id / "ligand_interactions.json"
+        if path.is_file():
+            paths[item_id] = (str(item.get("candidate_id") or item_id), path)
+    if not paths:
+        return
+    item_id = next(iter(paths)) if len(paths) == 1 else st.selectbox(
+        "Analyzed pose", list(paths), format_func=lambda value: paths[value][0], key=key + "-native-ligand-pose")
+    _label, path = paths[item_id]
+    report = _read(path)
+    if report:
+        pair_path = path.with_name("ligand_atom_pairs.csv")
+        ligand_path = root / "artifacts/input" / item_id / "selected_ligand.pdb"
+        try:
+            pairs = pair_path.read_text(encoding="utf-8") if pair_path.is_file() else ""
+            ligand = ligand_path.read_text(encoding="utf-8") if ligand_path.is_file() else ""
+        except (OSError, UnicodeError):
+            pairs, ligand = "", ""
+        render_classified_interactions(st, report, pairs_csv=pairs, ligand_pdb=ligand,
+                                       key_prefix=f"{key}-native-ligand-{item_id}")
+
+
 def render_contact_maps(run_dir, key):
     import pandas as pd
     paths = sorted((Path(run_dir) / "artifacts/analysis").glob("item_*/contacts.json"))

@@ -28,6 +28,7 @@ _WORKFLOWS = {
     "analysis.plip",
     "analysis.pandamap",
     "analysis.posebusters",
+    "analysis.native_ligand_interactions",
     "analysis.reference_placement",
     "analysis.reference_environment",
     "analysis.tag_fusion_suitability",
@@ -43,7 +44,7 @@ _SELECTION_FIELDS = {
     "molecule_id", "structure_id", "group_id", "evaluation_id", "model_id",
     "binder_chains", "target_chains", "ligand_selection", "source_component_chain",
 }
-_LIGAND_WORKFLOWS = {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
+_LIGAND_WORKFLOWS = {"analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions"}
 
 
 def _string(value: Any, field: str) -> str:

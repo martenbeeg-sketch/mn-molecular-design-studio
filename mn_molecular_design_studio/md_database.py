@@ -555,6 +555,14 @@ def _ingest_study(root: Path, study: dict[str, Any], database: MolecularDatabase
                     context["contact_map_artifact_sha256"] = _summary_hash(contact_path)
                 except (OSError, ValueError):
                     context["contact_map_artifact_unavailable"] = True
+            context["ligand_interaction_methods"] = analysis.get("ligand_interaction_methods") or {}
+            for key in ("ligand_interactions_json", "ligand_atom_pairs_csv"):
+                if relative_artifact := artifacts.get(key):
+                    try:
+                        resolved_artifact = _safe_path(root, relative_artifact)
+                        context[key] = {"relative_path": relative_artifact, "sha256": _summary_hash(resolved_artifact)}
+                    except (OSError, ValueError):
+                        continue
             source_key = ":".join(("md-study", owner_id, current_run_id, study_id, identity_ok["group_id"], identity_ok["molecule_id"], analysis_id, "analysis-summary"))
             _write_observation(database, identity_ok, "md.analysis", current_run_id, source_key, metrics, context)
             report["observations"] += 1

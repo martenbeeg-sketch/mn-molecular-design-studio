@@ -332,7 +332,7 @@ def _database_analysis_projection(run_dir, metadata, inputs):
         if str(metadata.get("tool") or inputs.get("tool")) == "biotite_interface":
             valid = valid and sorted(item.get("binder_chains", binder)) == sorted(binder)
             valid = valid and sorted(item.get("target_chains", target)) == sorted(target)
-        if str(metadata.get("tool") or inputs.get("tool")) in {"plip", "pandamap", "posebusters"}:
+        if str(metadata.get("tool") or inputs.get("tool")) in {"plip", "pandamap", "posebusters", "native_ligand_interactions"}:
             valid = valid and item.get("ligand_selection") == selected.get("ligand_selection")
     outcome = next((row for row in _read_json(run_dir / "artifacts/analysis/batch_status.json").get("items") or []
                     if row.get("id") == item.get("id")), {}) if item else {}

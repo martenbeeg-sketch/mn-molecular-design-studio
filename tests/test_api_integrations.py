@@ -1037,7 +1037,7 @@ def test_tool_connection_map_through_rest_and_mcp(api_data):
             assert not response.is_error, response.content
             handoffs = response.structured_content["items"]
             assert {row["target"] for row in handoffs if row["source"] == "ligand.docking.vina"} == {
-                "analysis.plip", "analysis.pandamap", "analysis.posebusters",
+                "analysis.native_ligand_interactions", "analysis.plip", "analysis.pandamap", "analysis.posebusters",
             }
             assert any(row["source"] == "ligand.generation.lddm" and row["target"] == "ligand.docking.vina"
                        for row in handoffs)

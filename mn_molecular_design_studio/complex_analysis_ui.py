@@ -1008,7 +1008,7 @@ def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group
     from mn_molecular_design_studio.job_catalog import get_job_access_record, search_jobs
 
     tool = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
-            "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters"}.get(workflow_id)
+            "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.native_ligand_interactions": "native_ligand_interactions", "analysis.posebusters": "posebusters"}.get(workflow_id)
     if not tool:
         return []
     rows = _results_analysis_rows(user, tool, source_task_group, source_run_id)
@@ -1025,7 +1025,7 @@ def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group
         if (str(metadata.get("upstream_task_group") or "") != source_task_group
                 or str(metadata.get("upstream_run_id") or "") != source_run_id):
             continue
-        if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}:
+        if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions"}:
             manifest = _read_json(run_dir / "artifacts" / "analysis" / "batch_manifest.json")
             selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
             item = next((candidate for candidate in manifest.get("items", [])
@@ -1058,17 +1058,17 @@ def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group
         saved_model_id = str(item.get("model_id") or (selection.get("model_ids") or {}).get(candidate_id)
                              or saved_model_id or "")
         item_digest = (str(item.get("source_structure_digest") or "")
-                       if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
+                       if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions"}
                        else str(item.get("structure_digest") or ""))
         if (str(item.get("candidate_id") or "") != candidate_id
                 or item_digest != structure_digest
                 or saved_model_id != model_id
-                or (workflow_id not in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
+                or (workflow_id not in {"analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions"}
                     and sorted(map(str, item.get("binder_chains") or [])) != desired_binder)
-                or (workflow_id not in {"analysis.pep_patch", "analysis.plip", "analysis.pandamap", "analysis.posebusters"}
+                or (workflow_id not in {"analysis.pep_patch", "analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions"}
                     and sorted(map(str, item.get("target_chains") or [])) != desired_target)
                 or scientific_parameters(saved_parameters, workflow_id) != scientific_parameters(parameters, workflow_id)
-                or (workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
+                or (workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions"}
                     and ((selection.get("ligand_selections") or {}).get(candidate_id)
                          or selection.get("ligand_selection") or item.get("ligand_selection") or {})
                     != (ligand_selection or {}))):
@@ -1080,7 +1080,7 @@ def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group
                 assessment_protocol(workflow_id)):
             continue
         error = str(metadata.get("error") or "")
-        if workflow_id in {"analysis.pep_patch", "analysis.plip", "analysis.pandamap", "analysis.posebusters"} and status in {"completed", "succeeded"}:
+        if workflow_id in {"analysis.pep_patch", "analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions"} and status in {"completed", "succeeded"}:
             batch = _read_json(run_dir / "artifacts" / "analysis" / "batch_status.json")
             batch_item = next((candidate for candidate in batch.get("items", []) if candidate.get("id") == item.get("id")), {})
             item_status = str(batch_item.get("status") or "").casefold()
@@ -2133,6 +2133,7 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
              "analysis.rosetta": "Rosetta Interface Analysis",
              "analysis.pep_patch": "PEP-Patch", "analysis.plip": "PLIP interaction analysis",
              "analysis.pandamap": "PandaMap interaction analysis",
+             "analysis.native_ligand_interactions": "Native Ligand Interactions",
              "analysis.posebusters": "PoseBusters pose validation",
              "analysis.reference_placement": "Reference-frame placement",
              "analysis.reference_environment": "Reference-frame steric and environmental context",
@@ -2140,7 +2141,7 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
              "analysis.tag_fusion_context": "Reference-context Tag and Fusion Suitability",
              "analysis.sequence_liability": "Sequence and Developability Liabilities",
              "analysis.binder_interface_chemistry": "BinderScope-style Interface Surface & Chemistry"}.get(workflow_id, workflow_id)
-    ligand_workflow = workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
+    ligand_workflow = workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions"}
     if workflow_id in {"analysis.plip", "analysis.pandamap"}:
         st.caption("Interaction analysis · reports contacts and interaction classes for the selected ligand pose and receptor.")
     elif workflow_id == "analysis.posebusters":
@@ -2167,6 +2168,7 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                       "analysis.pep_patch": "qc_metrics.csv",
                       "analysis.plip": "qc_metrics.csv", "analysis.pandamap": "qc_metrics.csv",
                       "analysis.posebusters": "qc_metrics.csv",
+                      "analysis.native_ligand_interactions": "qc_metrics.csv",
                       "analysis.reference_placement": "reference_placement_metrics.csv",
                       "analysis.reference_environment": "reference_environment_metrics.csv",
                       "analysis.tag_fusion_suitability": "tag_fusion_suitability_metrics.csv",
@@ -2200,7 +2202,10 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                     continue
                 with st.expander(f"Residue patch output · {path.name}"):
                     st.dataframe(frame, hide_index=False, use_container_width=True)
-        if ligand_workflow and status in {"completed", "succeeded"}:
+        if workflow_id == "analysis.native_ligand_interactions" and status in {"completed", "succeeded"}:
+            from mn_molecular_design_studio.quality_ui import render_native_ligand_poses
+            render_native_ligand_poses(run_dir, key, candidate_id=source_candidate_id)
+        elif ligand_workflow and status in {"completed", "succeeded"}:
             item = evaluation.get("selected_item") or {}
             item_dir = run_dir / "artifacts" / "analysis" / str(item.get("id") or "")
             csv_name = "full_checks.csv" if workflow_id == "analysis.posebusters" else "interactions.csv"
@@ -2253,7 +2258,7 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                 with st.expander("Residue annotations, hydrogen-bond geometry, settings and assumptions", expanded=True):
                     st.json(result)
     evaluator = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
-                 "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters",
+                 "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.native_ligand_interactions": "native_ligand_interactions", "analysis.posebusters": "posebusters",
                  "analysis.reference_environment": "reference_environment",
                  "analysis.tag_fusion_suitability": "tag_fusion_suitability",
                  "analysis.tag_fusion_context": "tag_fusion_context",
@@ -2318,6 +2323,7 @@ def _render_contextual_workflow(user: dict, *, workflow_id: str, schema: dict | 
              "analysis.rosetta": "Rosetta Interface Analysis",
              "analysis.pep_patch": "PEP-Patch", "analysis.plip": "PLIP interaction analysis",
              "analysis.pandamap": "PandaMap interaction analysis",
+             "analysis.native_ligand_interactions": "Native Ligand Interactions",
              "analysis.posebusters": "PoseBusters pose validation"}.get(workflow_id, workflow_id)
     st.markdown(f"##### {title}")
     with st.container():
@@ -2370,7 +2376,7 @@ def _render_contextual_workflow(user: dict, *, workflow_id: str, schema: dict | 
                 "selected_structure_path": _analysis_structure_reference(job, selected, structure_path),
                 "selected_model_id": model_id,
             }
-            if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}:
+            if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions"}:
                 parameters["ligand_selection"] = dict(ligand_selection or {})
             elif is_pep_patch:
                 parameters["binder_chains"] = list(binder_chains)
@@ -2409,7 +2415,7 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
     tool = {"analysis.biotite_interface": "biotite_interface", "analysis.ipsae": "ipsae",
             "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
             "analysis.sequence_qc": "sequence_qc", "analysis.proteinsol": "proteinsol",
-            "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters",
+            "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.native_ligand_interactions": "native_ligand_interactions", "analysis.posebusters": "posebusters",
             "analysis.reference_placement": "reference_placement",
             "analysis.reference_environment": "reference_environment",
             "analysis.tag_fusion_suitability": "tag_fusion_suitability",
@@ -2443,7 +2449,7 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
                 or sorted(map(str, projection.get("binder_chains") or [])) != sorted(map(str, binder_chains))
                 or sorted(map(str, projection.get("target_chains") or [])) != sorted(map(str, target_chains))):
             continue
-        if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"} and projection.get("ligand_selection") != (ligand_selection or {}):
+        if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions"} and projection.get("ligand_selection") != (ligand_selection or {}):
             continue
         saved_parameters = scientific_parameters(projection.get("parameters") or {}, workflow_id)
         requested = scientific_parameters(parameters, workflow_id)
@@ -2738,7 +2744,7 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
     schemas = {}
     schema_errors = {}
     for workflow_id in ("analysis.rosetta", "analysis.ipsae", "analysis.pep_patch",
-                        "analysis.plip", "analysis.pandamap", "analysis.posebusters"):
+                        "analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions"):
         try:
             schemas[workflow_id] = workflow_schema(workflow_id) if workflow_schema else None
             if not schemas[workflow_id]:
@@ -2817,7 +2823,7 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
         elif not ligand_selection.get("smiles"):
             ligand_unavailable = ligand_unavailable or "The source does not preserve this ligand's isomeric SMILES identity. PLIP, PandaMap, and PoseBusters require a chemically matched ligand template; add a verified identity to the source record first."
         st.caption(f"Selected ligand: {ligand_selection.get('ccd') or 'SMILES-defined'} · {ligand_selection.get('residue_key') or 'residue identity unavailable'} · receptor model {model_id}")
-        for workflow_id in ("analysis.plip", "analysis.pandamap"):
+        for workflow_id in ("analysis.native_ligand_interactions", "analysis.plip", "analysis.pandamap"):
             _render_contextual_workflow(user, workflow_id=workflow_id, schema=schemas.get(workflow_id),
                 job=job, selected=selected, candidate=candidate, structure_path=path, model_id=model_id,
                 candidate_file=candidate_file, task_group=task_group, run_id=run_id, project_id=str(analysis_project or ""),
@@ -3478,7 +3484,7 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
     st.caption("Choose a registered analysis explicitly. Opening a Database structure does not start calculations.")
     schemas, schema_errors = {}, {}
     for workflow_id in ("analysis.biotite_interface", "analysis.rosetta", "analysis.ipsae", "analysis.pep_patch",
-                        "analysis.plip", "analysis.pandamap", "analysis.posebusters",
+                        "analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions",
                         "analysis.reference_environment", "analysis.tag_fusion_suitability", "analysis.tag_fusion_context",
                         "analysis.sequence_liability", "analysis.binder_interface_chemistry"):
         try:
@@ -3559,7 +3565,7 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
             unavailable = "The selected ligand has no stable source chain and residue identity."
         elif not ligand_selection.get("smiles"):
             unavailable = "The saved record does not preserve this ligand's isomeric SMILES identity. A verified source identity is required for topology matching."
-        for workflow_id in ("analysis.plip", "analysis.pandamap"):
+        for workflow_id in ("analysis.native_ligand_interactions", "analysis.plip", "analysis.pandamap"):
             _render_database_workflow(user, workflow_id, schemas.get(workflow_id), source, model_id, [], [], {},
                 key + "-" + workflow_id.rsplit(".", 1)[-1], submit, project_id,
                 schema_errors.get(workflow_id, "") or unavailable, structure_path=path,
@@ -3887,6 +3893,7 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
     title = {"analysis.biotite_interface": "Biotite Interface", "analysis.rosetta": "Rosetta Interface Analysis",
              "analysis.ipsae": "ipSAE & Structure Analysis", "analysis.pep_patch": "PEP-Patch",
              "analysis.plip": "PLIP interaction analysis", "analysis.pandamap": "PandaMap interaction analysis",
+             "analysis.native_ligand_interactions": "Native Ligand Interactions",
              "analysis.posebusters": "PoseBusters pose validation",
              "analysis.reference_placement": "Reference-frame placement",
              "analysis.reference_environment": "Reference-frame steric and environmental context",
@@ -3966,7 +3973,7 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
                        if workflow_id in {"analysis.reference_placement", "analysis.tag_fusion_context"} else {}),
                     **({"ligand_selection": dict(ligand_selection)} if ligand_selection else {}),
                 }, **({"ligand_selection": dict(ligand_selection)}
-                      if ligand_selection and workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"} else {})}, project_id,
+                      if ligand_selection and workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters", "analysis.native_ligand_interactions"} else {})}, project_id,
                 {"_execution": {"placement": "local", "reassessment_of": matches[0]["run_id"]}} if matches else {}, title)
             st.rerun()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:

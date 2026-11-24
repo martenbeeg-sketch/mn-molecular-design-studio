@@ -887,6 +887,20 @@ def render_md_analysis_setup(
     if pbc_mode == "auto":
         st.caption("If the source has a periodic cell but its topology cannot safely unwrap protein/ligand molecules, the workflow fails instead of silently analyzing broken coordinates.")
 
+    from mn_molecular_design_studio.md_pipeline import parse_ligand_formal_charges
+
+    charge_input_valid = True
+    with st.expander("Ligand interaction chemistry"):
+        charge_input = st.text_input(
+            "Formal charges by topology atom name (optional JSON)",
+            key=f"md-analysis-charges-{selected['option_id']}",
+            help='For known topology atom identities, enter e.g. {"N1": 1, "O2": -1}. Leave blank to use explicit topology charges.',
+        )
+        try:
+            charges = parse_ligand_formal_charges(charge_input)
+        except ValueError as exc:
+            st.error(str(exc))
+            charge_input_valid = False
     placement_ok = True
     settings: dict[str, Any] = {}
     try:
@@ -905,7 +919,7 @@ def render_md_analysis_setup(
     except (ImportError, OSError, ValueError):
         pass
 
-    disabled = not ligand_selection or not protein_selection or not project_id or not placement_ok
+    disabled = not ligand_selection or not protein_selection or not project_id or not placement_ok or not charge_input_valid
     if st.button("Run MD analysis", type="primary", disabled=disabled, key=f"md-analysis-run-{selected['option_id']}"):
         try:
             if is_remote:
@@ -918,6 +932,7 @@ def render_md_analysis_setup(
                 topology_parameter = _portable_source_path(topology_path, source_run_dir, row)
                 trajectory_parameter = _portable_source_path(trajectory_path, source_run_dir, row)
             parameters = {
+                **({"ligand_formal_charges": charges} if charges is not None else {}),
                 "source_run_dir": source_run_parameter,
                 "topology_path": topology_parameter,
                 "trajectory_path": trajectory_parameter,
