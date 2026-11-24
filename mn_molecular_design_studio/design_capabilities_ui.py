@@ -11,6 +11,7 @@ from mn_molecular_design_studio.binder_pipeline import (
 from mn_molecular_design_studio.design_capabilities import ACCESS, catalogue, small_molecule_catalogue
 
 
+_PROTEIN_DESIGN_CATEGORY = "Protein design"
 _PREDICTION_CATEGORY = "Structure prediction & cofolding"
 _SMALL_MOLECULE_CATEGORY = "Small-molecule design"
 _PREDICTION_ENGINES = frozenset({
@@ -78,7 +79,7 @@ _matrix = st.components.v2.component(
 )
 
 
-def _matrix_markup(by_engine, columns, access, *, action_column=False):
+def _matrix_markup(by_engine, columns, access, *, action_column=False, primary_access="pipeline"):
     labels = ["Studio access"] if action_column else columns.values()
     headers = "".join(f'<th scope="col">{escape(label)}</th>' for label in labels)
     table = [f'<table><thead><tr><th scope="col">Engine / checkpoint</th>{headers}</tr></thead><tbody>']
@@ -90,7 +91,7 @@ def _matrix_markup(by_engine, columns, access, *, action_column=False):
                 table.append("<td>—</td>")
                 continue
             title = f"{access[level]} · {engine} · {label}"
-            style = ' data-pipeline="true"' if level == "pipeline" else ""
+            style = ' data-pipeline="true"' if level == primary_access else ""
             table.append(
                 f'<td><button type="button" data-engine="{escape(engine)}" data-output="{escape(code)}"'
                 f' aria-label="{escape(title)}"{style}>{escape(access[level])}</button></td>'
@@ -191,8 +192,9 @@ def render_capabilities(key, open_binder, open_step):
     from mn_molecular_design_studio.tool_connections import editor_tool_catalog
 
     st.subheader("Capabilities")
-    category = st.selectbox("Capability", ["Design", _SMALL_MOLECULE_CATEGORY, *_OPERATION_CATEGORIES], key=key + "-capability")
-    if category == "Design":
+    category = st.selectbox("Capability", [_PROTEIN_DESIGN_CATEGORY, _SMALL_MOLECULE_CATEGORY, *_OPERATION_CATEGORIES],
+                            key=key + "-capability")
+    if category == _PROTEIN_DESIGN_CATEGORY:
         render_design_tasks(key, open_binder)
         return
     if category == _SMALL_MOLECULE_CATEGORY:
@@ -242,7 +244,7 @@ def _render_small_molecule_design(key, open_step):
     modes = data["modes"]
     engines = {row["engine"]: row for row in data["items"]}
     matrix = {name: {mode: {"canvas"} for mode in row["modes"]} for name, row in engines.items()}
-    choice = _matrix(data=_matrix_markup(matrix, modes, ACCESS), key=key + "-small-molecule-modes",
+    choice = _matrix(data=_matrix_markup(matrix, modes, ACCESS, primary_access="canvas"), key=key + "-small-molecule-modes",
                      on_choose_change=lambda: None).get("choose")
     if not choice:
         return

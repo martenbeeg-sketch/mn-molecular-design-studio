@@ -67,6 +67,7 @@ def test_small_molecule_modes_open_the_matching_pipeline_draft(monkeypatch, engi
         for omtra_mode in ("pocket", "reference_ligand", "pharmacophore"):
             assert f'data-engine="OMTRA" data-output="{omtra_mode}"' in data
         assert 'aria-label="Pipeline Builder · LDDM' in data
+        assert data.count('data-pipeline="true"') == data.count('type="button"') > 0
         return {"choose": [engine, mode]}
 
     monkeypatch.setattr(design_capabilities_ui, "_matrix", click_mode)
@@ -79,6 +80,7 @@ if 'cap-graph' not in st.session_state:
 """)
     app.session_state["cap-capability"] = "Small-molecule design"
     app.run()
+    assert app.selectbox(key="cap-capability").options[0] == "Protein design"
     app.button(key="cap-open-ligand-mode").click().run()
     assert not app.exception
     draft = app.session_state["cap-graph"]
