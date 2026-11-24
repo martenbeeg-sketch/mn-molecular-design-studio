@@ -123,24 +123,31 @@ def test_rfd4_modular_presets_connect_only_the_requested_stages(refolder):
         new_binder_pipeline("rfd4-generator", **arguments, refold_engine=refolder)
 
 
-def test_capability_cell_opens_rfd4_preset_controls():
+@pytest.mark.parametrize("prefix", [None, "project-editor"])
+def test_capability_cell_opens_rfd4_preset_controls(monkeypatch, prefix):
     from streamlit.testing.v1 import AppTest
-    from mn_molecular_design_studio.design_capabilities import catalogue
+    from mn_molecular_design_studio import design_capabilities_ui
+
+    def click_cell(**kwargs):
+        assert 'aria-label="Build pipeline · RFD4-Proteina · Miniprotein"' in kwargs["data"]
+        return {"choose": ["RFD4-Proteina", "miniprotein"]}
+
+    monkeypatch.setattr(design_capabilities_ui, "_matrix", click_cell)
 
     app = AppTest.from_string("""
 import streamlit as st
 from mn_molecular_design_studio.design_capabilities_ui import render
-from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline
-preset = render("cap")
-if preset:
-    st.json([node["data"]["kind"] for node in new_binder_pipeline(**preset)["nodes"]])
+from mn_molecular_design_studio.pipeline_graph_ui import open_binder_preset
+prefix = st.session_state["test-prefix"]
+pending = st.session_state.get("pipeline-pending-draft", {})
+graph = st.session_state.get(f"{prefix}-graph") or pending.get("graph")
+if graph:
+    st.json([node["data"]["kind"] for node in graph["nodes"]])
+else:
+    render("cap", lambda preset: open_binder_preset(preset, prefix=prefix))
 """)
     app.session_state["cap-target"] = "multidomain"
-    items = catalogue(target_input="multidomain")["items"]
-    engines = sorted({item["engine"] for item in items}, key=str.casefold)
-    app.session_state["cap-matrix-Protein binders-multidomain"] = {
-        "selection": {"cells": [[engines.index("RFD4-Proteina"), "Miniprotein"]]}
-    }
+    app.session_state["test-prefix"] = prefix
     app.run()
     key = "cap-multidomain-RFD4-Proteina-miniprotein"
     selector = app.selectbox(key=key + "-variant")
@@ -152,6 +159,11 @@ if preset:
     app.button(key=key + "-create").click().run()
     assert not app.exception
     assert json.loads(app.json[0].value) == ["target", "rfd4", "rf3", "ipsae", "candidate_merge", "shared_filter", "results"]
+    if prefix is None:
+        assert app.session_state["page"] == "Pipelines"
+        assert app.session_state["pipeline-pending-draft"]["project_id"] is None
+    else:
+        assert app.session_state[f"{prefix}-view"] == "editor"
 
 
 def test_route_compatibility_and_branch_preserve_existing_target():

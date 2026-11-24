@@ -1,13 +1,86 @@
 """Studio's browsable design capability matrix."""
 from __future__ import annotations
 
-import pandas as pd
+from html import escape
+
 import streamlit as st
 
 from mn_molecular_design_studio.binder_pipeline import (
     RFD4_MODULAR_ROUTES, RFD4_REFOLD_ENGINES, compatible_routes,
 )
 from mn_molecular_design_studio.design_capabilities import catalogue
+
+
+_matrix = st.components.v2.component(
+    "studio_design_capabilities",
+    html='<div class="matrix" role="region" aria-label="Design capability matrix" tabindex="0"></div>',
+    css="""
+        .matrix {
+            overflow: auto;
+            border: 1px solid var(--st-border-color, #ddd);
+            border-radius: .5rem;
+        }
+        table { border-spacing: 0; width: 100%; font-size: .875rem; }
+        th, td {
+            border-bottom: 1px solid var(--st-border-color, #ddd);
+            padding: .45rem .65rem;
+            text-align: left;
+        }
+        thead th { min-width: 8rem; }
+        th:first-child {
+            position: sticky;
+            left: 0;
+            min-width: 9rem;
+            background: var(--st-background-color, white);
+        }
+        tbody tr:last-child > * { border-bottom: 0; }
+        button {
+            font: inherit;
+            color: inherit;
+            text-align: left;
+            background: transparent;
+            border: 1px solid var(--st-border-color, #999);
+            border-radius: .4rem;
+            padding: .32rem .5rem;
+            cursor: pointer;
+        }
+        button[data-pipeline] { color: #14543e; background: #e7f5ee; border-color: #8bb8a4; }
+        button:hover, button:focus-visible { outline: 2px solid var(--st-primary-color, #267356); }
+    """,
+    js="""
+        export default function({ data, parentElement, setTriggerValue }) {
+            const matrix = parentElement.querySelector('.matrix');
+            if (matrix.markup !== data) {
+                matrix.innerHTML = data;
+                matrix.markup = data;
+            }
+            matrix.onclick = (event) => {
+                const button = event.target.closest('button');
+                if (button) setTriggerValue('choose', [button.dataset.engine, button.dataset.output]);
+            };
+        }
+    """,
+)
+
+
+def _matrix_markup(by_engine, columns, access):
+    headers = "".join(f'<th scope="col">{escape(label)}</th>' for label in columns.values())
+    table = [f'<table><thead><tr><th scope="col">Engine / checkpoint</th>{headers}</tr></thead><tbody>']
+    for engine, cells in sorted(by_engine.items(), key=lambda entry: entry[0].casefold()):
+        table.append(f'<tr><th scope="row">{escape(engine)}</th>')
+        for code, label in columns.items():
+            level = next((level for level in access if level in cells.get(code, ())), None)
+            if level is None:
+                table.append("<td>—</td>")
+                continue
+            title = f"{access[level]} · {engine} · {label}"
+            style = ' data-pipeline="true"' if level == "pipeline" else ""
+            table.append(
+                f'<td><button type="button" data-engine="{escape(engine)}" data-output="{escape(code)}"'
+                f' aria-label="{escape(title)}"{style}>{escape(access[level])}</button></td>'
+            )
+        table.append("</tr>")
+    return "".join([*table, "</tbody></table>"])
 
 
 def render_binder_preset(key, routes, *, button_label="Open pipeline draft"):
@@ -30,7 +103,7 @@ def render_binder_preset(key, routes, *, button_label="Open pipeline draft"):
     return None
 
 
-def render(key):
+def render(key, open_pipeline):
     data = catalogue()
     st.subheader("Design capabilities")
     group = st.segmented_control("Design task group", ["Protein binders", "Other design tasks"],
@@ -47,54 +120,38 @@ def render(key):
         st.info("No documented design workflows for this target input.")
         return
     access = data["access"]
-    st.markdown(
-        "Select a **Build pipeline** cell to open its preset. "
-        "**Add canvas step** means the tool is in the canvas library."
-    )
+    st.caption("Choose Build pipeline to configure a workflow.")
     by_engine = {}
     for row in rows:
         cells = by_engine.setdefault(row["engine"], {})
         available = cells.setdefault(row["output"], set())
         available.add(row["access"])
-    matrix = pd.DataFrame(
-        [{"Engine / checkpoint": engine, **{
-            label: next((access[level] for level in access if level in cells.get(code, ())), "—")
-            for code, label in columns.items()}}
-         for engine, cells in sorted(by_engine.items(), key=lambda entry: entry[0].casefold())]
-    )
-    cell_styles = {access[level]: "color: #176044; background-color: #e7f5ee" for level in ("pipeline", "canvas")}
-    styled = matrix.style.map(lambda value: cell_styles.get(value, ""), subset=list(columns.values()))
-    selection = st.dataframe(
-        styled, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-cell",
-        key=f"{key}-matrix-{group}-{selected}",
-        column_config={"Engine / checkpoint": st.column_config.TextColumn(pinned=True)},
-    ).selection.cells
-    output = None
-    if selection:
-        row_index, column = selection[0]
-        engine = matrix.iloc[row_index]["Engine / checkpoint"]
-        output = next((code for code, label in columns.items() if label == column), None)
-    else:
-        engine = st.selectbox("Engine details", list(matrix["Engine / checkpoint"]),
-                              index=None, placeholder="Choose an engine", key=f"{key}-{group}-{selected}-details")
-    if engine:
-        selected_rows = [row for row in rows if row["engine"] == engine]
-        if output is None:
-            outputs = list(dict.fromkeys(row["output"] for row in selected_rows))
-            output = (st.selectbox("Format or task", outputs, format_func=columns.get, key=f"{key}-output-{engine}")
-                      if len(outputs) > 1 else outputs[0])
-        selected_rows = [row for row in selected_rows if row["output"] == output]
-        if not selected_rows:
-            st.caption("Choose a supported cell.")
-            return None
+    choice = _matrix(
+        data=_matrix_markup(by_engine, columns, access), key=f"{key}-matrix-{group}-{selected}",
+        on_choose_change=lambda: None,
+    ).get("choose")
+    if not choice:
+        return
+    engine, output = choice
+    selected_rows = [row for row in rows if row["engine"] == engine and row["output"] == output]
+    if not selected_rows:
+        return
+
+    @st.dialog(f"{engine} · {columns[output]}")
+    def details():
         target_inputs = list(dict.fromkeys(row["target_input"] for row in selected_rows if row["access"] == "pipeline"))
         if target_inputs:
-            st.markdown(f"**{engine} · {columns[output]}**")
             target_input = (st.selectbox("Target context", target_inputs, format_func=data["target_inputs"].get,
                                          key=f"{key}-{engine}-{output}-context")
                             if len(target_inputs) > 1 else target_inputs[0])
             routes = [route for route in compatible_routes(target_input, output) if route.engine == engine]
-            return render_binder_preset(f"{key}-{target_input}-{engine}-{output}", routes)
+            preset = render_binder_preset(f"{key}-{target_input}-{engine}-{output}", routes)
+            if preset:
+                try:
+                    open_pipeline(preset)
+                except ValueError as exc:
+                    st.error(str(exc))
+            return
         for row in selected_rows:
             condition = data["target_inputs"].get(row["target_input"], "")
             st.markdown(" · ".join(filter(None, [f"**{columns[row['output']]}**", condition, access[row["access"]]])))
@@ -104,3 +161,5 @@ def render(key):
                 from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
 
                 st.caption(f"Add **{NODE_CATALOG[row['canvas_node']]['label']}** from the canvas tool library.")
+
+    details()

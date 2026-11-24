@@ -717,6 +717,20 @@ def _activate_graph(prefix, graph, revision=None):
     _close_node_editor(prefix)
 
 
+def open_binder_preset(preset, *, prefix=None):
+    from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline
+
+    graph = new_binder_pipeline(**preset)
+    if prefix is None:
+        st.session_state.pop(_TEMPLATE_VIEW_PREFIX + "-open", None)
+        st.session_state["pipeline-pending-draft"] = {"project_id": None, "graph": graph}
+        st.session_state.setdefault("project-pending-selection", {})["visual-pipeline-project-id"] = ""
+        st.session_state["page"] = "Pipelines"
+    else:
+        _activate_graph(prefix, graph)
+    st.rerun()
+
+
 def _binder_picker(key, *, connected_target=None):
     from mn_molecular_design_studio.binder_pipeline import (
         FORMATS, MULTIDOMAIN_TARGET, STRUCTURE_TARGET_INPUTS, TARGET_INPUTS, compatible_routes, legacy_sequence_carrier,
@@ -1358,17 +1372,7 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
         if section == "Capabilities":
             from mn_molecular_design_studio.design_capabilities_ui import render
 
-            preset = render(prefix + "-design-capabilities")
-            if preset:
-                from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline
-
-                try:
-                    graph = new_binder_pipeline(**preset)
-                except ValueError as exc:
-                    st.error(str(exc))
-                else:
-                    _activate_graph(prefix, graph)
-                    st.rerun()
+            render(prefix + "-design-capabilities", lambda preset: open_binder_preset(preset, prefix=prefix))
             return
         if section == "Runs":
             _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs)
