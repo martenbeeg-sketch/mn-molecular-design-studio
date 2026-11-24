@@ -176,7 +176,7 @@ NODE_CATALOG = {
     ], color="#477e9b", formats=("cif",)),
     "af2": _spec("af2", "AlphaFold2 Initial Guess", "Structure prediction", "Initialize from a saved target–binder complex to check pose self-consistency. The Target only mode uses the target template and binder sequence without initializing binder coordinates.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.af2_initial_guess", fields=[field("num_recycles", "Recycles", 3, minimum=1, maximum=30)], color="#477e9b"),
     "esmfold": _spec("esmfold", "ESMFold · binder alone", "Structure prediction", "Predict each designed binder without the target.", accepts=["sequence", "prediction"], output="prediction", workflow="refolding.esmfold_monomer", fields=[], color="#477e9b"),
-    "filter": _spec("filter", "Filter candidates", "Analysis", "Apply typed metric thresholds and ranking while retaining every decision for Results.", accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", color="#9a7854", fields=[
+    "filter": _spec("filter", "Filter candidates", "Analysis", "Set your own cutoffs on scores from earlier steps. Use the Pass, Fail, and Unresolved outputs to route candidates. Unresolved includes cases where a decision requires a missing measurement.", accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", color="#9a7854", fields=[
         field("passing_only", "Require an explicit native filter pass", False, kind="boolean"), field("metric", "Threshold measurement", "", kind="text"), field("operator", "Comparison", ">=", kind="select", options=[">=", "<=", ">", "<", "between"]), field("threshold", "Threshold (only used with a measurement)", 0.7), field("threshold_max", "Upper bound (for between)", 1.0), field("rule_logic", "Combine criteria", "all", kind="select", options=["all", "any"]), field("limit", "Shortlist per comparable protocol (0 = all)", 0, minimum=0, maximum=100000), field("higher_is_better", "Higher scores rank first", True, kind="boolean"),
         field("required_metrics", "Required finite measurements", [], kind="json"),
         field("rules", "Additional threshold rules", [], kind="json", help='List of {"field": "...", "operator": ">=", "value": ...}. All rules must pass.'),
@@ -793,14 +793,14 @@ for _engine, _metadata in inverse_folding_input.ENGINES.items():
 
 # Generic collection sockets use the existing normalized-candidate transport.
 NODE_CATALOG.update({
-    "candidate_merge": _spec("candidate_merge", "Candidate collection", "Collection", "Merge native outputs without replacing sequences or deleting scientific histories.",
+    "candidate_merge": _spec("candidate_merge", "Candidate collection", "Collection", "Combine candidate lists from several branches for the same target. The combined list records where each design came from.",
         accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", fields=[
             field("deduplication", "Sequence deduplication", "mark_duplicates", kind="select", options=["keep_all", "mark_duplicates"], section="basic"),
             field("data_handler", "Candidate data handler", "studio", kind="select", options=["studio", "chaperone"], section="advanced",
                   help="Optionally roundtrip merged rows through Chaperone's native PipelineDataHandler while preserving each full Studio candidate as the authoritative sidecar." ),
             field("chaperone_filter_expression", "Auxiliary Chaperone metric expression", "", kind="text", section="advanced",
                   help="Optional Chaperone FilterBlock expression. Its pass/fail status is recorded as auxiliary evidence; it does not change Studio acceptance or remove rows." )]),
-    "shared_filter": _spec("shared_filter", "Shared scientific filters", "Collection", "Keep every decision; route sequence-ready, eligible variants to prediction.",
+    "shared_filter": _spec("shared_filter", "Shared scientific filters", "Collection", "Apply a binder acceptance profile to the output of Candidate collection. The profile can use binder format, target type, and existing measurements. Eligible designs can continue to the next prediction step.",
         accepts=["candidates", "sequence", "prediction"], output="sequence", fields=[
             field("binder_format", "Binder format", "auto", kind="select", options=["auto", "miniprotein", "large_protein", "peptide", "cyclic_peptide", "vhh", "scfv", "fab", "arp", "other"], section="basic",
                   help="Auto follows the connected generator task (RFD4 protein_binder → miniprotein; nanobody → VHH). Generic antibody tasks remain ambiguous and need an explicit format."),
@@ -812,10 +812,10 @@ NODE_CATALOG.update({
             field("informational_scores", "Informational measurements (no rejection gate)", [], kind="json", section="basic"),
             field("ranking_metric", "Optional acceptance ranking field", "", kind="text", section="basic"),
             field("exclude_native_rejected", "Exclude native-rejected designs from independent prediction", True, kind="boolean", section="basic")]),
-    "candidate_analyzer": _spec("candidate_analyzer", "Unified candidate analyzer", "Collection", "Join independent predictor evidence to exact sequence variants, with explicit missing measurements.",
+    "candidate_analyzer": _spec("candidate_analyzer", "Unified candidate analyzer", "Collection", "Connect the candidate list and its prediction or analysis branches. Each design variant gets its own set of measurements, with missing results marked for review.",
         accepts=["candidates", "sequence", "prediction"], output="candidates", fields=[
             field("calculate_self_consistency", "Calculate target-aligned binder pose RMSD when a reference exists", False, kind="boolean", section="basic")]),
-    "candidate_rank": _spec("candidate_rank", "Ranking and diversity", "Collection", "Rank declared measurements within comparable protocols; retain unselected and unresolved records.",
+    "candidate_rank": _spec("candidate_rank", "Ranking and diversity", "Collection", "Rank eligible candidates using scores from comparable protocols. Set a shortlist size and optionally select one representative per exact sequence. All decisions are recorded.",
         accepts=["candidates"], output="candidates", fields=[
             field("rules", "Scientific threshold rules", [], kind="json", section="basic"),
             field("ranking_rules", "Ordered ranking measurements", [], kind="json", section="basic"),

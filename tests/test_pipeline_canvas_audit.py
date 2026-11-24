@@ -129,6 +129,12 @@ render_capabilities('cap', lambda _: None, lambda *args, **options: None)
     app.selectbox(key="cap-analysis-task").set_value("MD trajectory analysis").run()
     assert 'data-engine="md_analysis"' in app.text[0].value
     assert "radius of gyration" in app.text[0].value
+    app.selectbox(key="cap-analysis-task").set_value("Combine, filter & rank candidates").run()
+    assert re.findall(r'data-engine="([^"]+)"', app.text[0].value) == [
+        "candidate_merge", "candidate_analyzer", "filter", "shared_filter", "candidate_rank",
+    ]
+    assert "Pass, Fail, or Unresolved" in app.text[0].value
+    assert "binder acceptance profile" in app.text[0].value
     assert not app.exception
 
 

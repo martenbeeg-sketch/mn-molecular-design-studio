@@ -17,6 +17,7 @@ _SMALL_MOLECULE_CATEGORY = "Small-molecule design"
 _SAMPLING_CATEGORY = "Conformational sampling"
 _DOCKING_CATEGORY = "Docking & affinity"
 _ANALYSIS_CATEGORY = "Analysis & validation"
+_CANDIDATE_SELECTION_TASK = "Combine, filter & rank candidates"
 _BOLTZ_AFFINITY_LABEL = "Boltz-2 affinity"
 _PREDICTION_ENGINES = frozenset({
     "af2", "af3", "boltz2", "rf3", "rfd4_fold", "prediction_chai1", "prediction_colabfold",
@@ -67,12 +68,12 @@ _ANALYSIS_TASKS = {
     "MD trajectory analysis": {
         "md_analysis": "Measure RMSD, RMSF, radius of gyration, and contacts over a trajectory",
     },
-    "Candidate collection & selection": {
-        "candidate_merge": "Bring candidate outputs together across branches",
-        "candidate_analyzer": "Join measurements for the same sequence variant",
-        "filter": "Filter candidates using selected metrics and thresholds",
-        "shared_filter": "Apply a shared set of scientific filters",
-        "candidate_rank": "Rank and select candidates using comparable measurements",
+    _CANDIDATE_SELECTION_TASK: {
+        "candidate_merge": "Combine design lists for the same target and keep each design's source.",
+        "candidate_analyzer": "Put predictions and measurements for the same design variant side by side.",
+        "filter": "Use your own cutoffs to route designs to Pass, Fail, or Unresolved.",
+        "shared_filter": "Apply a binder acceptance profile to a combined list and record each decision.",
+        "candidate_rank": "Shortlist eligible designs within comparable scoring protocols. Optionally keep one per exact sequence.",
     },
 }
 
@@ -263,6 +264,7 @@ def render_capabilities(key, open_binder, open_step):
         operations["boltz2"] = {**catalog["boltz2"], "label": _BOLTZ_AFFINITY_LABEL}
     table_key = f"{key}-operations-{category}"
     uses = {}
+    task = None
     if category == _ANALYSIS_CATEGORY:
         tasks = {label: descriptions for label, descriptions in _ANALYSIS_TASKS.items()
                  if operations.keys() & descriptions.keys()}
@@ -273,9 +275,14 @@ def render_capabilities(key, open_binder, open_step):
         uses = tasks[task]
         operations = {kind: spec for kind, spec in operations.items() if kind in uses}
         table_key += f"-{task}"
+        if task == _CANDIDATE_SELECTION_TASK:
+            st.caption("Connect design or analysis results from earlier in the pipeline. These steps work with the candidates and scores those steps produced.")
     table = ["<table><thead><tr><th scope='col'>Tool or step</th>"
              "<th scope='col'>Pipeline</th></tr></thead><tbody>"]
-    for kind, spec in sorted(operations.items(), key=lambda item: item[1]["label"].casefold()):
+    order = ([kind for kind in uses if kind in operations] if task == _CANDIDATE_SELECTION_TASK
+             else sorted(operations, key=lambda kind: operations[kind]["label"].casefold()))
+    for kind in order:
+        spec = operations[kind]
         label = escape(spec["label"])
         purpose = f'<small class="operation-use">{escape(uses[kind])}</small>' if uses.get(kind) else ""
         table.append(f'<tr><th scope="row">{label}{purpose}</th>'
