@@ -720,7 +720,18 @@ def _activate_graph(prefix, graph, revision=None):
 def open_binder_preset(preset, *, prefix=None):
     from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline
 
-    graph = new_binder_pipeline(**preset)
+    _open_capability_graph(new_binder_pipeline(**preset), prefix)
+
+
+def _open_capability_step(kind, prefix):
+    from mn_molecular_design_studio.pipeline_blocks import add_block, blank_program
+
+    graph, _ = add_block(blank_program(), kind)
+    graph["name"] = NODE_CATALOG[kind]["label"]
+    _open_capability_graph(graph, prefix)
+
+
+def _open_capability_graph(graph, prefix):
     if prefix is None:
         st.session_state.pop(_TEMPLATE_VIEW_PREFIX + "-open", None)
         st.session_state["pipeline-pending-draft"] = {"project_id": None, "graph": graph}
@@ -1370,9 +1381,11 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
         if notice := st.session_state.pop(prefix + "-library-notice", None):
             st.success(notice)
         if section == "Capabilities":
-            from mn_molecular_design_studio.design_capabilities_ui import render
+            from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
 
-            render(prefix + "-design-capabilities", lambda preset: open_binder_preset(preset, prefix=prefix))
+            render_capabilities(prefix + "-design-capabilities",
+                                lambda preset: open_binder_preset(preset, prefix=prefix),
+                                lambda kind: _open_capability_step(kind, prefix))
             return
         if section == "Runs":
             _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs)

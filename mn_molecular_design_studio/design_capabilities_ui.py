@@ -1,4 +1,4 @@
-"""Studio's browsable design capability matrix."""
+"""Browse design tasks and registered canvas operations by capability."""
 from __future__ import annotations
 
 from html import escape
@@ -11,9 +11,18 @@ from mn_molecular_design_studio.binder_pipeline import (
 from mn_molecular_design_studio.design_capabilities import catalogue
 
 
+_OPERATION_CATEGORIES = {
+    "Structure prediction & cofolding": {"Structure prediction", "Cofolding input"},
+    "Docking & affinity": {"Docking"},
+    "Molecular dynamics": {"Molecular dynamics"},
+    "Library preparation": {"Ligand library"},
+    "Analysis & validation": {"Analysis", "Antibody analysis", "Collection"},
+}
+
+
 _matrix = st.components.v2.component(
     "studio_design_capabilities",
-    html='<div class="matrix" role="region" aria-label="Design capability matrix" tabindex="0"></div>',
+    html='<div class="matrix" role="region" aria-label="Capability table" tabindex="0"></div>',
     css="""
         .matrix {
             overflow: auto;
@@ -104,26 +113,23 @@ def render_binder_preset(key, routes, *, button_label="Open pipeline draft"):
     return None
 
 
-def render(key, open_pipeline):
+def render_design_tasks(key, open_pipeline):
     data = catalogue()
-    st.subheader("Design capabilities")
-    group = st.segmented_control("Design task group", ["Protein binders", "Other design tasks"],
-                                 default="Protein binders", key=key + "-group")
-    other_tasks = group == "Other design tasks"
+    available_outputs = {row["output"] for row in data["items"]}
+    tasks = {"protein_binders": "Protein binders", **{
+        code: label for code, label in data["other_tasks"].items() if code in available_outputs
+    }}
+    task = st.selectbox("Design task", list(tasks), format_func=tasks.get, key=key + "-task")
+    other_tasks = task != "protein_binders"
     if other_tasks:
-        available_outputs = {row["output"] for row in data["items"]}
-        tasks = {code: label for code, label in data["other_tasks"].items() if code in available_outputs}
-        if not tasks:
-            st.info("No other design tasks are available.")
-            return
-        selected = st.selectbox("Design task", list(tasks), format_func=tasks.get, key=key + "-task")
-        columns = {selected: tasks[selected]}
+        columns = {task: tasks[task]}
+        target = "all"
     else:
         columns = data["binder_formats"]
         targets = {"all": "All target inputs", **data["target_inputs"]}
-        selected = st.selectbox("Target input", list(targets), index=1, format_func=targets.get, key=key + "-target")
+        target = st.selectbox("Target input", list(targets), index=1, format_func=targets.get, key=key + "-target")
     rows = [row for row in data["items"] if row["output"] in columns
-            and (other_tasks or selected == "all" or row["target_input"] == selected)]
+            and (target == "all" or row["target_input"] == target)]
     if not rows:
         st.info("No documented design workflows for this target input.")
         return
@@ -136,7 +142,7 @@ def render(key, open_pipeline):
         available = cells.setdefault(row["output"], set())
         available.add(row["access"])
     choice = _matrix(
-        data=_matrix_markup(by_engine, columns, access, action_column=other_tasks), key=f"{key}-matrix-{group}-{selected}",
+        data=_matrix_markup(by_engine, columns, access, action_column=other_tasks), key=f"{key}-matrix-{task}-{target}",
         on_choose_change=lambda: None,
     ).get("choose")
     if not choice:
@@ -170,5 +176,45 @@ def render(key, open_pipeline):
                 from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
 
                 st.caption(f"Add **{NODE_CATALOG[row['canvas_node']]['label']}** from the canvas tool library.")
+
+    details()
+
+
+def render_capabilities(key, open_binder, open_step):
+    from mn_molecular_design_studio.tool_connections import editor_tool_catalog
+
+    st.subheader("Capabilities")
+    category = st.selectbox("Capability", ["Design", *_OPERATION_CATEGORIES], key=key + "-capability")
+    if category == "Design":
+        render_design_tasks(key, open_binder)
+        return
+
+    operations = {kind: spec for kind, spec in editor_tool_catalog().items()
+                  if spec["category"] in _OPERATION_CATEGORIES[category] and not spec.get("hidden")}
+    table = ["<table><thead><tr><th scope='col'>Tool or step</th><th scope='col'>Inputs</th>"
+             "<th scope='col'>Outputs</th><th scope='col'>Pipeline</th></tr></thead><tbody>"]
+    for kind, spec in sorted(operations.items(), key=lambda item: item[1]["label"].casefold()):
+        label = escape(spec["label"])
+        inputs = escape(", ".join(port["label"] for port in spec["inputs"]) or "—")
+        outputs = escape(", ".join(port["label"] for port in spec["outputs"]) or "—")
+        table.append(f'<tr><th scope="row">{label}</th><td>{inputs}</td><td>{outputs}</td>'
+                     f'<td><button type="button" data-engine="{escape(kind)}" '
+                     f'aria-label="Set up {label}">Set up</button></td></tr>')
+    choice = _matrix(data="".join([*table, "</tbody></table>"]), key=f"{key}-operations-{category}",
+                     on_choose_change=lambda: None).get("choose")
+    if not choice or choice[0] not in operations:
+        return
+
+    kind = choice[0]
+    spec = operations[kind]
+
+    @st.dialog(spec["label"])
+    def details():
+        st.write(spec["palette"]["description"])
+        if st.button("Open pipeline draft", type="primary", key=f"{key}-open-operation-{kind}"):
+            try:
+                open_step(kind)
+            except ValueError as exc:
+                st.error(str(exc))
 
     details()

@@ -136,7 +136,7 @@ def test_capability_cell_opens_rfd4_preset_controls(monkeypatch, prefix):
 
     app = AppTest.from_string("""
 import streamlit as st
-from mn_molecular_design_studio.design_capabilities_ui import render
+from mn_molecular_design_studio.design_capabilities_ui import render_design_tasks
 from mn_molecular_design_studio.pipeline_graph_ui import open_binder_preset
 prefix = st.session_state["test-prefix"]
 pending = st.session_state.get("pipeline-pending-draft", {})
@@ -144,7 +144,7 @@ graph = st.session_state.get(f"{prefix}-graph") or pending.get("graph")
 if graph:
     st.json([node["data"]["kind"] for node in graph["nodes"]])
 else:
-    render("cap", lambda preset: open_binder_preset(preset, prefix=prefix))
+    render_design_tasks("cap", lambda preset: open_binder_preset(preset, prefix=prefix))
 """)
     app.session_state["cap-target"] = "multidomain"
     app.session_state["test-prefix"] = prefix
@@ -178,10 +178,10 @@ def test_other_design_tasks_show_only_engines_for_the_selected_task(monkeypatch)
 
     monkeypatch.setattr(design_capabilities_ui, "_matrix", render_table)
     app = AppTest.from_string("""
-from mn_molecular_design_studio.design_capabilities_ui import render
-render("cap", lambda _: None)
+from mn_molecular_design_studio.design_capabilities_ui import render_design_tasks
+render_design_tasks("cap", lambda _: None)
 """).run()
-    app.button_group(key="cap-group").set_value("Other design tasks").run()
+    assert app.selectbox(key="cap-task").value == "protein_binders"
     app.selectbox(key="cap-task").set_value("ligand_design").run()
     assert not app.exception
     assert 'data-engine="conDitar" data-output="ligand_design"' in app.text[0].value
