@@ -6,9 +6,13 @@ from html import escape
 import streamlit as st
 
 from mn_molecular_design_studio.binder_pipeline import (
-    RFD4_MODULAR_ROUTES, RFD4_REFOLD_ENGINES, compatible_routes,
+    RFD4_MODULAR_ROUTES, RFD4_REFOLD_ENGINES, compatible_routes, new_binder_pipeline,
+)
+from mn_molecular_design_studio.capability_pipeline import (
+    DOCKING, MD_ENGINES, POSE_ANALYSES, SAVED_DESIGN_REFOLDERS, add_followup, build_capability_graph, followup_choices, source_choices,
 )
 from mn_molecular_design_studio.design_capabilities import ACCESS, catalogue, small_molecule_catalogue
+from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
 
 
 _PROTEIN_DESIGN_CATEGORY = "Protein design"
@@ -68,7 +72,7 @@ _ANALYSIS_TASKS = {
         "tile_detection_surf2spot": "Predict binding-site hotspots on a protein surface",
     },
     "MD trajectory analysis": {
-        "md_analysis": "Measure motion and classify protein–ligand interactions across trajectory frames",
+        "md_analysis": "Measure motion, radius of gyration, and protein–ligand interactions across trajectory frames",
     },
     _CANDIDATE_SELECTION_TASK: {
         "candidate_merge": "Combine design lists for the same target and keep each design's source.",
@@ -154,8 +158,8 @@ def _matrix_markup(by_engine, columns, access, *, action_column=False, primary_a
     return "".join([*table, "</tbody></table>"])
 
 
-def render_binder_preset(key, routes, *, button_label="Open pipeline draft"):
-    route = (st.selectbox("Workflow variant", routes, format_func=lambda item: item.variant, key=key + "-variant")
+def _binder_options(key, routes, *, label="Workflow variant"):
+    route = (st.selectbox(label, routes, format_func=lambda item: item.variant, key=key + "-variant")
              if len(routes) > 1 else routes[0])
     st.caption(route.summary)
     options = {}
@@ -169,9 +173,12 @@ def render_binder_preset(key, routes, *, button_label="Open pipeline draft"):
         )
     if route.id in {"rfd4-internal", "rfd4-external"}:
         options["interface_analysis"] = st.checkbox("Add ipSAE & Structure Analysis", key=key + "-analysis")
-    if st.button(button_label, type="primary", key=key + "-create"):
-        return {"route_id": route.id, "target_input": route.target_input, "binder_format": route.format, **options}
-    return None
+    return {"route_id": route.id, "target_input": route.target_input, "binder_format": route.format, **options}
+
+
+def render_binder_preset(key, routes, *, button_label="Open pipeline draft"):
+    preset = _binder_options(key, routes)
+    return preset if st.button(button_label, type="primary", key=key + "-create") else None
 
 
 def render_design_tasks(key, open_pipeline):
@@ -214,48 +221,54 @@ def render_design_tasks(key, open_pipeline):
     if not selected_rows:
         return
 
-    @st.dialog(f"{engine} · {columns[output]}")
+    @st.dialog(f"{engine} · {columns[output]}", width="large")
     def details():
-        target_inputs = list(dict.fromkeys(row["target_input"] for row in selected_rows if row["access"] == "pipeline"))
-        if target_inputs:
-            target_input = (st.selectbox("Target context", target_inputs, format_func=data["target_inputs"].get,
-                                         key=f"{key}-{engine}-{output}-context")
-                            if len(target_inputs) > 1 else target_inputs[0])
-            routes = [route for route in compatible_routes(target_input, output) if route.engine == engine]
-            preset = render_binder_preset(f"{key}-{target_input}-{engine}-{output}", routes)
-            if preset:
-                try:
-                    open_pipeline(preset)
-                except ValueError as exc:
-                    st.error(str(exc))
-            return
-        for row in selected_rows:
-            condition = data["target_inputs"].get(row["target_input"], "")
-            st.markdown(" · ".join(filter(None, [f"**{columns[row['output']]}**", condition, access[row["access"]]])))
-            if row["note"]:
-                st.caption(row["note"] + (f" [Project reference]({row['reference']})" if row["reference"] else ""))
-            if row["access"] == "canvas":
-                from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
+        try:
+            target_inputs = list(dict.fromkeys(row["target_input"] for row in selected_rows if row["access"] == "pipeline"))
+            if target_inputs:
+                target_input = (st.selectbox("Target context", target_inputs, format_func=data["target_inputs"].get,
+                                             key=f"{key}-{engine}-{output}-context")
+                                if len(target_inputs) > 1 else target_inputs[0])
+                routes = [route for route in compatible_routes(target_input, output) if route.engine == engine]
+                setup_key = f"{key}-{target_input}-{engine}-{output}"
+                preset = _binder_options(setup_key, routes, label="Workflow goal")
+                graph = new_binder_pipeline(**preset)
+                optional = tuple(kind for flag, kind in (("soluble_mpnn", "ligandmpnn"), ("interface_analysis", "ipsae"))
+                                 if preset.get(flag))
+                kinds = {node["data"]["kind"] for node in graph["nodes"]}
+                finish = (
+                    "After the run, use the recorded acceptance stage in My results to collect passing designs."
+                    if kinds & {"shared_filter", "bindcraft2", "tile_design_bindcraft"}
+                    else ""
+                )
+                _render_plan(graph, setup_key, open_pipeline, optional=optional, finish=finish)
+                return
 
-                st.caption(f"Add **{NODE_CATALOG[row['canvas_node']]['label']}** from the Pipeline Builder tool library.")
+            for row in selected_rows:
+                if row["access"] == "canvas":
+                    _operation_setup(row["canvas_node"], f"{key}-{engine}-{output}", open_pipeline, design_task=output)
+                    return
+                st.write(row["note"] or access[row["access"]])
+        except ValueError as exc:
+            st.error(str(exc))
 
     details()
 
 
-def render_capabilities(key, open_binder, open_step):
+def render_capabilities(key, open_pipeline, *, database_user=None, project_id=None):
     from mn_molecular_design_studio.tool_connections import editor_tool_catalog
 
     st.subheader("Capabilities")
     category = st.selectbox("Capability", [_PROTEIN_DESIGN_CATEGORY, _SMALL_MOLECULE_CATEGORY, *_OPERATION_CATEGORIES],
                             key=key + "-capability")
     if category == _PROTEIN_DESIGN_CATEGORY:
-        render_design_tasks(key, open_binder)
+        render_design_tasks(key, open_pipeline)
         return
     if category == _SMALL_MOLECULE_CATEGORY:
-        _render_small_molecule_design(key, open_step)
+        _render_small_molecule_design(key, open_pipeline)
         return
     if category == _SAMPLING_CATEGORY:
-        _render_bioemu2_modes(key, open_step)
+        _render_bioemu2_modes(key, open_pipeline)
         return
 
     catalog = editor_tool_catalog()
@@ -301,31 +314,19 @@ def render_capabilities(key, open_binder, open_step):
     kind = choice[0]
     spec = operations[kind]
 
-    @st.dialog(spec["label"])
+    @st.dialog(spec["label"], width="large")
     def details():
-        affinity = category == _DOCKING_CATEGORY and kind == "boltz2"
-        if affinity:
-            st.write("Predict a protein–ligand complex and its binding affinity with Boltz-2. "
-                     "Enter one small molecule or choose a compound collection to score compounds individually.")
-            mode = "protein_ligand"
-        else:
-            st.write(spec["palette"]["description"])
-            mode = _prediction_input(kind, key) if category == _PREDICTION_CATEGORY else None
-        with st.expander("Pipeline inputs and outputs"):
-            for direction in ("inputs", "outputs"):
-                if ports := spec[direction]:
-                    st.markdown(f"**{direction.title()}**")
-                    st.write(", ".join(port["label"] for port in ports))
-        if st.button("Open in Pipeline Builder", type="primary", key=f"{key}-open-operation-{kind}"):
-            try:
-                open_step(kind, prediction_mode=mode, predict_affinity=affinity)
-            except ValueError as exc:
-                st.error(str(exc))
+        try:
+            affinity = category == _DOCKING_CATEGORY and kind == "boltz2"
+            _operation_setup(kind, f"{table_key}-{kind}", open_pipeline, prediction=category == _PREDICTION_CATEGORY,
+                             predict_affinity=affinity, database_user=database_user, project_id=project_id)
+        except (ValueError, OSError) as exc:
+            st.error(str(exc))
 
     details()
 
 
-def _render_small_molecule_design(key, open_step):
+def _render_small_molecule_design(key, open_pipeline):
     from mn_molecular_design_studio.tool_connections import editor_tool_catalog
 
     data = small_molecule_catalogue()
@@ -342,19 +343,17 @@ def _render_small_molecule_design(key, open_step):
         return
     operation = row["operation"]
 
-    @st.dialog(f"{engine} · {modes[mode]}")
+    @st.dialog(f"{engine} · {modes[mode]}", width="large")
     def details():
-        st.write(editor_tool_catalog()[operation]["palette"]["description"])
-        if st.button("Open in Pipeline Builder", type="primary", key=key + "-open-ligand-mode"):
-            try:
-                open_step(operation, ligand_design_mode=mode)
-            except ValueError as exc:
-                st.error(str(exc))
+        try:
+            _operation_setup(operation, f"{key}-{operation}-{mode}", open_pipeline, ligand_design_mode=mode)
+        except ValueError as exc:
+            st.error(str(exc))
 
     details()
 
 
-def _render_bioemu2_modes(key, open_step):
+def _render_bioemu2_modes(key, open_pipeline):
     from mn_molecular_design_studio.engine.workflow_engine.workflows.bioemu2 import BIOEMU2_MODES
 
     modes = {mode: label for mode, (label, _) in BIOEMU2_MODES.items()}
@@ -365,21 +364,179 @@ def _render_bioemu2_modes(key, open_step):
         return
     mode = choice[1]
 
-    @st.dialog(f"BioEmu-2 · {modes[mode]}")
+    @st.dialog(f"BioEmu-2 · {modes[mode]}", width="large")
     def details():
-        st.write(BIOEMU2_MODES[mode][1])
-        use_project_designs = False
-        if mode == "propagate":
-            source = st.selectbox("Starting structures", ["Upload structures", "Existing project designs"],
-                                  key=key + "-bioemu2-source")
-            use_project_designs = source == "Existing project designs"
-        if st.button("Open in Pipeline Builder", type="primary", key=key + "-open-bioemu2-mode"):
-            try:
-                open_step("tile_bioemu2", bioemu2_mode=mode, use_project_designs=use_project_designs)
-            except ValueError as exc:
-                st.error(str(exc))
+        try:
+            st.write(BIOEMU2_MODES[mode][1])
+            _operation_setup("tile_bioemu2", f"{key}-bioemu2-{mode}", open_pipeline, bioemu2_mode=mode)
+        except ValueError as exc:
+            st.error(str(exc))
 
     details()
+
+
+def _operation_setup(kind, key, open_pipeline, *, prediction=False, predict_affinity=False,
+                     ligand_design_mode="", bioemu2_mode=None, design_task="", database_user=None, project_id=None):
+    spec = NODE_CATALOG[kind]
+    if not bioemu2_mode:
+        st.caption(spec["description"])
+    from_saved = False
+    if prediction and kind in SAVED_DESIGN_REFOLDERS - {"af2"}:
+        from_saved = st.radio("Starting input", ["New molecular inputs", "Saved designs"],
+                              horizontal=True, key=key + "-prediction-source") == "Saved designs"
+    mode = "protein_ligand" if predict_affinity else _prediction_input(kind, key) if prediction and not from_saved else None
+    source = ""
+    prepare = False
+    sources = source_choices(kind, database_available=bool(database_user and project_id)) if not mode else {}
+    if kind == "tile_bioemu2" and bioemu2_mode == "propagate":
+        sources = {"": "Upload structures", "project_design_source": "Completed design job"}
+    if kind == "tile_tmol":
+        sources = {"": "Upload structures", **sources}
+    if len(sources) > 1:
+        source = st.selectbox("Start from", list(sources), format_func=sources.get, key=key + "-source")
+    elif sources:
+        source, label = next(iter(sources.items()))
+        st.caption(f"Starting input · {label}")
+    prepare_source = _database_source(database_user, project_id, key) if source == "molecule_source" else None
+    if kind in MD_ENGINES:
+        prepare = st.radio("Starting complex", ("prepared", "unprepared"),
+                           format_func={"prepared": "I have a prepared complex", "unprepared": "Prepare a complex first"}.get,
+                           horizontal=True, key=key + "-prepare") == "unprepared"
+        st.caption("Choose the ligand file and its identifier in the simulation step.")
+    if kind == "tile_library_centroids":
+        prepare = st.radio("Starting library", ("prepared", "unprepared"),
+                           format_func={"prepared": "Use prepared fingerprints", "unprepared": "Prepare fingerprints first"}.get,
+                           horizontal=True, key=key + "-prepare") == "unprepared"
+    if kind in (*DOCKING, "tile_affinity_nesso"):
+        st.caption("Select the compounds in the tool step. The Target step supplies the receptor.")
+    if kind == "tile_binderscope":
+        st.caption("Choose native campaigns in the tool step. For designs saved in the database, use Analyze designs in Data Browser.")
+    if kind == "ipsae":
+        st.caption("Select results with matching PAE and structure files.")
+
+    graph = build_capability_graph(kind, prediction_mode=mode, predict_affinity=predict_affinity,
+                                   ligand_design_mode=ligand_design_mode, bioemu2_mode=bioemu2_mode,
+                                   source=source, prepare=prepare, design_task=design_task)
+    added = []
+    if kind == "tile_complex_prepare":
+        optional = _choose_step(graph, "Run a simulation", MD_ENGINES, key + "-simulation")
+        if optional:
+            graph = add_followup(graph, optional, handoff=True)
+            added.append(optional)
+    if kind in MD_ENGINES or any(step in MD_ENGINES for step in added):
+        optional = _choose_step(graph, "Analyze the trajectory", ("md_analysis",), key + "-trajectory")
+        if optional:
+            graph = add_followup(graph, optional)
+            added.append(optional)
+    if kind == "tile_prepare_library":
+        optional = _choose_step(graph, "Create centroids from the prepared library", ("tile_library_centroids",), key + "-centroids")
+        if optional:
+            graph = add_followup(graph, optional)
+            added.append(optional)
+    if mode == "protein_ligand":
+        for task, methods in (("Check pose geometry", ("posebusters",)),
+                              ("Map ligand contacts", POSE_ANALYSES[:-1])):
+            optional = _choose_step(graph, task, methods, key + "-" + methods[0])
+            if optional:
+                graph = add_followup(graph, optional)
+                added.append(optional)
+    if mode in {"protein", "protein_protein"}:
+        methods = ("sequence_qc", "proteinsol") if mode == "protein" else ("biotite_interface",)
+        task = "Analyze sequence properties" if mode == "protein" else "Measure interface contacts"
+        optional = _choose_step(graph, task, methods, key + "-analysis")
+        if optional:
+            graph = add_followup(graph, optional)
+            added.append(optional)
+    if ligand_design_mode:
+        target = next((node["id"] for node in graph["nodes"] if node["data"]["kind"] == "target"), None)
+        if target:
+            optional = _choose_step(graph, "Dock the generated compounds", DOCKING, key + "-dock")
+            if optional:
+                graph = add_followup(graph, optional, target_id=target)
+                added.append(optional)
+    if design_task == "new_fold" and kind != "rfd4":
+        goals = {"backbones": "Generate backbones", "sequences": "Generate backbones and design sequences",
+                 "structures": "Generate, design sequences, and predict structures"}
+        goal = st.selectbox("Workflow goal", list(goals), format_func=goals.get, key=key + "-goal")
+        if goal != "backbones":
+            choices = followup_choices(graph, ("ligandmpnn", "esm_if1"))
+            sequence = st.selectbox("Sequence design engine", choices,
+                                    format_func=lambda method: "ProteinMPNN" if method == "ligandmpnn"
+                                    else NODE_CATALOG[method]["label"], key=key + "-sequence-engine")
+            graph = add_followup(graph, sequence, handoff=True)
+        if goal == "structures":
+            choices = followup_choices(graph, ("esmfold", "boltz2", "prediction_openfold3_ob0"))
+            refold = st.selectbox("Refolding engine", choices, format_func=lambda method: NODE_CATALOG[method]["label"],
+                                  key=key + "-refold-engine")
+            graph = add_followup(graph, refold, handoff=True)
+
+    finish = ("To analyze saved docking poses, open the completed run in My results and select the poses."
+              if kind in DOCKING or any(step in DOCKING for step in added) else "")
+    if kind in {"shared_filter", "tile_validation_acceptance"}:
+        finish = "After the run, use the recorded acceptance stage in My results to collect passing designs."
+    _render_plan(graph, key, open_pipeline, optional=added, finish=finish, prepare_source=prepare_source,
+                 ready=source != "molecule_source" or prepare_source is not None)
+
+
+def _database_source(user, project_id, key):
+    from mn_molecular_design_studio.database_selections import freeze_protein_selection
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    query = st.text_input("Find saved entries by name", placeholder="Enter at least two characters",
+                          key=key + "-database-query").strip()
+    if len(query) < 2:
+        return None
+    database = MolecularDatabase()
+    page = database.list_molecules(user, project_id=project_id, query=query, limit=100)
+    choices = {row["id"]: row["name"] for row in page["items"]
+               if any(item["type"] == "protein" and item.get("sequence") for item in row["components"])}
+    if not choices:
+        st.info("No entries with protein sequences match this search.")
+        return None
+    if len(page["items"]) == 100:
+        st.caption("Showing the first 100 matches. Refine the search to find more specific entries.")
+    selected = st.multiselect("Saved entries", choices, format_func=choices.get, key=key + "-database-selection")
+    if not selected:
+        return None
+
+    def prepare(graph):
+        source = next(node for node in graph["nodes"] if node["data"]["kind"] == "molecule_source")
+        snapshot = freeze_protein_selection(database, user, selected, project_id)
+        source["data"]["params"]["source_run_dir"] = str(snapshot)
+
+    return prepare
+
+
+def _choose_step(graph, task, methods, key):
+    methods = followup_choices(graph, methods)
+    if not methods or not st.checkbox(task, key=key):
+        return None
+    if len(methods) == 1:
+        st.caption(NODE_CATALOG[methods[0]]["label"])
+        return methods[0]
+    return st.selectbox(task + " engine", methods, format_func=lambda kind: NODE_CATALOG[kind]["label"],
+                        key=key + "-method")
+
+
+def _render_plan(graph, key, open_pipeline, *, optional=(), finish="", prepare_source=None, ready=True):
+    from mn_molecular_design_studio.pipeline_blocks import program
+
+    plan = program(graph)
+    graph_kinds = {node["id"]: node["data"]["kind"] for node in graph["nodes"]}
+    st.markdown("**Steps to build**")
+    for stage in plan["stages"]:
+        for identifier in stage:
+            step = plan["blocks"][identifier]
+            role = "Optional · selected" if graph_kinds[identifier] in optional else "Required"
+            upstream = (" · From " + ", ".join(step["sources"])) if step["sources"] else ""
+            st.write(f"**{step['label']}** · {role}{upstream}")
+    if finish:
+        st.caption(finish)
+    st.caption("Set the inputs on the canvas after creating the pipeline.")
+    if st.button("Create pipeline", type="primary", key=key + "-create-pipeline", disabled=not ready):
+        if prepare_source:
+            prepare_source(graph)
+        open_pipeline(graph)
 
 
 def _prediction_input(kind, key):
@@ -388,10 +545,4 @@ def _prediction_input(kind, key):
     modes = {mode: label for mode, label in PREDICTION_MODES.items() if kind in prediction_methods(mode)}
     if not modes:
         return None
-    options = {**modes, "upstream": "Upstream pipeline step"}
-    selected = st.selectbox("Start from", list(options), format_func=options.get,
-                            key=f"{key}-prediction-input-{kind}")
-    if selected == "upstream":
-        return None
-    st.caption("Enter sequences and any partner molecules in the Molecular inputs block on the canvas.")
-    return selected
+    return st.selectbox("Prediction goal", list(modes), format_func=modes.get, key=key + "-molecular-mode")

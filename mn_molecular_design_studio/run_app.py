@@ -4216,7 +4216,7 @@ def _render_pipelines() -> None:
         project_selector=lambda key: _render_project_selector(key, include_archived=True),
         save_project_selector=lambda key: _render_project_selector(key, allow_create=False),
         submit_api=_post_local_api, search_jobs=search_jobs, read_only_projects=read_only,
-        can_edit_templates=can_edit_shared_templates(CURRENT_USER),
+        can_edit_templates=can_edit_shared_templates(CURRENT_USER), database_user=CURRENT_USER,
         search_cluster_runs=search_pipeline_cluster_runs if cluster_config.enabled() else None)
 
 

@@ -38,16 +38,18 @@ def test_prediction_capabilities_show_main_engines_and_open_connected_drafts(mon
     app = AppTest.from_string("""
 import streamlit as st
 from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
-from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_step
+from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_graph
 if 'cap-graph' not in st.session_state:
-    render_capabilities('cap', lambda _: None, lambda step, **options: _open_capability_step(step, 'cap', **options))
+    render_capabilities('cap', lambda draft: _open_capability_graph(draft, 'cap'))
 """)
     app.session_state["cap-capability"] = "Docking & affinity" if affinity else "Structure prediction & cofolding"
     app.run()
-    assert any(item.label == "Pipeline inputs and outputs" for item in app.expander)
+    assert "cap-graph" not in app.session_state
+    category = "Docking & affinity" if affinity else "Structure prediction & cofolding"
+    setup_key = f"cap-operations-{category}-{kind}"
     if kind == "boltz2" and not affinity:
-        app.selectbox(key="cap-prediction-input-boltz2").set_value("protein_ligand").run()
-    app.button(key=f"cap-open-operation-{kind}").click().run()
+        app.selectbox(key=setup_key + "-molecular-mode").set_value("protein_ligand").run()
+    app.button(key=setup_key + "-create-pipeline").click().run()
     assert not app.exception
     draft = app.session_state["cap-graph"]
     source, predictor, results = draft["nodes"]
@@ -81,19 +83,20 @@ def test_small_molecule_modes_open_the_matching_pipeline_draft(monkeypatch, engi
     app = AppTest.from_string("""
 import streamlit as st
 from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
-from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_step
+from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_graph
 if 'cap-graph' not in st.session_state:
-    render_capabilities('cap', lambda _: None, lambda step, **options: _open_capability_step(step, 'cap', **options))
+    render_capabilities('cap', lambda draft: _open_capability_graph(draft, 'cap'))
 """)
     app.session_state["cap-capability"] = "Small-molecule design"
     app.run()
     assert app.selectbox(key="cap-capability").options[0] == "Protein design"
-    app.button(key="cap-open-ligand-mode").click().run()
+    app.button(key=f"cap-{kind}-{mode}-create-pipeline").click().run()
     assert not app.exception
     draft = app.session_state["cap-graph"]
     nodes = {node["data"]["kind"]: node for node in draft["nodes"]}
     assert nodes[kind]["data"]["params"]["ligand_design_mode"] == mode
-    assert "target" in nodes and "results" in nodes
+    assert ("target" in nodes) == (mode == "reference_ligand")
+    assert "results" in nodes
     assert ("ligand_sdf_input" in nodes) == (mode == "reference_ligand")
     graph.validate_graph(draft)
 
@@ -113,7 +116,7 @@ def test_capabilities_distinguish_simulation_sampling_and_analysis_tasks(monkeyp
     monkeypatch.setattr(design_capabilities_ui, "_matrix", render_table)
     app = AppTest.from_string("""
 from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
-render_capabilities('cap', lambda _: None, lambda *args, **options: None)
+render_capabilities('cap', lambda _: None)
 """)
     app.session_state["cap-capability"] = "Molecular dynamics"
     app.run()
@@ -125,7 +128,7 @@ render_capabilities('cap', lambda _: None, lambda *args, **options: None)
     assert 'data-engine="tile_binderscope"' in app.text[0].value
     assert 'data-engine="plip"' not in app.text[0].value
     app.selectbox(key="cap-analysis-task").set_value("Protein–ligand pose analysis").run()
-    assert set(re.findall(r'data-engine="([^"]+)"', app.text[0].value)) == {"plip", "pandamap", "posebusters"}
+    assert set(re.findall(r'data-engine="([^"]+)"', app.text[0].value)) == {"native_ligand_interactions", "plip", "pandamap", "posebusters"}
     app.selectbox(key="cap-analysis-task").set_value("MD trajectory analysis").run()
     assert 'data-engine="md_analysis"' in app.text[0].value
     assert "radius of gyration" in app.text[0].value
@@ -153,21 +156,117 @@ def test_bioemu2_mode_cells_open_mode_specific_drafts(monkeypatch, mode, project
     app = AppTest.from_string("""
 import streamlit as st
 from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
-from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_step
+from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_graph
 if 'cap-graph' not in st.session_state:
-    render_capabilities('cap', lambda _: None, lambda step, **options: _open_capability_step(step, 'cap', **options))
+    render_capabilities('cap', lambda draft: _open_capability_graph(draft, 'cap'))
 """)
     app.session_state["cap-capability"] = "Conformational sampling"
     app.run()
     if project_designs:
-        app.selectbox(key="cap-bioemu2-source").set_value("Existing project designs").run()
-    app.button(key="cap-open-bioemu2-mode").click().run()
+        app.selectbox(key=f"cap-bioemu2-{mode}-source").set_value("project_design_source").run()
+    app.button(key=f"cap-bioemu2-{mode}-create-pipeline").click().run()
     assert not app.exception
     draft = app.session_state["cap-graph"]
     expected = ["project_design_source", "tile_bioemu2", "results"] if project_designs else ["tile_bioemu2", "results"]
     assert [node["data"]["kind"] for node in draft["nodes"]] == expected
     assert draft["nodes"][-2]["data"]["params"]["workflow_parameters"]["mode"] == mode
     graph.validate_graph(draft)
+
+
+@pytest.mark.parametrize("analysis", [False, True])
+def test_md_setup_builds_the_selected_dependencies(monkeypatch, analysis):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import design_capabilities_ui
+
+    monkeypatch.setattr(design_capabilities_ui, "_matrix", lambda **_: {"choose": ["tile_md_openmm", None]})
+    app = AppTest.from_string("""
+import streamlit as st
+from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
+from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_graph
+if "cap-graph" not in st.session_state:
+    render_capabilities("cap", lambda draft: _open_capability_graph(draft, "cap"))
+""")
+    app.session_state["cap-capability"] = "Molecular dynamics"
+    app.run()
+    key = "cap-operations-Molecular dynamics-tile_md_openmm"
+    app.radio(key=key + "-prepare").set_value("unprepared").run()
+    if analysis:
+        app.checkbox(key=key + "-trajectory").check().run()
+    assert "cap-graph" not in app.session_state
+    app.button(key=key + "-create-pipeline").click().run()
+    assert not app.exception
+    draft = app.session_state["cap-graph"]
+    nodes = {item["id"]: item["data"]["kind"] for item in draft["nodes"]}
+    assert set(nodes.values()) == {"tile_complex_prepare", "tile_md_openmm", "results"} | (
+        {"md_analysis"} if analysis else set()
+    )
+    links = {(nodes[edge["source"]], nodes[edge["target"]], edge["targetHandle"]) for edge in draft["edges"]}
+    assert ("tile_complex_prepare", "tile_md_openmm", "complex") in links
+    assert ("tile_md_openmm", "results", "in") in links
+    if analysis:
+        assert ("tile_md_openmm", "md_analysis", "in") in links
+        assert ("md_analysis", "results", "in") in links
+    graph.validate_graph(draft)
+
+
+def test_prediction_pose_checks_are_parallel_and_keep_the_original_prediction():
+    from mn_molecular_design_studio.capability_pipeline import add_followup, build_capability_graph
+
+    draft = build_capability_graph("boltz2", prediction_mode="protein_ligand")
+    draft = add_followup(draft, "posebusters")
+    draft = add_followup(draft, "plip")
+    nodes = {item["id"]: item["data"]["kind"] for item in draft["nodes"]}
+    links = {(nodes[edge["source"]], nodes[edge["target"]]) for edge in draft["edges"]}
+    assert links == {
+        ("cofold_input", "boltz2"), ("boltz2", "results"), ("boltz2", "posebusters"),
+        ("boltz2", "plip"), ("posebusters", "results"), ("plip", "results"),
+    }
+    graph.validate_graph(draft)
+
+
+def test_saved_database_selection_is_frozen_only_when_creating_the_draft(monkeypatch, tmp_path):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import database_selections, design_capabilities_ui, molecular_database
+
+    class Database:
+        def list_molecules(self, user, *, project_id, query, limit):
+            assert user == {"id": "owner"}
+            assert (project_id, query, limit) == ("project", "Example", 100)
+            return {"items": [{"id": "saved-entry", "name": "Example entry",
+                               "components": [{"type": "protein", "sequence": "GGGG"}]}]}
+
+    snapshots = []
+
+    def freeze(database, user, ids, project_id):
+        snapshots.append((user["id"], ids, project_id))
+        return tmp_path / "selection"
+
+    monkeypatch.setattr(molecular_database, "MolecularDatabase", Database)
+    monkeypatch.setattr(database_selections, "freeze_protein_selection", freeze)
+    monkeypatch.setattr(design_capabilities_ui, "_matrix", lambda **_: {"choose": ["sequence_qc", None]})
+    app = AppTest.from_string("""
+import streamlit as st
+from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
+from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_graph
+if "cap-graph" not in st.session_state:
+    render_capabilities("cap", lambda draft: _open_capability_graph(draft, "cap"),
+                        database_user={"id": "owner"}, project_id="project")
+""")
+    app.session_state["cap-capability"] = "Analysis & validation"
+    app.session_state["cap-analysis-task"] = "Sequence & protein properties"
+    app.run()
+    key = "cap-operations-Analysis & validation-Sequence & protein properties-sequence_qc"
+    app.selectbox(key=key + "-source").set_value("molecule_source").run()
+    assert app.button(key=key + "-create-pipeline").disabled
+    app.text_input(key=key + "-database-query").set_value("Example").run()
+    app.multiselect(key=key + "-database-selection").set_value(["saved-entry"]).run()
+    assert not snapshots
+    app.button(key=key + "-create-pipeline").click().run()
+    assert not app.exception
+    assert snapshots == [("owner", ["saved-entry"], "project")]
+    source = app.session_state["cap-graph"]["nodes"][0]["data"]
+    assert source["kind"] == "molecule_source"
+    assert source["params"]["source_run_dir"] == str(tmp_path / "selection")
 
 
 def test_campaign_stop_waits_for_the_canvas_ipsae_step_before_counting_passes():

@@ -137,14 +137,14 @@ def test_capability_cell_opens_rfd4_preset_controls(monkeypatch, prefix):
     app = AppTest.from_string("""
 import streamlit as st
 from mn_molecular_design_studio.design_capabilities_ui import render_design_tasks
-from mn_molecular_design_studio.pipeline_graph_ui import open_binder_preset
+from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_graph
 prefix = st.session_state["test-prefix"]
 pending = st.session_state.get("pipeline-pending-draft", {})
 graph = st.session_state.get(f"{prefix}-graph") or pending.get("graph")
 if graph:
     st.json([node["data"]["kind"] for node in graph["nodes"]])
 else:
-    render_design_tasks("cap", lambda preset: open_binder_preset(preset, prefix=prefix))
+    render_design_tasks("cap", lambda draft: _open_capability_graph(draft, prefix))
 """)
     app.session_state["cap-target"] = "multidomain"
     app.session_state["test-prefix"] = prefix
@@ -156,7 +156,7 @@ else:
     selector.set_value(external).run()
     app.selectbox(key=key + "-refold").set_value("rf3").run()
     app.checkbox(key=key + "-analysis").check().run()
-    app.button(key=key + "-create").click().run()
+    app.button(key=key + "-create-pipeline").click().run()
     assert not app.exception
     assert json.loads(app.json[0].value) == ["target", "rfd4", "rf3", "ipsae", "candidate_merge", "shared_filter", "results"]
     if prefix is None:

@@ -723,61 +723,6 @@ def open_binder_preset(preset, *, prefix=None):
     _open_capability_graph(new_binder_pipeline(**preset), prefix)
 
 
-def _open_capability_step(kind, prefix, *, prediction_mode=None, ligand_design_mode="", predict_affinity=False,
-                          bioemu2_mode=None, use_project_designs=False):
-    from mn_molecular_design_studio.pipeline_blocks import add_block, blank_program, connect_blocks
-
-    name = NODE_CATALOG[kind]["label"]
-    if prediction_mode:
-        from mn_molecular_design_studio.scientific_tasks import new_task_graph
-
-        config = {"methods": [kind], "mode": prediction_mode}
-        if predict_affinity:
-            config["method_settings"] = {kind: {"predict_affinity": True}}
-            name = f"{name} affinity"
-        graph = new_task_graph("molecular_structure_prediction", config)
-    elif kind == "af2":
-        graph, source = add_block(blank_program(), "project_design_source")
-        graph, predictor = add_block(graph, kind, source=source)
-        graph, _ = add_block(graph, "results", source=predictor)
-    elif kind == "md_analysis":
-        graph = new_graph("md_analysis")
-    elif kind == "tile_tmol":
-        graph, tmol_node = add_block(blank_program(), kind)
-        graph, _ = add_block(graph, "results", source=tmol_node)
-    elif kind == "tile_bioemu2":
-        from mn_molecular_design_studio.engine.workflow_engine.workflows.bioemu2 import BIOEMU2_MODES
-
-        mode = bioemu2_mode or "propagate"
-        if mode not in BIOEMU2_MODES or (use_project_designs and mode != "propagate"):
-            raise ValueError("Choose a BioEmu-2 mode compatible with the starting inputs.")
-        graph = blank_program()
-        source = None
-        if use_project_designs:
-            graph, source = add_block(graph, "project_design_source")
-        graph, sampling = add_block(graph, kind, source=source, target_port="candidates")
-        graph, _ = add_block(graph, "results", source=sampling)
-        node = next(node for node in graph["nodes"] if node["id"] == sampling)
-        node["data"]["params"]["workflow_parameters"]["mode"] = mode
-        name = f"{name} · {BIOEMU2_MODES[mode][0]}"
-    elif ligand_design_mode:
-        from mn_molecular_design_studio.pipeline_tile_workflows import LIGAND_DESIGN_MODES, TILES, ligand_mode_fields
-
-        mode_fields = ligand_mode_fields(TILES[kind], ligand_design_mode)
-        graph, target = add_block(blank_program(), "target")
-        graph, generator = add_block(graph, kind, source=target, target_port="target")
-        if "reference_ligand_sdf" in mode_fields:
-            graph, reference = add_block(graph, "ligand_sdf_input")
-            graph = connect_blocks(graph, reference, "out", generator, "reference_ligand")
-        graph, _ = add_block(graph, "results", source=generator)
-        next(node for node in graph["nodes"] if node["id"] == generator)["data"]["params"]["ligand_design_mode"] = ligand_design_mode
-        name = f"{name} · {LIGAND_DESIGN_MODES[ligand_design_mode]}"
-    else:
-        graph, _ = add_block(blank_program(), kind)
-    graph["name"] = name
-    _open_capability_graph(graph, prefix)
-
-
 def _open_capability_graph(graph, prefix):
     if prefix is None:
         st.session_state.pop(_TEMPLATE_VIEW_PREFIX + "-open", None)
@@ -1406,7 +1351,7 @@ def _change_pipeline_trash(prefix, pipeline, project_id, submit_api, *, trashed)
 
 
 def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived, trashed,
-                             submit_api, search_jobs, search_cluster_runs, *, can_edit_templates=False):
+                             submit_api, search_jobs, search_cluster_runs, *, can_edit_templates=False, database_user=None):
     from mn_molecular_design_studio.pipeline_blocks import blank_program
 
     with st.container(key="pipeline-library"):
@@ -1431,8 +1376,8 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
             from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
 
             render_capabilities(prefix + "-design-capabilities",
-                                lambda preset: open_binder_preset(preset, prefix=prefix),
-                                lambda kind, **options: _open_capability_step(kind, prefix, **options))
+                                lambda graph: _open_capability_graph(graph, prefix),
+                                database_user=database_user, project_id=project_id)
             return
         if section == "Runs":
             _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs)
@@ -1729,7 +1674,8 @@ def _render_pipeline_run_setup(prefix, project_id, graph, submit_api, execution_
 
 def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs,
                             read_only_projects=(), execution_available=True, search_cluster_runs=None,
-                            library_catalog_available=True, save_project_selector=None, can_edit_templates=False):
+                            library_catalog_available=True, save_project_selector=None, can_edit_templates=False,
+                            database_user=None):
     st.markdown("<style>.block-container{max-width:1900px;padding-top:3.75rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
     template_key = _TEMPLATE_VIEW_PREFIX + "-open"
     opened_template = st.session_state.get(template_key)
@@ -1789,7 +1735,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     view = st.session_state.get(view_key, "editor" if current_graph else "library")
     if view == "library" or current_graph is None:
         _render_pipeline_library(prefix, owner_id, project_id, definitions, archived, trashed,
-                                 submit_api, search_jobs, search_cluster_runs, can_edit_templates=can_edit_templates)
+                                 submit_api, search_jobs, search_cluster_runs, can_edit_templates=can_edit_templates, database_user=database_user)
         return
     if view == "runs":
         _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs, graph=current_graph)
