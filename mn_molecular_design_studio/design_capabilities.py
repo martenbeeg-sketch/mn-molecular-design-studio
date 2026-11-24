@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from mn_molecular_design_studio.binder_pipeline import BC2_FORMATS, FORMATS, ROUTES, TARGET_INPUTS
 
 
-ACCESS = {"pipeline": "Pipeline", "tile": "Tool setup", "upstream": "Upstream"}
+ACCESS = {"pipeline": "Build pipeline", "tile": "Open tool", "api": "API only", "upstream": "Upstream only"}
 OTHER_TASKS = {
     "protein_small_molecule": "Protein binder for a small molecule",
     "enzyme": "Enzyme or catalytic scaffold",
@@ -44,9 +44,9 @@ def _capabilities():
     ]
     capabilities.extend([
         *(Capability("BindCraft2", fmt, "design.bindcraft2", "tile", "idr",
-                     "Use the standalone tool's disordered sequence input. Compound routes on the canvas use the current RFD4 sequence adapter.")
+                     "Use the Sequence (disordered / IDR) target input in BindCraft2.")
           for fmt in BC2_FORMATS),
-        Capability("BindCraft", "miniprotein", "design.bindcraft", "tile",
+        Capability("BindCraft", "miniprotein", "design.bindcraft", "api",
                    note="Registered classic design workflow; separate from BindCraft2."),
         Capability("Protpardelle-1c", "miniprotein", "design.protpardelle_generate", "tile",
                    note="The binder mode uses structure conditioning; configure the input on its tool."),

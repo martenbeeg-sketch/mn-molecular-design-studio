@@ -693,7 +693,7 @@ def _activate_graph(prefix, graph, revision=None):
     _close_node_editor(prefix)
 
 
-def _binder_picker(key, *, connected_target=None):
+def _binder_picker(key, *, connected_target=None, allow_open_tool=False):
     from mn_molecular_design_studio.binder_pipeline import (
         FORMATS, TARGET_INPUTS, compatible_routes, idr_target, legacy_sequence_carrier,
     )
@@ -722,7 +722,8 @@ def _binder_picker(key, *, connected_target=None):
     additional = picker_tools(target_input, binder_format)
     engines = {}
     for route in routes:
-        engines[route.engine] = route.engine if route.format == binder_format else f"{route.engine} · {FORMATS[route.format]}"
+        engine_name = route.engine if route.format == binder_format else f"{route.engine} ({FORMATS[route.format]})"
+        engines[route.engine] = f"{engine_name} · {ACCESS['pipeline']}"
     for entry in additional:
         engines.setdefault(entry.engine, f"{entry.engine} · {ACCESS[entry.access]}")
     if not engines:
@@ -732,11 +733,24 @@ def _binder_picker(key, *, connected_target=None):
                           key=f"{key}-{target_input}-{binder_format}-engine")
     variants = [route for route in routes if route.engine == engine]
     if not variants:
-        for entry in additional:
-            if entry.engine == engine:
-                st.info(entry.note or ACCESS[entry.access])
-                if entry.reference:
-                    st.markdown(f"[Project reference]({entry.reference})")
+        entry = next(entry for entry in additional if entry.engine == engine)
+        if entry.access == "tile":
+            st.info(f"Configure the target and settings in {engine}’s form, then submit the job there.")
+            if entry.note:
+                st.caption(entry.note)
+            if allow_open_tool:
+                from mn_molecular_design_studio.design_capabilities_ui import render_open_tool
+
+                render_open_tool(entry.workflow, engine, key=key + "-open-tool",
+                                 target_input=entry.target_input, binder_format=entry.output)
+            else:
+                st.caption("Open the engine from All tools in Studio.")
+        elif entry.access == "api":
+            st.info(f"Use the workflow `{entry.workflow}` through the Studio API or MCP.")
+        else:
+            st.info(entry.note)
+            if entry.reference:
+                st.markdown(f"[Project reference]({entry.reference})")
         return None
     route = (st.selectbox("Workflow variant", variants, format_func=lambda item: item.variant,
                           key=f"{key}-{target_input}-{binder_format}-refold")
@@ -747,7 +761,7 @@ def _binder_picker(key, *, connected_target=None):
     return None
 
 
-def _show_binder_branch(prefix, graph, project_id, submit_api):
+def _show_binder_branch(prefix, graph, project_id, submit_api, *, allow_open_tool=False):
     from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline
 
     open_key = prefix + "-binder-open"
@@ -758,7 +772,8 @@ def _show_binder_branch(prefix, graph, project_id, submit_api):
 
     @st.dialog("Design a binder", on_dismiss=lambda: st.session_state.pop(open_key, None))
     def dialog():
-        route = _binder_picker(f"{prefix}-{graph['id']}-{target['id']}-binder", connected_target=target)
+        route = _binder_picker(f"{prefix}-{graph['id']}-{target['id']}-binder", connected_target=target,
+                               allow_open_tool=allow_open_tool)
         if route is None:
             return
         try:
@@ -777,7 +792,7 @@ def _show_binder_branch(prefix, graph, project_id, submit_api):
     dialog()
 
 
-def _show_guided_pipeline_setup(prefix, graph, project_id, submit_api):
+def _show_guided_pipeline_setup(prefix, graph, project_id, submit_api, *, allow_open_tool=False):
     open_key = prefix + "-guided-open"
     if st.session_state.get(open_key) != graph["id"] or graph["nodes"]:
         return
@@ -800,7 +815,7 @@ def _show_guided_pipeline_setup(prefix, graph, project_id, submit_api):
         if task == "targeted_protein_binder":
             from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline
 
-            route = _binder_picker(key + "-binder")
+            route = _binder_picker(key + "-binder", allow_open_tool=allow_open_tool)
             if route is None:
                 return
             try:
@@ -1312,7 +1327,7 @@ def _change_pipeline_trash(prefix, pipeline, project_id, submit_api, *, trashed)
 
 
 def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived, trashed,
-                             submit_api, search_jobs, search_cluster_runs, *, can_edit_templates=False):
+                             submit_api, search_jobs, search_cluster_runs, *, can_edit_templates=False, allow_open_tool=False):
     from mn_molecular_design_studio.pipeline_blocks import blank_program
 
     with st.container(key="pipeline-library"):
@@ -1336,7 +1351,7 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
         if section == "Capabilities":
             from mn_molecular_design_studio.design_capabilities_ui import render
 
-            render(prefix + "-design-capabilities")
+            render(prefix + "-design-capabilities", allow_open_tool=allow_open_tool)
             return
         if section == "Runs":
             _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs)
@@ -1693,7 +1708,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     view = st.session_state.get(view_key, "editor" if current_graph else "library")
     if view == "library" or current_graph is None:
         _render_pipeline_library(prefix, owner_id, project_id, definitions, archived, trashed,
-                                 submit_api, search_jobs, search_cluster_runs, can_edit_templates=can_edit_templates)
+                                 submit_api, search_jobs, search_cluster_runs, can_edit_templates=can_edit_templates,
+                                 allow_open_tool=execution_available)
         return
     if view == "runs":
         _render_pipeline_runs(prefix, project_id, search_jobs, search_cluster_runs, graph=current_graph)
@@ -1920,9 +1936,9 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             st.caption(f"Last submission · {last_job.get('job_code') or reference}")
             if st.button("Open run results", key=prefix + "-open-latest-result"):
                 _navigate_to_job_details(reference, final_results=graph.get("template_id") == "unidock_active_learning")
-    _show_guided_pipeline_setup(prefix, graph, project_id, submit_api)
+    _show_guided_pipeline_setup(prefix, graph, project_id, submit_api, allow_open_tool=execution_available)
     if not opened_template and not in_trash:
-        _show_binder_branch(prefix, graph, project_id, submit_api)
+        _show_binder_branch(prefix, graph, project_id, submit_api, allow_open_tool=execution_available)
     _show_pipeline_campaign(prefix, project_id, submit_api)
     _show_pipeline_resources(prefix, owner_id, project_id, submit_api)
     _show_pipeline_versions(prefix, owner_id, project_id, graph, saved_draft, submit_api)

@@ -59,6 +59,12 @@ def render_workspace_navigation(user, *, development=False):
             st.divider()
 
 
+def open_workflow_tool(state, workflow):
+    state.pop("selected_workflow_group", None)
+    state.pop("selected_workflow_engine", None)
+    state.update({"page": "Workflow setup", "selected_workflow": workflow})
+
+
 def open_project_results(state, project_id):
     state.update({
         "page": "My runs", "results-project-filter": project_id,

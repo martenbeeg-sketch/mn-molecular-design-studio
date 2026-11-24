@@ -432,6 +432,8 @@ else:
         st.session_state["page"] = "Pipelines"
         st.session_state.setdefault("project-pending-selection", {})["visual-pipeline-project-id"] = pipeline_link[1]
 
+from mn_molecular_design_studio.navigation import open_workflow_tool, render_workspace_navigation
+
 with st.sidebar:
     st.markdown("### 🧬 Molecular Design Studio")
     st.caption(f"{CURRENT_USER['display_name']} · {str(CURRENT_USER['role']).title()}")
@@ -443,7 +445,6 @@ with st.sidebar:
         st.rerun()
     st.divider()
 
-    from mn_molecular_design_studio.navigation import render_workspace_navigation
     render_workspace_navigation(CURRENT_USER, development=is_development_mode())
 
     if CURRENT_USER.get("role") == "admin":
@@ -477,7 +478,7 @@ def _render_tool_catalog() -> None:
         if st.toggle("Show capability matrix", key="show-design-capability-matrix"):
             from mn_molecular_design_studio.design_capabilities_ui import render
 
-            render("all-tools-capabilities")
+            render("all-tools-capabilities", allow_open_tool=True)
     st.markdown(
         """
         <style>
@@ -692,9 +693,7 @@ def _render_tool_catalog() -> None:
                             st.session_state.pop("selected_workflow", None)
                             st.session_state.pop("selected_workflow_engine", None)
                         else:
-                            st.session_state.pop("selected_workflow_group", None)
-                            st.session_state["selected_workflow"] = row["workflow"]
-                            st.session_state.pop("selected_workflow_engine", None)
+                            open_workflow_tool(st.session_state, row["workflow"])
                         st.session_state["page"] = "Workflow setup"
                         st.rerun()
                     references = row.get("references", [])
