@@ -3,7 +3,7 @@ import json
 import pytest
 import yaml
 
-from mn_molecular_design_studio.binder_pipeline import BC2_FORMATS, ROUTES, compatible_routes, new_binder_pipeline, stage_idr_target
+from mn_molecular_design_studio.binder_pipeline import BC2_FORMATS, ROUTES, compatible_routes, new_binder_pipeline, stage_idr_target, write_idr_fasta
 from mn_molecular_design_studio.pipeline_graph import validate_graph
 from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import node_request
 
@@ -24,7 +24,7 @@ def test_registered_binder_routes_build_valid_graphs(route):
     elif "shared_filter" in kinds:
         assert _settings(graph, "shared_filter")["binder_format"] == route.format
     else:
-        assert route.method in {"boltzgen", "complexa", "tile_design_rfpeptides", "tile_design_rfantibody"}
+        assert route.method.startswith("tile_design_") or route.method in {"boltzgen", "complexa", "peptide_trap", "kejia_idr"} or route.format in {"antibody", "tcr"}
     if route.method == "boltzgen":
         assert _settings(graph, route.method)["task"] == {"vhh": "nanobody", "miniprotein": "protein"}.get(route.format, route.format)
     if route.method == "tile_design_rfantibody":
@@ -33,12 +33,17 @@ def test_registered_binder_routes_build_valid_graphs(route):
     if route.method == "rfd4":
         external = route.id == "rfd4-external"
         assert ("boltz2" in kinds) == external
-        assert json.loads(_settings(graph, "rfd4")["options_json"])["refold"] == (not external)
+        settings = _settings(graph, "rfd4")
+        if route.format in {"antibody", "tcr"}:
+            assert settings["task"] == route.format
+        else:
+            assert json.loads(settings["options_json"])["refold"] == (not external)
 
 
 def test_design_capabilities_match_registered_workflows_and_picker_routes():
     from mn_molecular_design_studio.design_capabilities import catalogue
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS
+    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
     from mn_molecular_design_studio.tool_catalog import TOOL_CATALOG_WORKFLOW_IDS
 
     data = catalogue()
@@ -46,6 +51,10 @@ def test_design_capabilities_match_registered_workflows_and_picker_routes():
     assert set(data["binder_formats"]) == {row["output"] for row in data["items"]
                                             if row["output"] in data["binder_formats"]}
     assert {row["route_id"] for row in data["items"] if row["access"] == "pipeline"} == {route.id for route in ROUTES}
+    assert {row["access"] for row in data["items"] if row["output"] in data["binder_formats"]} <= {"pipeline", "upstream"}
+    assert all(NODE_CATALOG[row["canvas_node"]]["workflow"] == row["workflow"]
+               for row in data["items"] if row["access"] == "canvas")
+    assert {row["access"] for row in data["items"]} == {"pipeline", "canvas", "upstream"}
     assert {row["workflow"] for row in data["items"]} <= set(WORKFLOWS)
     assert {workflow for workflow in TOOL_CATALOG_WORKFLOW_IDS if workflow.startswith(("design.", "ligand.generation."))} <= {
         row["workflow"] for row in data["items"]}
@@ -64,7 +73,7 @@ def test_cyclic_binder_tile_inherits_connected_target():
 
 
 def test_route_compatibility_and_branch_preserve_existing_target():
-    assert not compatible_routes("idr", "cyclic_peptide")
+    assert [route.id for route in compatible_routes("idr", "cyclic_peptide")] == ["bindcraft2-idr-cyclic-peptide"]
     assert not compatible_routes("sequence", "vhh")
     with pytest.raises(ValueError, match="does not support"):
         new_binder_pipeline("bindcraft2-cyclic", target_input="idr", binder_format="cyclic_peptide")
@@ -78,6 +87,31 @@ def test_route_compatibility_and_branch_preserve_existing_target():
     assert sum(edge["source"] == target_id for edge in second["edges"]) == 2
     assert sum(node["data"]["kind"] == "target" for node in second["nodes"]) == 1
     validate_graph(second)
+
+
+@pytest.mark.parametrize("route_id, kind", [
+    ("bindcraft2-idr-miniprotein", "bindcraft2"), ("peptide-trap-idr", "peptide_trap"), ("kejia-idr", "kejia_idr"),
+])
+def test_shared_idr_input_reaches_design_nodes(route_id, kind, tmp_path, monkeypatch):
+    from mn_molecular_design_studio import auth
+
+    monkeypatch.setattr(auth, "user_input_root", lambda owner: tmp_path)
+    target = stage_idr_target("ACDEFGHIKLMN", "owner", hotspots="A3")
+    graph = new_binder_pipeline(route_id, target_input="idr", binder_format="miniprotein", inputs=target)
+    settings = _settings(graph, kind)
+    if kind == "kejia_idr":
+        settings["template_library"] = "walle"
+    validate_graph(graph, require_inputs=True, require_files=False)
+    target["target_fasta"] = write_idr_fasta(target["target_sequence"], tmp_path)
+    request = node_request(kind, settings, {"target": target}, "Sequence pipeline")
+    if kind == "bindcraft2":
+        assert request["parameters"]["target_type"] == "sequence"
+        assert request["parameters"]["target_fasta"] == target["target_fasta"]
+        assert request["parameters"]["target_pdb"] is None
+        assert request["parameters"]["target_chains"] == []
+        assert request["parameters"]["hotspots"] == ""
+    else:
+        assert request["parameters"]["target_sequence"] == target["target_sequence"]
 
 
 def test_idr_request_regenerates_conditions_when_target_or_binder_length_changes(tmp_path, monkeypatch):

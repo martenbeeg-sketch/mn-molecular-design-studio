@@ -15,7 +15,8 @@ TASKS = {
         "label": "Targeted Protein Binder Design", "default": "rfd3",
         "methods": ["rfd3", "rfdiffusion", "rfd4", "bindcraft2", "boltzgen", "pxdesign",
                     "genie3", "complexa_generator", "esm_binder", "rfdiffusion_beta_pairing",
-                    "bindcraft2_generator", "boltzgen_generator", "complexa", "pxdesign_pipeline", "genie3_pipeline"],
+                    "bindcraft2_generator", "boltzgen_generator", "complexa", "pxdesign_pipeline", "genie3_pipeline",
+                    "protpardelle"],
         "description": "Design against a folded protein target. Choose one method or explicitly compare independent methods.",
     },
     "antibody_cdr_redesign": {
@@ -279,6 +280,11 @@ def new_task_graph(task_id, configuration=None):
                 generator["data"]["params"]["max_templates"] = config.get("num_designs", 1)
             if method == "boltzgen":
                 generator["data"]["params"]["budget"] = config.get("num_designs", 1)
+            if method == "protpardelle" and task_id == "targeted_protein_binder":
+                from mn_molecular_design_studio.generator_input import default_parameters
+
+                defaults = default_parameters(method, task="binder")
+                generator["data"]["params"].update({key: defaults[key] for key in ("task", "model_name", "binder_length")})
             _update(generator, method_settings.get(method, {}))
             if method == "rfd4":
                 try:

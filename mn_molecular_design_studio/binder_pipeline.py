@@ -27,6 +27,9 @@ BC2_FORMATS = {
     "multidomain": "multidomain", "homo_oligomer": "homo_oligomer",
 }
 
+SEQUENCE_TARGET_STEPS = frozenset({"rfd4", "bindcraft2", "bindcraft2_generator", "peptide_trap", "kejia_idr"})
+TEMPLATE_IDR_STEPS = frozenset({"peptide_trap", "kejia_idr"})
+
 
 @dataclass(frozen=True)
 class Route:
@@ -85,6 +88,27 @@ ROUTES = (
           "Use the VHH framework with native sequence design and structure evaluation."),
     Route("rfantibody-scfv", "RFantibody", "Native paired-domain workflow", "structure", "scfv", "tile_design_rfantibody",
           "Use its paired variable-domain framework and native structure evaluation."),
+    *(Route(f"bindcraft2-idr-{fmt.replace('_', '-')}", "BindCraft2", "Native validation and filters", "idr", fmt, "bindcraft2",
+            "Read the sequence from the Target step and run BindCraft2’s native validation and filters.")
+      for fmt in BC2_FORMATS),
+    Route("bindcraft-classic", "BindCraft", "Classic validation and filters", "structure", "miniprotein", "tile_design_bindcraft",
+          "Use the classic BindCraft workflow and its native acceptance filters with a PDB target."),
+    Route("protpardelle-binder", "Protpardelle-1C", "Sequence design and Boltz-2", "structure", "miniprotein", "protpardelle",
+          "Generate target-conditioned backbones, design sequences and refold with Boltz-2."),
+    Route("rfdiffusion-beta-pairing", "RFdiffusion β-pairing", "ProteinMPNN and AF2 Initial Guess", "structure",
+          "miniprotein", "rfdiffusion_beta_pairing", "Choose target β-strands in the design step, then design sequences and refold."),
+    Route("peptide-trap-idr", "Peptide Trap", "Template recognition and AF2 Initial Guess", "idr", "miniprotein", "peptide_trap",
+          "Choose scaffold templates in the design step. The binder format follows the scaffold."),
+    Route("kejia-idr", "Kejia IDR threading", "Template threading, ProteinMPNN and AF2 Initial Guess", "idr", "miniprotein", "kejia_idr",
+          "Choose a binder–peptide template in the design step. The binder format follows the template."),
+    Route("rfd4-antibody", "RFD4-Proteina", "Custom antibody framework", "structure", "antibody", "rfd4",
+          "Provide the antibody–target complex and choose the framework chains and CDRs in the design step."),
+    Route("rfd4-tcr", "RFD4-Proteina", "Custom TCR framework", "structure", "tcr", "rfd4",
+          "Provide the TCR–target complex and choose the framework chains and CDRs in the design step."),
+    Route("rfantibody-mimosa-vhh", "MIMOSA · RFantibody", "VHH with motif guidance", "structure", "vhh", "tile_design_rfantibody_mimosa",
+          "Choose a source interaction complex and configure loop guidance in the design step."),
+    Route("boltzgen-mimosa-vhh", "MIMOSA · BoltzGen", "VHH with optional motif guidance", "structure", "vhh", "tile_design_boltzgen_mimosa",
+          "Configure the VHH scaffold and optional motif guidance in the design step."),
 )
 
 
@@ -100,6 +124,19 @@ def compatible_routes(target_input, binder_format):
 
 def idr_target(params):
     return params.get("target_input") == "idr"
+
+
+def sequence_template_parameters(params, target):
+    sequence = target.get("target_sequence")
+    return {**params, "target_sequence": sequence} if sequence else params
+
+
+def write_idr_fasta(sequence, directory):
+    from mn_molecular_design_studio.rfd4_proteina_input import parse_idr_fasta
+
+    path = directory / "target.fasta"
+    path.write_text(f">pipeline_target\n{parse_idr_fasta(sequence)}\n", encoding="utf-8")
+    return str(path)
 
 
 def legacy_sequence_carrier(params):
@@ -152,15 +189,29 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
         configuration["method_settings"] = {"esm_binder": {"binder_type": "scfv"}}
     if route.method == "rfd4":
         configuration["method_settings"] = {"rfd4": {"options_json": json.dumps({"refold": route.id != "rfd4-external"})}}
-    if route.method.startswith("tile_") or route.id == "rfd4-vhh":
+    rfd4_framework = route.method == "rfd4" and route.format in {"vhh", "antibody", "tcr"}
+    if route.method.startswith("tile_") or rfd4_framework:
         recipe = {"schema_version": SCHEMA, "id": uuid.uuid4().hex}
         values = {}
         if route.method == "tile_design_rfantibody":
             values = {"workflow_parameters": {"task": "nanobody", "framework": "h-NbBCII10"}
                       if route.format == "vhh" else {"task": "antibody", "framework": "hu-4D5-8_Fv"}}
-        elif route.id == "rfd4-vhh":
-            values = {"task": "nanobody", "num_designs": 1, "options_json": '{"refold": true}'}
+        elif route.method == "tile_design_rfantibody_mimosa":
+            values = {"workflow_parameters": {"task": "nanobody", "framework": "h-NbBCII10", "mimosa_enabled": True}}
+        elif route.method == "tile_design_boltzgen_mimosa":
+            values = {"workflow_parameters": {"task": "nanobody"}}
+        elif route.method == "tile_design_bindcraft":
+            values = {"workflow_parameters": {"binder_length": "60-100"}}
+        elif rfd4_framework:
+            values = {"task": "nanobody" if route.format == "vhh" else route.format, "num_designs": 1}
+            if route.format == "vhh":
+                values["options_json"] = '{"refold": true}'
         steps = [_node("target", "target"), _node(route.method, "design", values)]
+    elif route.method in TEMPLATE_IDR_STEPS:
+        from mn_molecular_design_studio.pipeline_graph import new_graph
+
+        recipe = new_graph(route.method)
+        steps = [_node("target", "target"), *recipe["nodes"][:-1]]
     else:
         recipe = new_task_graph("targeted_protein_binder", configuration)
         steps = [node for node in recipe["nodes"] if node["data"]["kind"] not in {"binder_context", "results"}]
@@ -172,7 +223,8 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
     target["data"]["label"] = "Target sequence · IDR" if target_input == "idr" else "Target structure"
     engine = steps[1]["data"]
     engine["label"] = route.engine + " · " + (route.variant if route.method == "rfd4" else FORMATS[route.format])
-    if route.method not in {"bindcraft2", "boltzgen", "complexa"} and not route.method.startswith("tile_"):
+    if (route.method not in {"bindcraft2", "boltzgen", "complexa", *TEMPLATE_IDR_STEPS}
+            and not route.method.startswith("tile_") and route.format not in {"antibody", "tcr"}):
         steps.extend([
             _node("candidate_merge", "candidates"),
             _node("shared_filter", "acceptance", {"binder_format": binder_format,

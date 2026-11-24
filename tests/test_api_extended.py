@@ -462,6 +462,40 @@ def test_design_capabilities_api_uses_shared_catalog_and_validates_filters(api_d
     assert client.get(endpoint, headers={"Authorization": "Bearer invalid-token"}).status_code == 401
 
 
+def test_binder_pipeline_validates_sequence_and_specialist_tool_inputs(api_data):
+    from mn_molecular_design_studio.auth import user_input_root
+    from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline, stage_idr_target
+
+    data, client = api_data, api_data["client"]
+    project_id = data["project"]["id"]
+    owner_id = data["admin"]["id"]
+    structure = write_structure(user_input_root(owner_id) / "binder-target.pdb")
+
+    def validate(graph):
+        return client.post("/api/v1/pipelines/validate", json={"project_id": project_id, "graph": graph})
+
+    idr = stage_idr_target("ACDEFGHIKLMN", owner_id)
+    graph = new_binder_pipeline("bindcraft2-idr-miniprotein", target_input="idr", binder_format="miniprotein", inputs=idr)
+    response = validate(graph)
+    assert response.status_code == 200, response.text
+
+    target = {"target_pdb": str(structure), "target_chains": "A"}
+    graph = new_binder_pipeline("bindcraft-classic", target_input="structure", binder_format="miniprotein", inputs=target)
+    response = validate(graph)
+    assert response.status_code == 200, response.text
+
+    graph = new_binder_pipeline("rfd4-tcr", target_input="structure", binder_format="tcr", inputs=target)
+    response = validate(graph)
+    assert response.status_code == 422 and "framework chains and CDR residues" in response.text
+    graph["nodes"][1]["data"]["params"]["options_json"] = json.dumps({"design_chains": ["B"], "cdr_residues": "B2"})
+    response = validate(graph)
+    assert response.status_code == 200, response.text
+
+    graph = new_binder_pipeline("rfantibody-mimosa-vhh", target_input="structure", binder_format="vhh", inputs=target)
+    response = validate(graph)
+    assert response.status_code == 422 and "source partner chain" in response.text
+
+
 @pytest.mark.parametrize("tool", ["kejia_idr", "peptide_trap"])
 def test_pipeline_continuation_validates_source_candidate_and_project(api_data, tool):
     data, client = api_data, api_data["client"]

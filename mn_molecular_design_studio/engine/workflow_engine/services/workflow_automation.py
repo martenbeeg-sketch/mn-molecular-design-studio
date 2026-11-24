@@ -970,7 +970,7 @@ def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) ->
             raise AutomationError("Provide protein sequence(s), a structure, or connected input structures.")
         if parameters.get("target_structure") and (parameters.get("protein_sequences") or parameters.get("input_files")):
             raise AutomationError("Choose one folding input source.")
-    if spec.workflow_id == "design.rfantibody":
+    if spec.workflow_id in {"design.rfantibody", "design.rfantibody_mimosa"}:
         from mn_molecular_design_studio.rfantibody_input import validate_request
         try:
             validate_request(parameters, require_files=not _schema_only_paths.get())

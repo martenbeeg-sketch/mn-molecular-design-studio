@@ -4,24 +4,10 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from mn_molecular_design_studio.binder_pipeline import BC2_FORMATS
 from mn_molecular_design_studio.design_capabilities import catalogue
-from mn_molecular_design_studio.navigation import open_workflow_tool
 
 
-def render_open_tool(workflow, engine, *, key, target_input="", binder_format=""):
-    if st.button(f"Open {engine} tool", key=key):
-        state = st.session_state
-        if workflow == "design.bindcraft2" and target_input == "idr":
-            state["bindcraft2-target-type"] = "sequence"
-            state["bindcraft2-selected-modality"] = BC2_FORMATS[binder_format]
-        if workflow == "design.rfd4_proteina" and binder_format in {"antibody", "tcr"}:
-            state["rfd4-task-pills"] = binder_format
-        open_workflow_tool(state, workflow)
-        st.rerun()
-
-
-def render(key, *, allow_open_tool=False):
+def render(key):
     data = catalogue()
     st.subheader("Design capabilities")
     group = st.segmented_control("Design task group", ["Protein binders", "Other design tasks"],
@@ -39,8 +25,8 @@ def render(key, *, allow_open_tool=False):
     access = data["access"]
     st.markdown(
         "**Build pipeline** creates a connected draft. Configure its steps, then select **Run pipeline**. "
-        "**Open tool** takes you to the engine’s form to configure and submit a job. "
-        "**API only** uses a registered workflow through API or MCP. **Upstream only** is unavailable in Studio."
+        "**Add canvas step** means the tool is in the canvas library. "
+        "**Upstream only** is unavailable in Studio."
     )
     by_engine = {}
     for row in rows:
@@ -54,7 +40,7 @@ def render(key, *, allow_open_tool=False):
          for engine, cells in sorted(by_engine.items(), key=lambda entry: entry[0].casefold())]
     )
     cell_styles = {access["pipeline"]: "color: #176044; background-color: #e7f5ee",
-                   access["tile"]: "color: #234f81; background-color: #eaf2fc",
+                   access["canvas"]: "color: #176044; background-color: #e7f5ee",
                    access["upstream"]: "color: #674d23; background-color: #fdf2df"}
     styled = matrix.style.map(lambda value: cell_styles.get(value, ""), subset=list(columns.values()))
     st.dataframe(styled, hide_index=True, width="stretch",
@@ -67,13 +53,12 @@ def render(key, *, allow_open_tool=False):
         if len(outputs) > 1:
             output = st.selectbox("Format or task", outputs, format_func=columns.get, key=f"{key}-output-{engine}")
             selected_rows = [row for row in selected_rows if row["output"] == output]
-        for index, row in enumerate(selected_rows):
+        for row in selected_rows:
             condition = data["target_inputs"].get(row["target_input"], "")
             st.markdown(" · ".join(filter(None, [f"**{columns[row['output']]}**", condition, access[row["access"]]])))
             if row["note"]:
                 st.caption(row["note"] + (f" [Project reference]({row['reference']})" if row["reference"] else ""))
-            if row["access"] == "api":
-                st.code(row["workflow"], language=None)
-            if allow_open_tool and row["access"] == "tile":
-                render_open_tool(row["workflow"], engine, key=f"{key}-open-{index}",
-                                 target_input=row["target_input"], binder_format=row["output"])
+            if row["access"] == "canvas":
+                from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
+
+                st.caption(f"Add **{NODE_CATALOG[row['canvas_node']]['label']}** from the canvas tool library.")

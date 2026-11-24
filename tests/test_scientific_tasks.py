@@ -98,7 +98,7 @@ def test_all_advertised_methods_generate_valid_graphs(task):
 
 @pytest.mark.parametrize("task,config", [
     ("targeted_protein_binder", {"methods": ["rfd3", "rfd4"]}),
-    ("targeted_protein_binder", {"methods": ["protpardelle"]}),
+    ("targeted_protein_binder", {"methods": ["protpardelle"], "method_settings": {"protpardelle": {"task": "unconditional"}}}),
     ("targeted_protein_binder", {"binder_format": "vhh", "methods": ["rfdiffusion"]}),
     ("targeted_protein_binder", {"methods": ["rfd4"], "method_settings": {"rfd4": {"task": "unconditional"}}}),
     ("new_protein_fold", {"soluble_mpnn": True}),

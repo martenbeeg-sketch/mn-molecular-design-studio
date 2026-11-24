@@ -37,6 +37,16 @@ def test_compound_and_receptor_ports_wire_exact_artifacts():
     )["compatible"]
 
 
+def test_rfd3_native_task_receives_connected_structure_under_the_workflow_field():
+    request = node_request("tile_design_rfd3_tasks", {"workflow_parameters": {"task": "nucleic_acid_binder"}}, {
+        "workflow_inputs": {"target": {"target": {"target_pdb": "/test/target.cif", "target_chains": ["A"]}}},
+    }, "Design task")
+    assert request["workflow"] == "design.rfdiffusion3"
+    assert request["parameters"] == {
+        "target_structure": "/test/target.cif", "target_chains": ["A"], "task": "nucleic_acid_binder", "job_name": "Design task",
+    }
+
+
 def test_rosetta_ligand_reference_is_a_separate_canvas_input():
     from mn_molecular_design_studio.pipeline_graph import capability_contract
 

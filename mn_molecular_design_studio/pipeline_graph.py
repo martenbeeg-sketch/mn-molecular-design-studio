@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from mn_molecular_design_studio.binder_pipeline import SEQUENCE_TARGET_STEPS, TEMPLATE_IDR_STEPS, sequence_template_parameters
 from mn_molecular_design_studio.runtime import app_home
 from mn_molecular_design_studio.workflow_modes import MODES, capability as workflow_capability
 from mn_molecular_design_studio.docking_preparation_protocols import (
@@ -49,7 +50,7 @@ MSA = field("use_target_msa", "Use cached target MSA; fetch if missing", True, k
 TEMPLATE = field("use_target_template", "Use target structure as template", True, kind="boolean")
 
 NODE_CATALOG = {
-    "peptide_trap": _spec("peptide_trap", "Peptide Trap", "Design engine", "Retarget published β-strand clefts by sequence matching, threading and Rosetta interface redesign.", output="sequence", workflow="design.peptide_trap", fields=[
+    "peptide_trap": _spec("peptide_trap", "Peptide Trap", "Design engine", "Retarget published β-strand clefts by sequence matching, threading and Rosetta interface redesign.", accepts=["target"], output="sequence", workflow="design.peptide_trap", fields=[
         field("target_sequence", "Target sequence / FASTA", "", kind="text", section="basic"),
         field("scaffold_ids", "Scaffold templates", ["C37", "C104.1"], kind="json", section="basic"),
         field("max_registers", "Maximum matching placements", 20, minimum=1, maximum=1000),
@@ -58,7 +59,7 @@ NODE_CATALOG = {
         field("relax_repeats", "Rosetta relaxation repeats", 2, minimum=1, maximum=5),
         field("max_backbone_rmsd", "Maximum template backbone RMSD (Å)", 2.0, minimum=0.1, maximum=10.),
         field("cpu_cores", "CPU cores", 4, minimum=1, maximum=256), SEED], formats=("pdb",)),
-    "kejia_idr": _spec("kejia_idr", "Kejia IDR threading", "Design engine", "Thread a target sequence onto binder–peptide templates and refine peptide flexibility; connect ProteinMPNN and AlphaFold2 downstream.", workflow="design.kejia_idr", fields=[
+    "kejia_idr": _spec("kejia_idr", "Kejia IDR threading", "Design engine", "Thread a target sequence onto binder–peptide templates and refine peptide flexibility; connect ProteinMPNN and AlphaFold2 downstream.", accepts=["target"], workflow="design.kejia_idr", fields=[
         field("target_sequence", "Target fragment / single-record FASTA", "", kind="text", section="basic"),
         field("template_library", "Template source", "upload", kind="select", options=["upload", "walle", "walle2", "mini", "strand"], section="basic"),
         field("template_structure", "Uploaded template path", "", kind="text", section="basic"),
@@ -576,6 +577,9 @@ NODE_CATALOG["rfdiffusion_beta_pairing"] = _spec(
 )
 NODE_CATALOG["rfdiffusion_beta_pairing"]["inputs"][0]["optional"] = True
 NODE_CATALOG["rfdiffusion_beta_pairing"]["inputs"][0]["label"] = "Target (optional)"
+for _kind in TEMPLATE_IDR_STEPS:
+    NODE_CATALOG[_kind]["inputs"][0].update(optional=True, label="IDR sequence (optional)")
+NODE_CATALOG["rfd4"]["inputs"][0].update(optional=True, label="Target (when required by task)")
 # Coldspots are target-wide context, but only BindCraft2 and BoltzGen expose
 # matching engine inputs. The canvas shows this support state on every generator.
 for _kind in ('rfd3','rfdiffusion','genie3','pxdesign','pxdesign_pipeline','genie3_pipeline',
@@ -2403,8 +2407,8 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
         if kind == "target":
             params = node["data"]["params"]
             if params.get("target_input") == "idr":
-                if any(nodes[dest]["data"]["kind"] != "rfd4" for dest in outgoing[node_id]):
-                    raise PipelineInputError(node_id, "Connect this sequence target directly to an RFD4 design step.")
+                if any(nodes[dest]["data"]["kind"] not in SEQUENCE_TARGET_STEPS for dest in outgoing[node_id]):
+                    raise PipelineInputError(node_id, "Connect this sequence target directly to an IDR-compatible design step.")
                 if require_inputs and not (params.get("target_pdb") and params.get("target_sequence")):
                     raise PipelineInputError(node_id, "Enter the IDR sequence in the Target step.")
             elif require_inputs and not params.get("target_pdb"):
@@ -2433,18 +2437,19 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
         if kind == "md_analysis":
             from mn_molecular_design_studio.md_pipeline import validate_analysis_parameters
             validate_analysis_parameters(node["data"]["params"])
-        if require_inputs and kind == "kejia_idr":
-            from mn_molecular_design_studio.kejia_idr_input import prepare_request
-            try:
-                prepare_request(node["data"]["params"], require_files=require_files)
-            except ValueError as exc:
-                raise PipelineInputError(node_id, str(exc)) from exc
-        if require_inputs and kind == "peptide_trap":
-            from mn_molecular_design_studio.peptide_trap_input import prepare_request
-            try:
-                prepare_request(node["data"]["params"], require_files=require_files)
-            except ValueError as exc:
-                raise PipelineInputError(node_id, str(exc)) from exc
+        if kind in TEMPLATE_IDR_STEPS:
+            from mn_molecular_design_studio import kejia_idr_input, peptide_trap_input
+
+            target = nodes[incoming[node_id][0]]["data"]["params"] if incoming[node_id] else {}
+            if incoming[node_id] and target.get("target_input") != "idr":
+                raise PipelineInputError(node_id, "Connect a Target step that supplies an IDR sequence.")
+            if require_inputs:
+                adapter = kejia_idr_input if kind == "kejia_idr" else peptide_trap_input
+                try:
+                    adapter.prepare_request(sequence_template_parameters(node["data"]["params"], target),
+                                            require_files=require_files)
+                except ValueError as exc:
+                    raise PipelineInputError(node_id, str(exc)) from exc
         if require_inputs and kind == "active_library":
             seed = next((n for n in nodes.values() if n["data"]["kind"] == "active_seed"), None)
             if seed is not None:
@@ -2513,6 +2518,11 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
                     raise ValueError(f"{node['data']['label']} does not accept {ligand_format.upper()} ligand inputs.")
         if require_inputs and kind == "complexa_generator" and not incoming[node_id] and not node["data"]["params"].get("target_pdb"):
             raise ValueError("Load a structure in Proteina-Complexa Generator or connect a Target block.")
+        if require_inputs and kind == "rfd4" and not incoming[node_id]:
+            params = node["data"]["params"]
+            needs_target = params["input_mode"] == "guided" and params["task"] not in {"rna_design", "unconditional", "score_structures", "existing_structure"}
+            if needs_target and not params["target_structure"]:
+                raise PipelineInputError(node_id, "Connect a Target step or supply an input structure for RFD4.")
         length = node["data"]["params"].get("binder_length")
         scaffold_mode = kind in {"bindcraft2", "bindcraft2_generator"} and node["data"]["params"].get("modality") in {"VHH", "scFv", "Fab", "ARP"}
         if isinstance(length, str) and not (length == "" and scaffold_mode):

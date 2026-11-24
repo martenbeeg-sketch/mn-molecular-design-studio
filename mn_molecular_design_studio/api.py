@@ -1100,6 +1100,7 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
                 raise HTTPException(status_code=422, detail="Select existing chains from the target structure.")
         from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
         from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import node_request
+        from mn_molecular_design_studio.pipeline_tile_workflows import TILES
         nodes = {n["id"]: n for n in graph["nodes"]}
         target_contexts = {}
         for node_id in plan["order"]:
@@ -1129,6 +1130,14 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
             kind = node["data"]["kind"]
             if node["data"].get("enabled") is False or node["data"].get("retained_run_dir"):
                 continue
+            if kind in TILES and TILES[kind].workflow.startswith("design."):
+                inputs = {
+                    "target": {"target": target_contexts[edge["source"]]}
+                    for edge in plan["incoming_edges"][node["id"]] if edge.get("targetHandle") == "target"
+                }
+                child_request = _call(node_request, kind, node["data"]["params"], {"workflow_inputs": inputs}, graph["name"])
+                _with_request_file(child_request, validate_workflow_request, base_dir=str(_request_directory(user, None)))
+                continue
             if NODE_CATALOG[kind]["category"] not in {"Design engine", "Design pipeline"} and kind != "surface_analysis":
                 continue
             parents=plan["incoming"][node["id"]]
@@ -1139,6 +1148,14 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
                 target["target_chains"] = [c for c in re.split(r"[,;\s]+", params.get("target_chains", "")) if c]
             target.setdefault("target_chains", [])
             target.setdefault("hotspots", "")
+            if kind in {"bindcraft2", "bindcraft2_generator"} and target.get("target_sequence"):
+                from mn_molecular_design_studio.binder_pipeline import write_idr_fasta
+
+                with tempfile.TemporaryDirectory(prefix="studio-binder-validation-") as directory:
+                    target["target_fasta"] = _call(write_idr_fasta, target["target_sequence"], Path(directory))
+                    child_request = _call(node_request, kind, params, {"target": target}, graph["name"])
+                    _with_request_file(child_request, validate_workflow_request, base_dir=str(_request_directory(user, None)))
+                continue
             child_request = _call(node_request, node["data"]["kind"], node["data"]["params"], {"target": target}, graph["name"])
             _with_request_file(child_request, validate_workflow_request, base_dir=str(_request_directory(user, None)))
     return graph, project_id, request

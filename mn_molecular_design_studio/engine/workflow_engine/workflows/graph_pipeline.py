@@ -527,11 +527,12 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
         return {"schema_version": 1, "workflow": workflow, "parameters": {**validate_analysis_parameters(p), **source["md_source"]}}
     if kind == "af2" and source.get("target", {}).get("pipeline_task") in {"ligand_binder", "motif_ligand"}:
         raise ValueError("AlphaFold2 does not predict ligand complexes. Use RosettaFold3, or ESMFold for the binder alone.")
-    if kind == "peptide_trap":
-        p["job_name"] = name
-        return {"schema_version": 1, "workflow": workflow, "parameters": p}
-    if kind == "kejia_idr":
-        p["template_structure"] = str(_path(p["template_structure"])) if p.get("template_structure") else None
+    if kind in {"peptide_trap", "kejia_idr"}:
+        from mn_molecular_design_studio.binder_pipeline import sequence_template_parameters
+
+        p = sequence_template_parameters(p, source.get("target") or {})
+        if kind == "kejia_idr":
+            p["template_structure"] = str(_path(p["template_structure"])) if p.get("template_structure") else None
         p["job_name"] = name
         return {"schema_version": 1, "workflow": workflow, "parameters": p}
     if kind == "boltz2":
@@ -563,6 +564,12 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
             chains=target.get("target_chains") or []
             p["target_chains"]=[x for x in re.split(r"[,;\s]+",chains) if x] if isinstance(chains,str) else chains
             p["hotspots"]=target.get("hotspots","")
+            if p.get("task") in {"antibody", "tcr"} and p.get("input_mode") == "guided":
+                design_chains = p["options"].get("design_chains") or []
+                if not design_chains or not p["options"].get("cdr_residues"):
+                    raise ValueError("Select the framework chains and CDR residues in the RFD4 design step.")
+                if set(design_chains).intersection(p["target_chains"]):
+                    raise ValueError("Select different target and framework chains for RFD4.")
             if target.get("target_sequence"):
                 from mn_molecular_design_studio.rfd4_proteina_input import idr_binder_condition_spec, parse_idr_fasta
                 from mn_molecular_design_studio.target_identity import is_sequence_carrier_reference
@@ -706,6 +713,13 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
             p.pop("non_binding_residues", None)
         if kind in {"bindcraft2", "bindcraft2_generator"}:
             p["coldspots"] = p.get("coldspots") or target.get("coldspots", "")
+            if target.get("target_sequence"):
+                if p.get("distributed_campaign"):
+                    raise ValueError("BindCraft2 sequence inputs use native jobs. Clear the distributed campaign objective on this step.")
+                if not target.get("target_fasta"):
+                    raise ValueError("The sequence Target step has no staged FASTA.")
+                p.update(target_type="sequence", target_fasta=target["target_fasta"],
+                         target_pdb=None, target_chains=[], hotspots="", coldspots="")
         elif kind in {"boltzgen", "boltzgen_generator"}:
             p["non_binding_residues"] = p.get("non_binding_residues") or target.get("coldspots", "")
         if kind == "rfd3":
@@ -1751,8 +1765,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             if params.get(key):key_params[key+'_digest']=file_digest(_path(params[key]))
                     elif kind == "peptide_trap":
                         from mn_molecular_design_studio import peptide_trap_input
+                        from mn_molecular_design_studio.binder_pipeline import sequence_template_parameters
                         from mn_molecular_design_studio.engine.workflow_engine.workflows import peptide_trap
-                        prepared = peptide_trap_input.prepare_request(params)
+                        prepared = peptide_trap_input.prepare_request(sequence_template_parameters(params, source.get("target") or {}))
                         key_params["input_adapter_digest"] = file_digest(Path(peptide_trap_input.__file__))
                         key_params["workflow_adapter_digest"] = file_digest(Path(peptide_trap.__file__))
                         key_params["template_digests"] = [file_digest(peptide_trap_input.template_path(key)) for key in prepared["scaffold_ids"]]
@@ -1760,9 +1775,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         key_params["container_adapter_digest"] = file_digest(Path(__file__).parents[1] / "tools/peptide_trap_runtime.py")
                     elif kind == "kejia_idr":
                         from mn_molecular_design_studio import kejia_idr_input
+                        from mn_molecular_design_studio.binder_pipeline import sequence_template_parameters
                         key_params["input_adapter_digest"] = file_digest(Path(kejia_idr_input.__file__))
                         key_params["source_revision"] = kejia_idr_input.SOURCE_REVISION
-                        prepared = kejia_idr_input.prepare_request(params)
+                        prepared = kejia_idr_input.prepare_request(sequence_template_parameters(params, source.get("target") or {}))
                         key_params["template_digests"] = [file_digest(Path(row["path"])) for row in prepared["templates"]]
                         key_params["container_adapter_digest"] = file_digest(Path(__file__).parents[1] / "tools/kejia_idr_threading.py")
                     elif kind == "rfdiffusion_beta_pairing":
@@ -1934,7 +1950,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                              "hotspots": params["hotspots"], "coldspots": params.get("coldspots", ""),
                                              "target_type": params.get("target_type", "auto")}}
                         if is_idr:
+                            from mn_molecular_design_studio.binder_pipeline import write_idr_fasta
+
                             output["target"].update(target_type="fasta_idr", target_sequence=params["target_sequence"])
+                            output["target"]["target_fasta"] = write_idr_fasta(params["target_sequence"], staged_target.parent)
                         if any(n["data"]["kind"] in candidate_sets.KINDS for n in nodes.values()):
                             output["target"]["identity"] = candidate_sets.target_identity(output["target"])
                         complete(node_id, output, key);progressed=True;continue

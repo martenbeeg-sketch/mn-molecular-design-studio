@@ -508,7 +508,7 @@ def _render_workflow_parameter(parameter, value, key):
     return parsed
 
 
-def _render_tile_workflow_settings(tile, settings, node, graph, key):
+def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""):
     from mn_molecular_design_studio.pipeline_tile_workflows import connected_parameter_names, parameter_descriptors
 
     parents = {item["id"]: item["data"]["label"] for item in graph["nodes"]}
@@ -533,6 +533,70 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key):
 
     values = dict(settings)
     ready = True
+    if node["data"].get("kind") in {"tile_design_rfd3_tasks", "tile_design_boltzgen_tasks"}:
+        from mn_molecular_design_studio.target_editor import _target_storage_path
+
+        rfd3 = tile.workflow == "design.rfdiffusion3"
+        choices = ({"ligand_binder": "Ligand binder", "enzyme": "Enzyme scaffold", "nucleic_acid_binder": "DNA or RNA binder"}
+                   if rfd3 else {"small_molecule": "Small-molecule binder", "redesign": "Protein redesign"})
+        task = values.get("task")
+        values["task"] = st.selectbox("Design task", list(choices), index=list(choices).index(task) if task in choices else 0,
+                                      format_func=choices.get, key=key + "-design-task")
+        structure = "target_structure" if rfd3 else "target_pdb"
+        if structure not in sources:
+            upload = st.file_uploader("Input structure", type=["pdb", "ent", "cif", "mmcif"], key=key + "-input-structure")
+            if upload:
+                try:
+                    values[structure] = str(_target_storage_path(upload.getvalue(), upload.name, owner_id=owner_id,
+                                                                 allow_non_protein=rfd3))
+                except (ValueError, OSError) as exc:
+                    st.error(str(exc))
+                    ready = False
+            elif values.get(structure):
+                st.caption(Path(values[structure]).name)
+        descriptors = [parameter for parameter in descriptors if parameter["name"] not in {"task", structure}]
+    if tile.workflow in {"design.rfantibody_mimosa", "design.boltzgen_mimosa"}:
+        from mn_molecular_design_studio.target_editor import _target_storage_path
+
+        choices = {"sequence_fixed": "Sequence-fixed", "geometry_only": "Geometry-only", "unconstrained": "Unconstrained"}
+        fallback = "sequence_fixed" if tile.workflow == "design.rfantibody_mimosa" else "unconstrained"
+        condition = values.get("mimosa_condition", fallback)
+        condition = st.selectbox("Motif guidance", list(choices), index=list(choices).index(condition) if condition in choices else 0,
+                                 format_func=choices.get, key=key + "-guidance")
+        values["mimosa_condition"] = condition
+        values["task"] = "nanobody"
+        if tile.workflow == "design.rfantibody_mimosa":
+            values["mimosa_enabled"] = condition != "unconstrained"
+            values.setdefault("framework", "h-NbBCII10")
+        managed = {"task", "mimosa_condition", "mimosa_enabled", "mimosa_complex"}
+        if condition != "unconstrained":
+            upload = st.file_uploader("Source interaction complex", type=["pdb", "ent", "cif", "mmcif"], key=key + "-motif")
+            if upload:
+                try:
+                    values["mimosa_complex"] = str(_target_storage_path(upload.getvalue(), upload.name, owner_id=owner_id))
+                except (ValueError, OSError) as exc:
+                    st.error(str(exc))
+                    ready = False
+            elif values.get("mimosa_complex"):
+                st.caption(f"Source complex · {Path(values['mimosa_complex']).name}")
+            elif ready:
+                st.caption("Upload the source interaction complex to configure motif guidance.")
+            for parameter in descriptors:
+                if parameter["name"] in {"mimosa_binder_chain", "mimosa_complex_target_chain"}:
+                    parameter["required"] = True
+            positions = values.get("mimosa_source_positions") or ""
+            values["mimosa_source_positions"] = st.text_input(
+                "Source motif residues", value=", ".join(positions) if isinstance(positions, list) else positions,
+                placeholder="H34, H35", key=key + "-motif-residues")
+            managed.add("mimosa_source_positions")
+            ready = ready and bool(values.get("mimosa_complex"))
+        else:
+            motif_inputs = {parameter["name"] for parameter in descriptors
+                            if parameter["name"].startswith("mimosa_") and parameter["name"] not in {"mimosa_enabled", "mimosa_condition"}}
+            for name in motif_inputs:
+                values.pop(name, None)
+            managed.update(motif_inputs)
+        descriptors = [parameter for parameter in descriptors if parameter["name"] not in managed]
     for required in (True, False):
         fields = [parameter for parameter in descriptors if parameter["required"] == required]
         if not fields:
@@ -665,7 +729,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
         ready = True
         if kind in TILES:
             values["workflow_parameters"], ready = _render_tile_workflow_settings(
-                TILES[kind], values["workflow_parameters"], node, graph, key,
+                TILES[kind], values["workflow_parameters"], node, graph, key, owner_id,
             )
         elif kind == "active_results":
             _render_connection_card(node, graph)
@@ -1265,6 +1329,16 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
                 st.caption("Protein binder design · the connected Target block provides structure, chains and hotspots.")
             primary = [f for f in spec["fields"] if f.get("section")=="basic" or spec["category"]=="Analysis"]
             optional = [f for f in spec["fields"] if f not in primary]
+            _, upstream = _connected_inputs(graph, node["id"])
+            connected_target = next((n["data"]["params"] for n in upstream if n["data"]["kind"] == "target"), {})
+            if kind in {"peptide_trap", "kejia_idr"} and connected_target.get("target_input") == "idr":
+                primary = [field for field in primary if field["name"] != "target_sequence"]
+                st.caption("The sequence comes from the connected Target step.")
+            if kind == "kejia_idr":
+                from mn_molecular_design_studio.target_editor import _target_storage_path
+
+                primary = [field for field in primary if field["name"] != "template_structure"]
+                optional = [field for field in optional if field["name"] not in {"binder_chain", "peptide_chain"}]
             bindcraft = kind in {"bindcraft2", "bindcraft2_generator"}
             if bindcraft:
                 from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import (
@@ -1331,6 +1405,55 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
                     for i,field in enumerate(optional):
                         with columns[i%2]:
                             values[field["name"]] = _render_field(field,values,key)
+            if kind == "kejia_idr":
+                if values["template_library"] == "upload":
+                    from mn_molecular_design_studio.kejia_idr_input import template_chains
+
+                    upload = st.file_uploader("Template structure", type=["pdb", "ent", "cif", "mmcif"], key=key + "-template")
+                    try:
+                        if upload:
+                            values["template_structure"] = str(_target_storage_path(upload.getvalue(), upload.name, owner_id=owner_id))
+                        if values["template_structure"]:
+                            from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+
+                            template = resolve_stored_path(values["template_structure"], must_exist=True)
+                            if not template:
+                                raise ValueError("Upload the template structure again.")
+                            chains = template_chains(template)
+                            st.caption(template.name)
+                            columns = st.columns(2)
+                            for index, (name, label) in enumerate((("binder_chain", "Binder chain"), ("peptide_chain", "Peptide chain"))):
+                                default = chains.index(values[name]) if values[name] in chains else index
+                                values[name] = columns[index].selectbox(label, chains, index=default,
+                                                                         key=f"{key}-{name}-{template.name}")
+                            if values["binder_chain"] == values["peptide_chain"]:
+                                raise ValueError("Choose distinct binder and peptide chains.")
+                    except (ValueError, OSError) as exc:
+                        st.error(str(exc))
+                        ready = False
+                else:
+                    values["template_structure"] = ""
+            if kind == "rfd4" and values["task"] in {"antibody", "tcr", "rna_design"} and values["input_mode"] == "guided":
+                try:
+                    options = json.loads(values["options_json"])
+                    if not isinstance(options, dict):
+                        raise ValueError("RFD4 task options must be a JSON object.")
+                    if values["task"] == "rna_design":
+                        options["rna_secondary_structure"] = st.text_input("RNA secondary structure (dot-bracket)",
+                            value=options.get("rna_secondary_structure", ""), key=key + "-secondary-structure")
+                    else:
+                        st.caption("Load the full framework–target complex in the Target step and select the target chains there.")
+                        with st.container(border=True):
+                            st.markdown("**Framework to redesign**")
+                            chains = st.text_input("Framework chain IDs", value=", ".join(options.get("design_chains") or []),
+                                                   key=key + "-framework-chains", placeholder="H, L")
+                            options["design_chains"] = [chain.strip() for chain in chains.split(",") if chain.strip()]
+                            options["cdr_residues"] = st.text_input("CDR residues", value=options.get("cdr_residues", ""),
+                                                                   key=key + "-cdr-residues", placeholder="H25-35, L30-34")
+                    values["options_json"] = json.dumps(options)
+                except (ValueError, TypeError) as exc:
+                    st.error(str(exc))
+                    ready = False
             if kind == "rfd3" and values.get("low_memory_mode"):
                 st.warning("Low memory mode uses a chunked path with partially missing checkpoint weights and may reduce prediction quality.")
             if kind == "boltz2":
@@ -1345,7 +1468,10 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
             if kind == "campaign_stop":
                 st.info("This node uses the upstream Shared scientific filters policy to configure the existing native distributed campaign controller. The campaign stops at the first reached limit: passing-design target, maximum design attempts, runtime, or absolute deadline.")
                 st.caption("Native jobs retain their engine settings, job identities, retries and recovery. Designs per native job is separate from the model's internal GPU microbatch. Rejected structures remain on their producing workstation when the RFD4 accepted-only transfer path is available.")
-        if kind in {"bindcraft2", "rfd4"}:
+        if kind == "bindcraft2" and connected_target.get("target_input") == "idr":
+            st.caption("BindCraft2 takes the target sequence. Residue annotations on Target are available to compatible branches.")
+            values.pop("distributed_campaign", None)
+        elif kind == "bindcraft2" or kind == "rfd4" and values["task"] == "protein_binder":
                 shared_campaign = graph.get("shared_campaign") if isinstance(graph.get("shared_campaign"), dict) else {}
                 has_stop_node = any(item.get("data", {}).get("kind") == "campaign_stop" for item in graph.get("nodes", []))
                 if has_stop_node:

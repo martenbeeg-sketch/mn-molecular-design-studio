@@ -55,6 +55,11 @@ TILES = {
             ("boltzgen_mimosa", "MIMOSA · BoltzGen"), ("rfpeptides", "RFpeptides"),
         )
     },
+    "tile_design_bindcraft": TileWorkflow("BindCraft · Classic", "design.bindcraft", "Design pipeline", "candidates", TARGET),
+    "tile_design_rfd3_tasks": TileWorkflow("RFdiffusion3 · Ligand, enzyme and nucleic acid", "design.rfdiffusion3",
+                                          "Design engine", "candidates", TARGET),
+    "tile_design_boltzgen_tasks": TileWorkflow("BoltzGen · Ligand and redesign", "design.boltzgen",
+                                              "Design pipeline", "candidates", TARGET),
     "tile_affinity_nesso": TileWorkflow("Nesso-1", "ligand.affinity.nesso", "Docking", inputs=(*TARGET, *COMPOUNDS)),
     "tile_prepare_library": TileWorkflow("Prepare library", "library.prepare", "Ligand library",
                                         "fingerprint_manifest", cpu=True),
@@ -107,7 +112,7 @@ def parameters_for(workflow: str) -> tuple[tuple[str, bool], ...]:
 def connected_parameter_names(tile: TileWorkflow, port: str) -> set[str]:
     """Fields supplied by a connection without a manual override."""
     names = {
-        "target": {"target_pdb", "target_chains", "chain_ids"},
+        "target": {"target_pdb", "target_structure", "target_chains", "chain_ids"},
         "candidates": {"source_run_dir", "candidates_jsonl"},
         "features": {"feature_manifest", "library_id"},
     }.get(port, {ARTIFACT_INPUT_FIELDS.get(port)})
@@ -149,13 +154,16 @@ def workflow_request(tile: TileWorkflow, settings: dict, inputs: dict, name: str
             target = source.get("target") or {}
             if not target.get("target_pdb"):
                 raise ValueError(f"{tile.label} requires a saved target structure.")
-            parameters["target_pdb"] = target["target_pdb"]
+            structure_parameter = "target_structure" if "target_structure" in accepted else "target_pdb"
+            parameters[structure_parameter] = target["target_pdb"]
             chains = target.get("target_chains") or []
             for key in ("target_chains", "chain_ids"):
                 if key in accepted and chains:
                     parameters[key] = chains
             if "chain_id" in accepted and "chain_id" not in parameters and len(chains) == 1:
                 parameters["chain_id"] = chains[0]
+            if tile.workflow.endswith("_mimosa") and not parameters.get("mimosa_target_chain") and len(chains) == 1:
+                parameters["mimosa_target_chain"] = chains[0]
             if "hotspots" in accepted and target.get("hotspots") and not parameters.get("hotspots"):
                 parameters["hotspots"] = target["hotspots"]
         elif handle == "candidates":
@@ -172,7 +180,11 @@ def workflow_request(tile: TileWorkflow, settings: dict, inputs: dict, name: str
                 parameters["library_id"] = artifact["library_id"]
     if "job_name" in accepted:
         parameters.setdefault("job_name", name)
+    if "campaign_name" in accepted:
+        parameters.setdefault("campaign_name", name)
     validate_parameters(tile, parameters, set(), runnable=True)
+    if tile.workflow == "design.bindcraft" and Path(parameters["target_pdb"]).suffix.lower() not in {".pdb", ".ent"}:
+        raise ValueError("Classic BindCraft needs a PDB target structure.")
     return {"schema_version": 1, "workflow": tile.workflow, "parameters": parameters}
 
 
