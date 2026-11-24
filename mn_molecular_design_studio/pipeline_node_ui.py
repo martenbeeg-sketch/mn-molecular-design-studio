@@ -539,6 +539,15 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""
 
     values = dict(settings)
     ready = True
+    if tile.workflow == "simulation.bioemu2":
+        from mn_molecular_design_studio.bioemu2_ui import render_pipeline_inputs
+
+        values, ready = render_pipeline_inputs(settings, connected="candidates_jsonl" in sources,
+                                               owner_id=owner_id, key=key)
+        managed = {"mode", "structure_paths", "protein_sequences", "source_run_dir", "candidates_jsonl"}
+        if values["mode"] != "propagate":
+            managed.add("lag_time_ns")
+        descriptors = [parameter for parameter in descriptors if parameter["name"] not in managed]
     ligand_uploads = {}
     if design_mode and owner_id:
         from mn_molecular_design_studio.ligand_tools_ui import (

@@ -22,10 +22,32 @@ from mn_molecular_design_studio.engine.workflow_engine.runtime import reference_
 
 
 Mode = Literal["propagate", "sample-equilibrium", "predict-structure"]
+BIOEMU2_MODES = {
+    "sample-equilibrium": ("Equilibrium Sampling", "Sample an ensemble of conformations from protein chain sequences."),
+    "predict-structure": ("Structure Prediction", "Predict folded structures from protein chain sequences."),
+    "propagate": ("Propagate Structure", "Sample endpoints at a chosen time lag from a starting structure."),
+}
 Sampler = Literal["edm", "edm_gd", "edm_fk", "edm_fkc"]
 PhysicalityFilter = Literal["high_quality", "high_quality_per_residue", "no_violations", "no_filter"]
 Precision = Literal["bf16-mixed", "32-true"]
 MatmulPrecision = Literal["highest", "high", "medium"]
+
+
+def validate_mode_inputs(mode: str, *, has_structures: bool, protein_count: int) -> None:
+    if mode not in BIOEMU2_MODES:
+        raise ValueError("Choose a supported BioEmu-2 mode.")
+    if mode == "propagate":
+        if not has_structures:
+            raise ValueError("Propagate Structure requires at least one starting structure.")
+        if protein_count:
+            raise ValueError("Choose either starting structures or protein sequences.")
+    else:
+        if has_structures:
+            raise ValueError("Equilibrium Sampling and Structure Prediction require protein sequences.")
+        if not protein_count:
+            raise ValueError("Enter at least one protein chain sequence for this mode.")
+        if protein_count > 26:
+            raise ValueError("A sequence-defined system can contain at most 26 protein chains.")
 
 
 def _write_propagation_cif(source: Path, destination: Path) -> None:
@@ -183,23 +205,13 @@ def run_bioemu2(
         raise ValueError("Number of samples must be at least one.")
     if cpu_cores < 1:
         raise ValueError("CPU cores must be at least one.")
+    validate_mode_inputs(mode, has_structures=bool(structures), protein_count=len(sequences))
     if mode == "propagate":
-        if not structures:
-            raise ValueError("Propagate mode requires at least one uploaded starting structure.")
-        if sequences:
-            raise ValueError("Provide starting structures or sequences, not both.")
         if not 0 < lag_time_ns <= 1000:
             raise ValueError("BioEmu-2 recommends a propagation lag from above 0 to 1000 ns.")
         for path in structures:
             if not path.is_file() or path.suffix.lower() not in {".pdb", ".ent", ".cif", ".mmcif"}:
                 raise ValueError(f"Starting structure must be a PDB or mmCIF file: {path}")
-    else:
-        if structures:
-            raise ValueError("Sequence sampling mode accepts sequences, not starting structures.")
-        if not sequences:
-            raise ValueError("Provide at least one protein sequence for this mode.")
-        if len(sequences) > 26:
-            raise ValueError("A sequence-defined system can contain at most 26 protein chains.")
     if batch_size is not None and batch_size < 1:
         raise ValueError("Batch size must be at least one.")
     if num_steps is not None and num_steps < 1:

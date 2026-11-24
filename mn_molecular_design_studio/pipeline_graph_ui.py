@@ -723,7 +723,8 @@ def open_binder_preset(preset, *, prefix=None):
     _open_capability_graph(new_binder_pipeline(**preset), prefix)
 
 
-def _open_capability_step(kind, prefix, *, prediction_mode=None, ligand_design_mode="", predict_affinity=False):
+def _open_capability_step(kind, prefix, *, prediction_mode=None, ligand_design_mode="", predict_affinity=False,
+                          bioemu2_mode=None, use_project_designs=False):
     from mn_molecular_design_studio.pipeline_blocks import add_block, blank_program, connect_blocks
 
     name = NODE_CATALOG[kind]["label"]
@@ -741,6 +742,21 @@ def _open_capability_step(kind, prefix, *, prediction_mode=None, ligand_design_m
         graph, _ = add_block(graph, "results", source=predictor)
     elif kind == "md_analysis":
         graph = new_graph("md_analysis")
+    elif kind == "tile_bioemu2":
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.bioemu2 import BIOEMU2_MODES
+
+        mode = bioemu2_mode or "propagate"
+        if mode not in BIOEMU2_MODES or (use_project_designs and mode != "propagate"):
+            raise ValueError("Choose a BioEmu-2 mode compatible with the starting inputs.")
+        graph = blank_program()
+        source = None
+        if use_project_designs:
+            graph, source = add_block(graph, "project_design_source")
+        graph, sampling = add_block(graph, kind, source=source, target_port="candidates")
+        graph, _ = add_block(graph, "results", source=sampling)
+        node = next(node for node in graph["nodes"] if node["id"] == sampling)
+        node["data"]["params"]["workflow_parameters"]["mode"] = mode
+        name = f"{name} · {BIOEMU2_MODES[mode][0]}"
     elif ligand_design_mode:
         from mn_molecular_design_studio.pipeline_tile_workflows import LIGAND_DESIGN_MODES, TILES, ligand_mode_fields
 

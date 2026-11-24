@@ -119,7 +119,7 @@ render_capabilities('cap', lambda _: None, lambda *args, **options: None)
     app.run()
     assert re.findall(r'data-engine="([^"]+)"', app.text[0].value) == ["tile_md_gromacs", "tile_md_openmm"]
     app.selectbox(key="cap-capability").set_value("Conformational sampling").run()
-    assert re.findall(r'data-engine="([^"]+)"', app.text[0].value) == ["tile_bioemu2"]
+    assert re.findall(r'data-engine="([^"]+)"', app.text[0].value) == ["BioEmu-2"] * 3
     app.selectbox(key="cap-capability").set_value("Analysis & validation").run()
     assert app.selectbox(key="cap-analysis-task").value == "Protein design evaluation"
     assert 'data-engine="tile_binderscope"' in app.text[0].value
@@ -130,6 +130,38 @@ render_capabilities('cap', lambda _: None, lambda *args, **options: None)
     assert 'data-engine="md_analysis"' in app.text[0].value
     assert "radius of gyration" in app.text[0].value
     assert not app.exception
+
+
+@pytest.mark.parametrize("mode,project_designs", [
+    ("sample-equilibrium", False), ("predict-structure", False), ("propagate", True), ("propagate", False),
+])
+def test_bioemu2_mode_cells_open_mode_specific_drafts(monkeypatch, mode, project_designs):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import design_capabilities_ui
+
+    def click_mode(*, data, **_):
+        assert all(f'data-output="{value}"' in data for value in ("sample-equilibrium", "predict-structure", "propagate"))
+        return {"choose": ["BioEmu-2", mode]}
+
+    monkeypatch.setattr(design_capabilities_ui, "_matrix", click_mode)
+    app = AppTest.from_string("""
+import streamlit as st
+from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
+from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_step
+if 'cap-graph' not in st.session_state:
+    render_capabilities('cap', lambda _: None, lambda step, **options: _open_capability_step(step, 'cap', **options))
+""")
+    app.session_state["cap-capability"] = "Conformational sampling"
+    app.run()
+    if project_designs:
+        app.selectbox(key="cap-bioemu2-source").set_value("Existing project designs").run()
+    app.button(key="cap-open-bioemu2-mode").click().run()
+    assert not app.exception
+    draft = app.session_state["cap-graph"]
+    expected = ["project_design_source", "tile_bioemu2", "results"] if project_designs else ["tile_bioemu2", "results"]
+    assert [node["data"]["kind"] for node in draft["nodes"]] == expected
+    assert draft["nodes"][-2]["data"]["params"]["workflow_parameters"]["mode"] == mode
+    graph.validate_graph(draft)
 
 
 def test_campaign_stop_waits_for_the_canvas_ipsae_step_before_counting_passes():

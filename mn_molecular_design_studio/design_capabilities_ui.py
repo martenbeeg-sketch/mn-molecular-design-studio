@@ -14,6 +14,7 @@ from mn_molecular_design_studio.design_capabilities import ACCESS, catalogue, sm
 _PROTEIN_DESIGN_CATEGORY = "Protein design"
 _PREDICTION_CATEGORY = "Structure prediction & cofolding"
 _SMALL_MOLECULE_CATEGORY = "Small-molecule design"
+_SAMPLING_CATEGORY = "Conformational sampling"
 _DOCKING_CATEGORY = "Docking & affinity"
 _ANALYSIS_CATEGORY = "Analysis & validation"
 _BOLTZ_AFFINITY_LABEL = "Boltz-2 affinity"
@@ -25,7 +26,7 @@ _OPERATION_CATEGORIES = {
     _PREDICTION_CATEGORY: {"Structure prediction"},
     _DOCKING_CATEGORY: {"Docking"},
     "Molecular dynamics": {"Molecular dynamics"},
-    "Conformational sampling": {"Conformational sampling"},
+    _SAMPLING_CATEGORY: {"Conformational sampling"},
     "Library preparation": {"Ligand library"},
     _ANALYSIS_CATEGORY: {"Analysis", "Antibody analysis", "Collection"},
 }
@@ -250,6 +251,9 @@ def render_capabilities(key, open_binder, open_step):
     if category == _SMALL_MOLECULE_CATEGORY:
         _render_small_molecule_design(key, open_step)
         return
+    if category == _SAMPLING_CATEGORY:
+        _render_bioemu2_modes(key, open_step)
+        return
 
     catalog = editor_tool_catalog()
     operations = {kind: spec for kind, spec in catalog.items()
@@ -332,6 +336,34 @@ def _render_small_molecule_design(key, open_step):
         if st.button("Open in Pipeline Builder", type="primary", key=key + "-open-ligand-mode"):
             try:
                 open_step(operation, ligand_design_mode=mode)
+            except ValueError as exc:
+                st.error(str(exc))
+
+    details()
+
+
+def _render_bioemu2_modes(key, open_step):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.bioemu2 import BIOEMU2_MODES
+
+    modes = {mode: label for mode, (label, _) in BIOEMU2_MODES.items()}
+    matrix = {"BioEmu-2": {mode: {"canvas"} for mode in modes}}
+    choice = _matrix(data=_matrix_markup(matrix, modes, ACCESS, primary_access="canvas"), key=key + "-bioemu2-modes",
+                     on_choose_change=lambda: None).get("choose")
+    if not choice or choice[0] != "BioEmu-2" or choice[1] not in modes:
+        return
+    mode = choice[1]
+
+    @st.dialog(f"BioEmu-2 · {modes[mode]}")
+    def details():
+        st.write(BIOEMU2_MODES[mode][1])
+        use_project_designs = False
+        if mode == "propagate":
+            source = st.selectbox("Starting structures", ["Upload structures", "Existing project designs"],
+                                  key=key + "-bioemu2-source")
+            use_project_designs = source == "Existing project designs"
+        if st.button("Open in Pipeline Builder", type="primary", key=key + "-open-bioemu2-mode"):
+            try:
+                open_step("tile_bioemu2", bioemu2_mode=mode, use_project_designs=use_project_designs)
             except ValueError as exc:
                 st.error(str(exc))
 

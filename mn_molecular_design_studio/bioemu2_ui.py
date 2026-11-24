@@ -7,6 +7,7 @@ from pathlib import Path
 import streamlit as st
 
 from mn_molecular_design_studio.auth import user_input_root
+from mn_molecular_design_studio.engine.workflow_engine.workflows.bioemu2 import BIOEMU2_MODES, validate_mode_inputs
 
 
 BIOEMU2_EXAMPLES = {
@@ -70,6 +71,52 @@ def _parse_sequences(text: str) -> list[str]:
     if current:
         sequences.append("".join(current))
     return sequences
+
+
+def render_pipeline_inputs(settings, *, connected, owner_id, key):
+    values = dict(settings)
+    mode = settings.get("mode", "propagate")
+    if connected:
+        mode = "propagate"
+        st.caption("Propagate Structure uses the connected project designs as starting structures.")
+    else:
+        modes = list(BIOEMU2_MODES)
+        mode = st.selectbox("BioEmu-2 mode", modes, index=modes.index(mode) if mode in modes else modes.index("propagate"),
+                            format_func=lambda value: BIOEMU2_MODES[value][0], key=key + "-bioemu2-mode")
+    values["mode"] = mode
+    st.caption(BIOEMU2_MODES[mode][1])
+
+    try:
+        if mode == "propagate":
+            values.pop("protein_sequences", None)
+            if connected:
+                for field in ("structure_paths", "source_run_dir", "candidates_jsonl"):
+                    values.pop(field, None)
+            else:
+                uploads = st.file_uploader("Starting structures", type=["pdb", "ent", "cif", "mmcif"],
+                                           accept_multiple_files=True, key=key + "-bioemu2-structures")
+                if uploads:
+                    values["structure_paths"] = _store_structures(uploads, owner_id)
+                    values.pop("source_run_dir", None)
+                    values.pop("candidates_jsonl", None)
+                elif paths := values.get("structure_paths"):
+                    st.caption(", ".join(Path(path).name for path in paths))
+                elif values.get("source_run_dir") and values.get("candidates_jsonl"):
+                    st.caption("Using the saved starting structure collection.")
+        else:
+            for field in ("structure_paths", "source_run_dir", "candidates_jsonl", "lag_time_ns"):
+                values.pop(field, None)
+            sequences = st.text_area("Protein chain sequences", value="\n".join(settings.get("protein_sequences") or []),
+                                     help="Use one sequence per line or paste FASTA records. The chains form one system.",
+                                     key=key + "-bioemu2-sequences")
+            values["protein_sequences"] = _parse_sequences(sequences)
+        has_structures = bool(connected or values.get("structure_paths")
+                              or values.get("source_run_dir") and values.get("candidates_jsonl"))
+        validate_mode_inputs(mode, has_structures=has_structures, protein_count=len(values.get("protein_sequences") or []))
+    except (OSError, ValueError) as exc:
+        st.info(str(exc))
+        return values, False
+    return values, True
 
 
 def _new_component_id() -> int:
@@ -192,25 +239,18 @@ def render_setup(schema: dict, *, owner_id: str, user: dict, project_selector, s
         unsafe_allow_html=True,
     )
 
+    mode_labels = {label: mode for mode, (label, _) in BIOEMU2_MODES.items()}
     mode_label = st.pills(
         "",
-        ["Equilibrium Sampling", "Structure Prediction", "Propagate Structure"],
+        list(mode_labels),
         selection_mode="single",
         default="Propagate Structure",
         key="bioemu2-task-mode-v2",
         help="Select saved target–design complexes to propagate, or enter protein chain sequences for equilibrium sampling or structure prediction.",
         label_visibility="collapsed",
     ) or "Propagate Structure"
-    mode = {
-        "Propagate Structure": "propagate",
-        "Equilibrium Sampling": "sample-equilibrium",
-        "Structure Prediction": "predict-structure",
-    }[mode_label]
-    st.caption({
-        "propagate": "Propagate a saved or uploaded protein complex in time.",
-        "sample-equilibrium": "Sample the equilibrium ensemble for the supplied protein sequence(s).",
-        "predict-structure": "Predict folded structures for the supplied protein sequence(s).",
-    }[mode])
+    mode = mode_labels[mode_label]
+    st.caption(BIOEMU2_MODES[mode][1])
     st.markdown('<div class="bioemu2-examples-title">EXAMPLES</div>', unsafe_allow_html=True)
     example_columns = st.columns(len(BIOEMU2_EXAMPLES))
     for column, example_name in zip(example_columns, BIOEMU2_EXAMPLES):

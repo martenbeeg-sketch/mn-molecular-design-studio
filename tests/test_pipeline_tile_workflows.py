@@ -163,6 +163,30 @@ def test_omtra_pharmacophore_mode_requires_the_pharmit_input():
     assert request["parameters"] == params
 
 
+@pytest.mark.parametrize("mode", ["sample-equilibrium", "predict-structure"])
+def test_bioemu2_sequence_modes_require_sequences_and_reject_structure_connections(mode):
+    tile = tiles.TILES["tile_bioemu2"]
+    with pytest.raises(ValueError, match="protein chain sequence"):
+        tiles.validate_parameters(tile, {"mode": mode, "protein_sequences": []}, set(), runnable=True)
+    settings = {"mode": mode, "protein_sequences": ["ACDEFGHIK"]}
+    with pytest.raises(ValueError, match="require protein sequences"):
+        tiles.validate_parameters(tile, settings, {"candidates"}, runnable=True)
+    request = tiles.workflow_request(tile, settings, {}, "BioEmu-2")
+    assert request["parameters"]["mode"] == mode
+
+
+def test_bioemu2_propagation_accepts_uploaded_structures_or_candidate_input():
+    tile = tiles.TILES["tile_bioemu2"]
+    with pytest.raises(ValueError, match="starting structure"):
+        tiles.validate_parameters(tile, {}, set(), runnable=True)
+    tiles.validate_parameters(tile, {}, {"candidates"}, runnable=True)
+    settings = {"mode": "propagate", "structure_paths": ["/work/complex.cif"]}
+    with pytest.raises(ValueError, match="one complete candidate collection"):
+        tiles.validate_parameters(tile, settings, {"candidates"}, runnable=True)
+    request = tiles.workflow_request(tile, settings, {}, "BioEmu-2")
+    assert request["parameters"]["structure_paths"] == ["/work/complex.cif"]
+
+
 @pytest.mark.parametrize("empty", [None, "", "  "])
 def test_md_starter_requires_a_ligand_input_before_queuing(empty):
     from mn_molecular_design_studio.pipeline_graph import PipelineInputError, new_graph, validate_graph

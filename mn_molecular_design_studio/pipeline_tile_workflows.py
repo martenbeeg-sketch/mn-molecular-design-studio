@@ -161,6 +161,21 @@ def validate_parameters(tile: TileWorkflow, settings: dict, connected_ports: set
     missing = [name for name, required in parameters.items() if (required or name in mode_fields) and name not in supplied]
     if runnable and missing:
         raise ValueError(f"{tile.label} needs {', '.join(missing)}.")
+    if runnable and tile.workflow == "simulation.bioemu2":
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.bioemu2 import validate_mode_inputs
+
+        structures = bool(settings.get("structure_paths"))
+        source_dir = bool(settings.get("source_run_dir"))
+        manifest = bool(settings.get("candidates_jsonl"))
+        candidates_connected = "candidates" in connected_ports
+        if (not candidates_connected and source_dir != manifest) or (structures and (candidates_connected or source_dir)):
+            raise ValueError("Choose uploaded starting structures or one complete candidate collection.")
+        sequences = settings.get("protein_sequences") or []
+        if not isinstance(sequences, list):
+            raise ValueError("Enter a list of protein chain sequences for BioEmu-2.")
+        validate_mode_inputs(settings.get("mode", "propagate"),
+                             has_structures=structures or candidates_connected or source_dir,
+                             protein_count=sum(bool(str(sequence).strip()) for sequence in sequences))
     if runnable and tile.workflow == "analysis.binderscope":
         from mn_molecular_design_studio.engine.workflow_engine.workflows.binderscope import validate_request
 
