@@ -78,6 +78,30 @@ def test_cyclic_binder_tile_inherits_connected_target():
     assert all(request["parameters"][key] == value for key, value in target.items())
 
 
+def test_multidomain_target_reuses_verified_structural_routes():
+    from mn_molecular_design_studio.design_capabilities import catalogue
+
+    routes = compatible_routes("multidomain", "miniprotein")
+    expected_engines = {"RFD4-Proteina", "BoltzGen", "RFdiffusion3", "BindCraft2", "PXDesign", "Genie3", "Proteina-Complexa"}
+    assert {route.engine for route in routes} == expected_engines
+    items = catalogue(target_input="multidomain", binder_format="miniprotein")["items"]
+    assert {item["route_id"] for item in items} == {route.id for route in routes}
+    inputs = {"target_pdb": "fixture.cif", "target_chains": "A,B", "hotspots": "A7,B9"}
+    graph = new_binder_pipeline("rfd4-internal", target_input="multidomain", binder_format="miniprotein", inputs=inputs)
+    target = graph["nodes"][0]
+    assert target["data"]["label"] == "Multidomain target"
+    assert target["data"]["params"]["target_input"] == "multidomain"
+    request = node_request("rfd4", _settings(graph, "rfd4"), {"target": target["data"]["params"]}, "Fixture")
+    assert request["parameters"]["target_chains"] == ["A", "B"]
+    assert request["parameters"]["hotspots"] == "A7,B9"
+    assert request["parameters"]["task"] == "protein_binder"
+    with pytest.raises(ValueError, match="does not support"):
+        new_binder_pipeline("esmfold2-protein", target_input="multidomain", binder_format="miniprotein")
+    with pytest.raises(ValueError, match="selected Target step"):
+        new_binder_pipeline("esmfold2-protein", target_input="structure", binder_format="miniprotein",
+                            graph=graph, target_node_id=target["id"])
+
+
 def test_route_compatibility_and_branch_preserve_existing_target():
     assert [route.id for route in compatible_routes("idr", "cyclic_peptide")] == ["bindcraft2-idr-cyclic-peptide"]
     assert not compatible_routes("sequence", "vhh")

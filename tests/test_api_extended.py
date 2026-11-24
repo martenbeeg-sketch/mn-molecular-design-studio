@@ -449,6 +449,13 @@ def test_binder_picker_catalog_and_draft_use_the_same_routes(api_data):
     assert validation.json()["valid"]
     request["configuration"]["binder_format"] = "cyclic_peptide"
     assert client.post("/api/v1/pipelines/drafts", json=request).status_code == 422
+    route = next(route for route in catalog["routes"] if route["id"] == "boltzgen-miniprotein")
+    assert route["target_inputs"] == ["structure", "multidomain"]
+    request["configuration"] = {"route": route["id"], "target_input": "multidomain", "binder_format": route["format"]}
+    request["parameters"] = {}
+    multidomain = client.post("/api/v1/pipelines/drafts", json=request)
+    assert multidomain.status_code == 200, multidomain.text
+    assert multidomain.json()["graph"]["nodes"][0]["data"]["params"]["target_input"] == "multidomain"
 
 
 def test_design_capabilities_api_uses_shared_catalog_and_validates_filters(api_data):
@@ -457,6 +464,8 @@ def test_design_capabilities_api_uses_shared_catalog_and_validates_filters(api_d
     client = api_data["client"]
     endpoint = "/api/v1/pipelines/design-capabilities"
     filters = {"target_input": "structure", "binder_format": "cyclic_peptide"}
+    assert client.get(endpoint, params=filters).json() == catalogue(**filters)
+    filters = {"target_input": "multidomain", "binder_format": "miniprotein"}
     assert client.get(endpoint, params=filters).json() == catalogue(**filters)
     assert client.get(endpoint, params={"binder_format": "unknown"}).status_code == 422
     assert client.get(endpoint, headers={"Authorization": "Bearer invalid-token"}).status_code == 401

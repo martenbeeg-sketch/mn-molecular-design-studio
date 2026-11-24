@@ -281,7 +281,7 @@ def create_server(client=None):
     @server.tool(annotations=read)
     async def design_capabilities(ctx: Context, target_input: str | None = None,
                                   binder_format: str | None = None) -> dict[str, Any]:
-        """Read Studio's design capability matrix. Filter by target_input (structure, idr, sequence) or a binder format key from the unfiltered response."""
+        """Read Studio's design capability matrix. Target filters include structure, multidomain, idr and sequence. Use binder format keys from the unfiltered response."""
         query = {key: value for key, value in {"target_input": target_input, "binder_format": binder_format}.items()
                  if value is not None}
         return await call(ctx, "GET", "/api/v1/pipelines/design-capabilities", query=query)
@@ -290,7 +290,7 @@ def create_server(client=None):
     async def create_pipeline_draft(template: str, project_id: str, ctx: Context, parameters: dict | None = None,
                                     source_job: str | None = None, selected_candidate_ids: list[str] | None = None,
                                     configuration: dict | None = None) -> dict[str, Any]:
-        """Create an unsaved graph. For design_binder, use route, target_input and binder_format from pipeline_templates. For small_molecule_hit_prioritization, set the Top N pose limit in configuration.method_settings.unidock_active_learning.active_accumulate.retained_pose_count."""
+        """Create an unsaved graph. For design_binder, use a route ID, one of its target_inputs, and its binder format from pipeline_templates. For small_molecule_hit_prioritization, set the Top N pose limit in configuration.method_settings.unidock_active_learning.active_accumulate.retained_pose_count."""
         return await call(ctx, "POST", "/api/v1/pipelines/drafts", body={"template": template, "project_id": project_id,
                           "parameters": parameters or {}, "source_job": source_job,
                           "selected_candidate_ids": selected_candidate_ids or [], "configuration": configuration or {}})

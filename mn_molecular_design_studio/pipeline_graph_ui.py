@@ -719,7 +719,7 @@ def _activate_graph(prefix, graph, revision=None):
 
 def _binder_picker(key, *, connected_target=None):
     from mn_molecular_design_studio.binder_pipeline import (
-        FORMATS, TARGET_INPUTS, compatible_routes, idr_target, legacy_sequence_carrier,
+        FORMATS, MULTIDOMAIN_TARGET, STRUCTURE_TARGET_INPUTS, TARGET_INPUTS, compatible_routes, legacy_sequence_carrier,
     )
     from mn_molecular_design_studio.design_capabilities import ACCESS, picker_tools
 
@@ -728,19 +728,22 @@ def _binder_picker(key, *, connected_target=None):
         if legacy_sequence_carrier(params):
             st.info("This legacy Target carries a sequence. Use New pipeline → Design a binder → Sequence to configure an IDR route.")
             return None
-        target_input = "idr" if idr_target(params) else "structure"
-        st.caption(f"Using {connected_target['data']['label']} · {TARGET_INPUTS[target_input]}")
+        target_input = params.get("target_input", "structure")
+        st.caption(f"Target step · {connected_target['data']['label']}")
     else:
-        source = st.segmented_control("Target input", ["Structure", "Sequence"], default="Structure", key=key + "-source")
+        sources = {TARGET_INPUTS[value]: value for value in STRUCTURE_TARGET_INPUTS}
+        source = st.segmented_control("Target input", [*sources, "Sequence"], default="Structure", key=key + "-source")
         if source is None:
             return None
-        target_input = "structure"
+        target_input = sources.get(source)
         if source == "Sequence":
             target_input = st.selectbox("Target context", ["idr", "sequence"], index=None,
                                         format_func=TARGET_INPUTS.get, placeholder="Choose how to interpret the sequence",
                                         key=key + "-context")
             if target_input is None:
                 return None
+    if target_input == MULTIDOMAIN_TARGET:
+        st.caption("These workflows use the supplied arrangement of the target domains. Select the relevant chains in the Target step.")
     binder_format = st.selectbox("Binder format", list(FORMATS), format_func=FORMATS.get, key=key + "-format")
     routes = compatible_routes(target_input, binder_format)
     additional = picker_tools(target_input, binder_format)

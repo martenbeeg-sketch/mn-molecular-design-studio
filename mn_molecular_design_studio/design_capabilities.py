@@ -39,8 +39,8 @@ def _capabilities():
 
     capabilities = [
         Capability(route.engine, route.format, NODE_CATALOG[route.method]["workflow"], "pipeline",
-                   route.target_input, route.summary, route.id, route.method)
-        for route in ROUTES
+                   target_input, route.summary, route.id, route.method)
+        for route in ROUTES for target_input in route.target_inputs
     ]
     for engine, workflow, node, tasks in (
         ("RFD4-Proteina", "design.rfd4_proteina", "rfd4", ("protein_small_molecule", "enzyme", "motif", "dna_binder", "redesign", "rna_design", "new_fold")),

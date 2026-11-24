@@ -1,14 +1,17 @@
 """Task-first entry points for existing binder-design workflows."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import copy
 import json
 import uuid
 
 
+MULTIDOMAIN_TARGET = "multidomain"
+STRUCTURE_TARGET_INPUTS = ("structure", MULTIDOMAIN_TARGET)
 TARGET_INPUTS = {
     "structure": "Structure",
+    MULTIDOMAIN_TARGET: "Multidomain target",
     "idr": "Sequence · disordered region (IDR)",
     "sequence": "Sequence · folded or unknown",
 }
@@ -40,6 +43,15 @@ class Route:
     format: str
     method: str
     summary: str
+
+    @property
+    def target_inputs(self) -> tuple[str, ...]:
+        if self.target_input == "structure" and (
+            self.method in {"bindcraft2", "boltzgen"}
+            or self.id in {"rfd4-internal", "rfd4-external", "rfd3", "pxdesign", "genie3", "complexa"}
+        ):
+            return STRUCTURE_TARGET_INPUTS
+        return (self.target_input,)
 
 
 ROUTES = (
@@ -118,11 +130,11 @@ ROUTES = (
 
 def catalogue():
     return {"template_id": "design_binder", "target_inputs": TARGET_INPUTS.copy(), "binder_formats": FORMATS.copy(),
-            "routes": [asdict(route) for route in ROUTES]}
+            "routes": [{**asdict(route), "target_inputs": list(route.target_inputs)} for route in ROUTES]}
 
 
 def compatible_routes(target_input, binder_format):
-    return tuple(route for route in ROUTES if route.target_input == target_input
+    return tuple(replace(route, target_input=target_input) for route in ROUTES if target_input in route.target_inputs
                  and (route.format == binder_format or (binder_format == "cyclic_peptide" and route.format == "cyclotide")))
 
 
@@ -230,8 +242,9 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
     target = steps[0]
     target["data"]["params"].update(inputs or {})
     target["data"]["params"]["target_input"] = target_input
-    target["data"]["label"] = ("Target sequence · IDR" if target_input == "idr"
-                                else "Annotated cyclic complex" if route.id == "rfd4-cyclic" else "Target structure")
+    target["data"]["label"] = {"idr": "Target sequence · IDR", MULTIDOMAIN_TARGET: "Multidomain target"}.get(
+        target_input, "Annotated cyclic complex" if route.id == "rfd4-cyclic" else "Target structure"
+    )
     engine = steps[1]["data"]
     engine["label"] = route.engine + " · " + (route.variant if route.method == "rfd4" else FORMATS[route.format])
     if (route.method not in {"bindcraft2", "boltzgen", "complexa", *TEMPLATE_IDR_STEPS}
@@ -256,7 +269,7 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
             raise ValueError("The selected Target step is unavailable.")
         if legacy_sequence_carrier(existing["data"]["params"]):
             raise ValueError("Choose a declared sequence target for the sequence-only binder route.")
-        if idr_target(existing["data"]["params"]) != (target_input == "idr"):
+        if existing["data"]["params"].get("target_input", "structure") != target_input:
             raise ValueError("Choose a route compatible with the selected Target step.")
         x, y = existing["position"]["x"], max(node["position"]["y"] for node in result["nodes"]) + 240
         steps[0] = existing

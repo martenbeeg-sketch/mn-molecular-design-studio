@@ -12,7 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mn_molecular_design_studio.binder_pipeline import SEQUENCE_TARGET_STEPS, TEMPLATE_IDR_STEPS, sequence_template_parameters
+from mn_molecular_design_studio.binder_pipeline import (
+    SEQUENCE_TARGET_STEPS, STRUCTURE_TARGET_INPUTS, TEMPLATE_IDR_STEPS, sequence_template_parameters,
+)
 from mn_molecular_design_studio.runtime import app_home
 from mn_molecular_design_studio.workflow_modes import MODES, capability as workflow_capability
 from mn_molecular_design_studio.docking_preparation_protocols import (
@@ -88,7 +90,7 @@ NODE_CATALOG = {
     ]),
     "target": _spec("target", "Target Structure", "Target inputs", "Shared PDB or mmCIF structure, selected protein chains and optional baseline interface annotations. Downstream acceptance infers structured versus FASTA/IDR context from this input and the connected design conditions.", output="target", color="#758f84", fields=[
         field("target_pdb", "Target structure", "", kind="text"), field("target_chains", "Target chains", "A", kind="text"),
-        field("target_input", "Target input", "structure", kind="select", options=["structure", "idr"]),
+        field("target_input", "Target input", "structure", kind="select", options=[*STRUCTURE_TARGET_INPUTS, "idr"]),
         field("target_sequence", "Target sequence", "", kind="text"),
         field("hotspots", "Hotspot residues", "", kind="text"), field("coldspots", "Coldspot residues", "", kind="text"),
         field("target_source_molecule_id", "Saved target molecule ID", "", kind="text"),
