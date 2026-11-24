@@ -539,6 +539,16 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""
 
     values = dict(settings)
     ready = True
+    if tile.workflow == "structure.tmol":
+        from mn_molecular_design_studio.tmol_ui import render_pipeline_inputs
+
+        values, ready = render_pipeline_inputs(
+            settings, connected=bool(sources.keys() & {"candidates_jsonl", "structure_paths"}),
+            owner_id=owner_id, key=key,
+        )
+        managed = {"mode", "structure_paths", "source_run_dir", "candidates_jsonl", "prepare_ligands",
+                   "ligand_params_files", "repeats"}
+        descriptors = [parameter for parameter in descriptors if parameter["name"] not in managed]
     if tile.workflow == "simulation.bioemu2":
         from mn_molecular_design_studio.bioemu2_ui import render_pipeline_inputs
 

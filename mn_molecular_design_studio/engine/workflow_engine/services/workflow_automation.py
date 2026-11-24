@@ -217,6 +217,8 @@ _SPECS = (
     _spec("refolding.protenix_cli", "refolding", "run_protenix_cli_complex_refolding", "refolding-validation", "protenix_v1", "complex_refolding", "Run the Protenix CLI complex-refolding workflow."),
     _spec("refolding.boltzgen_fold", "refolding", "run_boltzgen_fold_complex_refolding", "refolding-validation", "boltzgen_fold", "complex_refolding", "Run BoltzGen Fold complex refolding."),
     _spec("analysis.ipsae", "analysis", "run_ipsae_analysis_contract", "analysis", "ipsae", "analysis", "Analyze saved complexes in the shared ipSAE container: PAE-derived interface scores, structure contacts and B-factors, hotspot satisfaction, binder RMSD, and optional sequence-mapped preservation of the designed residue-contact pattern; no predictor is launched."),
+    _spec("structure.tmol", "tmol", "run_tmol", "analysis", "tmol", "tmol_structure_analysis",
+          "Score, minimize, or FastRelax saved molecular structures using TMol on a GPU."),
     _spec("analysis.rosetta", "analysis", "run_rosetta_metrics_contract", "analysis", "rosetta_metrics", "analysis", "Calculate PyRosetta interface and energy metrics from saved complex structures."),
     _spec("analysis.reference_placement", "analysis", "run_reference_placement_contract", "analysis", "reference_placement", "analysis", "Fit a Database complex component into its explicitly associated reference frame using a unique exact sequence map and corresponding C-alpha atoms. This records coordinate placement only; it does not score biological accessibility."),
     _spec("analysis.reference_environment", "analysis", "run_reference_environment_contract", "analysis", "reference_environment", "analysis", "Measure static atom-pair proximity and van-der-Waals envelope overlap between an explicitly placed Database complex and resolved omitted reference regions or explicitly selected reference components. This is evidence only; it does not infer biological binding or accessibility."),
@@ -856,6 +858,12 @@ def _apply_resource_parameters(
 
 
 def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) -> None:
+    if spec.workflow_id == "structure.tmol":
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.tmol import validate_inputs
+        try:
+            validate_inputs(parameters)
+        except ValueError as exc:
+            raise AutomationError(str(exc)) from exc
     if spec.workflow_id == "analysis.binderscope":
         from mn_molecular_design_studio.engine.workflow_engine.workflows.binderscope import validate_request
         try:

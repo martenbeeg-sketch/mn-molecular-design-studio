@@ -11,6 +11,7 @@ def _url(short: str, title: str, url: str) -> dict[str, str]:
 
 
 PAPERS = {
+    "tmol": _url("TMol", "TMol · RosettaCommons GPU scoring and relaxation", "https://github.com/RosettaCommons/tmol"),
     "localfold": _url("LocalFold", "LocalFold: sokrypton’s multi-model JAX fork of AlphaFold 3", "https://github.com/sokrypton/alphafold3"),
     "morgan": _doi("Morgan fingerprints", "Extended-Connectivity Fingerprints", "10.1021/ci100050t"),
     "butina": _doi("Butina clustering", "Unsupervised data base clustering based on daylight's fingerprint and Tanimoto similarity: a fast and automated way to cluster small and large data sets", "10.1021/ci9803381"),
@@ -132,6 +133,7 @@ WORKFLOW_REFERENCES = {
     "refolding.boltzgen_fold": ["boltzgen"],
     "analysis.ipsae": ["ipsae"],
     "analysis.rosetta": ["rosetta"],
+    "structure.tmol": ["tmol"],
     "ligand.complex.prepare": ["openmm"],
     "ligand.docking.vina": ["vina"],
     "ligand.docking.autodock_gpu": ["autodock_gpu"],

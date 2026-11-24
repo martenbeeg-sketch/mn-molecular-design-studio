@@ -3135,6 +3135,10 @@ for _kind, _tile in tile_workflows.TILES.items():
         for handle, artifact in _tile.inputs
     ]
     _node["outputs"][0]["label"] = tile_workflows.PORT_LABELS.get(_tile.output, _tile.output)
+    if _kind == "tile_tmol":
+        _node["inputs"][0]["accepts"] = ["candidates", "prediction"]
+        _node["inputs"][0]["label"] = "Structures to score or refine"
+        _node["outputs"][0]["label"] = "TMol structures"
     NODE_CATALOG[_kind] = _node
 NODE_CATALOG["results"]["inputs"][0]["accepts"].extend(
     sorted(set(tile.output for tile in tile_workflows.TILES.values()) -

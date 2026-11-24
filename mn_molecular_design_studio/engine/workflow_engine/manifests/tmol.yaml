@@ -1,0 +1,18 @@
+tool: tmol
+group: analysis
+image: mn-rfd4-proteina:0.0.3-cu130
+entrypoint: python
+gpu: true
+description: Score or refine fixed molecular structures with TMol on a CUDA GPU.
+inputs:
+  structure_paths: {type: structure_list, required: false}
+  candidates_jsonl: {type: candidate_set, required: false}
+  ligand_params_files: {type: ligand_parameters, required: false}
+params:
+  mode: {type: enum, values: [score, minimize, fast_relax], default: fast_relax}
+  repeats: {type: int, default: 1}
+  prepare_ligands: {type: bool, default: false}
+outputs:
+  summary: {path: artifacts/tmol/summary.json, type: tmol_summary}
+  measurements: {path: artifacts/tmol/measurements.csv, type: csv}
+  candidates: {path: artifacts/normalized_candidates/candidates.jsonl, type: candidate_set}

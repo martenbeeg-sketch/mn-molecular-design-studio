@@ -742,6 +742,9 @@ def _open_capability_step(kind, prefix, *, prediction_mode=None, ligand_design_m
         graph, _ = add_block(graph, "results", source=predictor)
     elif kind == "md_analysis":
         graph = new_graph("md_analysis")
+    elif kind == "tile_tmol":
+        graph, tmol_node = add_block(blank_program(), kind)
+        graph, _ = add_block(graph, "results", source=tmol_node)
     elif kind == "tile_bioemu2":
         from mn_molecular_design_studio.engine.workflow_engine.workflows.bioemu2 import BIOEMU2_MODES
 

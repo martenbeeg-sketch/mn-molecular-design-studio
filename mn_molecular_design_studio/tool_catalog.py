@@ -50,6 +50,7 @@ WORKFLOW_TITLES = {
     "Rfdiffusion3": "RFdiffusion3",
     "Rfd4 Proteina": "RFD4-Proteina",
     "Ipsae": "ipSAE & Structure Analysis",
+    "Tmol": "TMol",
     "Rosetta Metrics": "Rosetta Interface Metrics",
     "Pesto": "PeSTo",
     "Scannet": "ScanNet",
@@ -147,6 +148,7 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "ligand.md.openmm",
     "ligand.md.analysis",
     "simulation.bioemu2",
+    "structure.tmol",
 }
 
 # Upstream code versions for tool tiles. Values describe engine code or a pinned
@@ -155,6 +157,7 @@ TOOL_CATALOG_WORKFLOW_IDS = {
 TOOL_WORKFLOW_CODE_VERSIONS = {
     "library.prepare": ("Studio · library fingerprint preparation v1", False),
     "library.centroids": ("Studio · library centroid preparation v1", False),
+    "structure.tmol": ("TMol 0.2.0 · CUDA 13", False),
     "simulation.bioemu2": ("BioEmu-2 · 0.1.0rc0 · Microsoft source f99e0d8", False),
     "ligand.complex.prepare": ("Complex Preparation · Studio bundled runtime", False),
     "ligand.docking.vina": ("AutoDock Vina · 1.2.7", False),
@@ -277,6 +280,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
     }
     function_by_workflow = {
         "simulation.bioemu2": "Conformational Ensemble Sampling",
+        "structure.tmol": "Structure Scoring & Relaxation",
         "ligand.complex.prepare": "Complex Preparation",
         "target.prepare": "Structure Preparation",
         "target.crop": "Structure Cropping",
@@ -371,6 +375,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "refolding.esmfold2_cofolding": ["Protein Sequences"],
         "refolding.af3_jax_cofolding": ["Molecule Fields"],
         "refolding.optimized_prediction": ["Molecule Fields"],
+        "structure.tmol": ["Structure (PDB/mmCIF)", "Small Molecule (SDF/MOL2)", "Existing Results"],
         "analysis.ipsae": ["Existing Results"],
         "analysis.rosetta": ["Existing Results"],
         "ligand.docking.vina": ["Protein Structure (PDB)", "Database Compound Set"],
@@ -419,7 +424,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
             else ["Protein", "DNA", "RNA", "Ligand"]
             if workflow in {"refolding.af3_jax_cofolding", "design.rfdiffusion3"}
             else ["Protein", "Peptide"] if workflow in {"design.rfpeptides", "design.kejia_idr", "design.peptide_trap"}
-            else ["Protein", "Ligand"] if workflow in {"design.proteina_complexa", "design.proteina_complexa_generate"}
+            else ["Protein", "Ligand"] if workflow in {"structure.tmol", "design.proteina_complexa", "design.proteina_complexa_generate"}
             else ["Protein"]
             if workflow == "refolding.esmfold2_cofolding"
             else modalities_by_prefix.get(prefix, ["Protein"])

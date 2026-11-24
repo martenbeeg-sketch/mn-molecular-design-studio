@@ -3795,6 +3795,11 @@ def _render_workflow_setup() -> None:
         return
 
     schema = workflow_schema(workflow_id)
+    if workflow_id == "structure.tmol":
+        from mn_molecular_design_studio.tmol_ui import render_setup
+        render_setup(schema, owner_id=str(CURRENT_USER["id"]), project_selector=_render_project_selector,
+                     submit=_submit_cofolding_job, source_job_options=_analysis_source_job_options)
+        return
     if workflow_id == "simulation.bioemu2":
         from mn_molecular_design_studio import bioemu2_ui
         importlib.reload(bioemu2_ui)
@@ -7461,6 +7466,9 @@ def _render_job_details() -> None:
     is_generator_tool=str(job.get('tool')) in generator_input.TOOLS.values()
 
     with results_tab:
+        if analysis_tool == "tmol":
+            from mn_molecular_design_studio.tmol_ui import render_results
+            render_results(run_dir, run_id)
         if analysis_tool == "binderscope":
             from mn_molecular_design_studio.binderscope_ui import render_job_result
             render_job_result(run_dir)

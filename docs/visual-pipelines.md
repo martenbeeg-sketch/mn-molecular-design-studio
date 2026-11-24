@@ -48,6 +48,15 @@ next steps for that socket. RosettaLigand can take separate target, compound
 set, and optional reference ligand connections. Filter candidates exposes
 separate Pass, Fail, and Unresolved outputs.
 
+**Structure preparation → TMol** scores input geometries, minimizes Cartesian
+coordinates, or runs fixed-sequence FastRelax. Connect a saved structure
+collection or a Ligand SDF node, or upload individual PDB, mmCIF, SDF or MOL2
+files in the TMol setup. For protein–ligand complexes, supply interpretable
+ligand chemistry in the structure or upload matching `.tmol` parameter files.
+Results include per-input status, TMol beta2016 energies, and mmCIF outputs
+that can connect to subsequent structure tools. The API/MCP workflow is
+`structure.tmol` and runs in the existing CUDA 13 image with TMol 0.2.0.
+
 To build a **Large-library screen** from a blank canvas, use the individual
 blocks under **Library screening**. The docking block has separate sockets
 for the initial centroid sample, receptor, and next-round batch. The stopping

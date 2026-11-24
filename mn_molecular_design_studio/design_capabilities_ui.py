@@ -26,6 +26,7 @@ _PREDICTION_ENGINES = frozenset({
 _OPERATION_CATEGORIES = {
     _PREDICTION_CATEGORY: {"Structure prediction"},
     _DOCKING_CATEGORY: {"Docking"},
+    "Structure preparation": {"Structure preparation"},
     "Molecular dynamics": {"Molecular dynamics"},
     _SAMPLING_CATEGORY: {"Conformational sampling"},
     "Library preparation": {"Ligand library"},
@@ -266,6 +267,9 @@ def render_capabilities(key, open_binder, open_step):
     table_key = f"{key}-operations-{category}"
     uses = {}
     task = None
+    if category == "Structure preparation":
+        uses = {"tile_tmol": "Score, minimize, or FastRelax saved structures on a GPU",
+                "tile_complex_prepare": "Prepare protein–ligand complexes for simulation"}
     if category == _ANALYSIS_CATEGORY:
         tasks = {label: descriptions for label, descriptions in _ANALYSIS_TASKS.items()
                  if operations.keys() & descriptions.keys()}

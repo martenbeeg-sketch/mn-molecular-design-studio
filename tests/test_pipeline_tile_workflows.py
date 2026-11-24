@@ -14,7 +14,7 @@ from mn_molecular_design_studio.tool_connections import connection_catalog
 def test_visible_tiles_have_registered_canvas_operations():
     result = connection_catalog(view="tiles", query="", operation="", direction="both",
                                 artifact_type="", offset=0, limit=200)
-    assert result["total"] == 95
+    assert result["total"] == 97
     assert not [tile for tile in result["items"] if not tile["pipeline_operations"]]
 
 
@@ -253,3 +253,48 @@ def test_binderscope_requires_an_explicit_native_campaign_on_canvas():
                                   set(), runnable=True)
     settings = {"native_run_dirs": ["/work/bindcraft"], "target_pdb": "/work/target.pdb"}
     assert tiles.workflow_request(tile, settings, {}, "Native campaign")["parameters"] == settings
+
+
+def test_tmol_catalog_connects_saved_structures_and_ligands():
+    kind = "tile_tmol"
+    configuration = {"workflow_parameters": {"mode": "score"}}
+    assert connection_compatibility("boltz2", kind, target_handle="candidates")["compatible"]
+    assert connection_compatibility("ligand_sdf_input", kind, target_handle="ligand")["compatible"]
+    assert not connection_compatibility("ligandmpnn", kind, target_handle="candidates")["compatible"]
+    assert connection_compatibility(kind, "results")["compatible"]
+    result = connection_catalog(view="tiles", query="TMol", operation="", direction="both",
+                                artifact_type="", offset=0, limit=10)
+    assert result["total"] == 1
+    request = node_request(kind, configuration, {"workflow_inputs": {
+        "candidates": {"run_dir": "/test/source", "candidates_jsonl": "/test/source/candidates.jsonl"}
+    }}, "Score collection")
+    assert request["workflow"] == "structure.tmol"
+    assert request["parameters"]["candidates_jsonl"] == "/test/source/candidates.jsonl"
+    ligand = {"tile_artifact": {"path": "/test/ligand.sdf"}}
+    request = node_request(kind, configuration, {"workflow_inputs": {"ligand": ligand}}, "Score ligand")
+    assert request["parameters"]["structure_paths"] == ["/test/ligand.sdf"]
+    with pytest.raises(ValueError, match="Connect a structure collection or one standalone ligand"):
+        tiles.validate_parameters(tiles.TILES[kind], {}, {"candidates", "ligand"}, runnable=True)
+
+
+def test_tmol_mcp_schema_rejects_missing_inputs_and_requests_cuda(tmp_path):
+    from mn_molecular_design_studio.cluster.capabilities import requirements
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import (
+        AutomationError, validate_workflow_request, workflow_schema,
+    )
+
+    schema = workflow_schema("structure.tmol")
+    assert "source_job" in schema["request_fields"]
+    payload = {"schema_version": 1, "workflow": "structure.tmol", "parameters": {"mode": "minimize"}}
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps(payload))
+    with pytest.raises(AutomationError, match="Choose uploaded molecular structures or one saved structure collection"):
+        validate_workflow_request(request)
+    structure = tmp_path / "ligand.sdf"
+    structure.touch()
+    payload["parameters"]["structure_paths"] = [str(structure)]
+    request.write_text(json.dumps(payload))
+    assert validate_workflow_request(request)["valid"]
+    resources = requirements(payload, installed_images={})
+    assert resources["gpu_count"] == 1
+    assert "mn-rfd4-proteina:0.0.3-cu130" in resources["images"]

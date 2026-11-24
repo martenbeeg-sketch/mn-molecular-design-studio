@@ -81,6 +81,7 @@ TILES = {
                                    (("complex", "prepared_complex"),) + LIGAND),
     "tile_md_gromacs": TileWorkflow("GROMACS", "ligand.md.gromacs", "Molecular dynamics", "md_trajectory",
                                     (("complex", "prepared_complex"),) + LIGAND),
+    "tile_tmol": TileWorkflow("TMol", "structure.tmol", "Structure preparation", "candidates", CANDIDATES + LIGAND),
     "tile_bioemu2": TileWorkflow("BioEmu-2", "simulation.bioemu2", "Conformational sampling", inputs=CANDIDATES),
     "tile_af3_jax": TileWorkflow("ColabFold 2.0 preview", "refolding.af3_jax_cofolding", "Structure prediction",
                                  "prediction"),
@@ -121,6 +122,8 @@ def parameters_for(workflow: str) -> tuple[tuple[str, bool], ...]:
 
 def connected_parameter_names(tile: TileWorkflow, port: str) -> set[str]:
     """Fields supplied by a connection without a manual override."""
+    if tile.workflow == "structure.tmol" and port == "ligand":
+        return {"structure_paths"}
     names = {
         "target": {"target_pdb", "target_structure", "target_chains", "chain_ids"},
         "candidates": {"source_run_dir", "candidates_jsonl"},
@@ -161,6 +164,12 @@ def validate_parameters(tile: TileWorkflow, settings: dict, connected_ports: set
     missing = [name for name, required in parameters.items() if (required or name in mode_fields) and name not in supplied]
     if runnable and missing:
         raise ValueError(f"{tile.label} needs {', '.join(missing)}.")
+    if runnable and tile.workflow == "structure.tmol":
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.tmol import validate_inputs
+
+        if {"candidates", "ligand"} <= connected_ports:
+            raise ValueError("Connect a structure collection or one standalone ligand SDF.")
+        validate_inputs(settings, connected=bool(connected_ports & {"candidates", "ligand"}))
     if runnable and tile.workflow == "simulation.bioemu2":
         from mn_molecular_design_studio.engine.workflow_engine.workflows.bioemu2 import validate_mode_inputs
 
@@ -215,6 +224,11 @@ def workflow_request(tile: TileWorkflow, settings: dict, inputs: dict, name: str
             artifact = source.get("tile_artifact") or {}
             if not artifact.get("path"):
                 raise ValueError(f"The upstream workflow produced no {handle} artifact.")
+            if tile.workflow == "structure.tmol" and handle == "ligand":
+                if "structure_paths" in parameters:
+                    raise ValueError("Choose either the connected ligand or uploaded structures.")
+                parameters["structure_paths"] = [artifact["path"]]
+                continue
             key = ARTIFACT_INPUT_FIELDS[handle]
             parameters[key] = artifact["path"]
             if handle == "features" and artifact.get("library_id"):
