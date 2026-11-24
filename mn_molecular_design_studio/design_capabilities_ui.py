@@ -15,6 +15,7 @@ _PROTEIN_DESIGN_CATEGORY = "Protein design"
 _PREDICTION_CATEGORY = "Structure prediction & cofolding"
 _SMALL_MOLECULE_CATEGORY = "Small-molecule design"
 _DOCKING_CATEGORY = "Docking & affinity"
+_ANALYSIS_CATEGORY = "Analysis & validation"
 _BOLTZ_AFFINITY_LABEL = "Boltz-2 affinity"
 _PREDICTION_ENGINES = frozenset({
     "af2", "af3", "boltz2", "rf3", "rfd4_fold", "prediction_chai1", "prediction_colabfold",
@@ -24,8 +25,54 @@ _OPERATION_CATEGORIES = {
     _PREDICTION_CATEGORY: {"Structure prediction"},
     _DOCKING_CATEGORY: {"Docking"},
     "Molecular dynamics": {"Molecular dynamics"},
+    "Conformational sampling": {"Conformational sampling"},
     "Library preparation": {"Ligand library"},
-    "Analysis & validation": {"Analysis", "Antibody analysis", "Collection"},
+    _ANALYSIS_CATEGORY: {"Analysis", "Antibody analysis", "Collection"},
+}
+_ANALYSIS_TASKS = {
+    "Protein design evaluation": {
+        "tile_binderscope": "Assess binder interfaces, liabilities, and tag placement",
+        "biotite_interface": "Measure residue contacts across a protein interface",
+        "complex_analysis": "Compare saved complexes for downstream analysis",
+        "ipsae": "Measure interface confidence from PAE and compare refolded structures",
+        "rosetta_metrics": "Measure interface packing, buried surface area, and hydrogen bonds",
+        "sabr": "Annotate antibody CDRs",
+        "tile_validation_acceptance": "Apply acceptance criteria to saved design evidence",
+    },
+    "Sequence & protein properties": {
+        "sequence_qc": "Summarize length, composition, isoelectric point, and hydropathy",
+        "proteinsol": "Estimate protein solubility from sequence",
+        "esm1v_score": "Score amino-acid compatibility with sequence context",
+        "esmif_score": "Score sequence compatibility with a backbone structure",
+        "pep_patch": "Measure surface electrostatic patches",
+    },
+    "Similarity & clustering": {
+        "sequence_clustering": "Group candidates by sequence similarity",
+        "interface_clustering": "Group complexes by similar interface contacts",
+        "foldseek": "Compare and cluster structures by shape similarity",
+    },
+    "Protein–ligand pose analysis": {
+        "plip": "Identify protein–ligand contacts",
+        "pandamap": "Map contacts between a ligand and binding-site residues",
+        "posebusters": "Check ligand geometry and clashes in a pose",
+    },
+    "Binding-site detection": {
+        "surface_analysis": "Compare surface and interface predictions across methods",
+        "tile_detection_masif_seed": "Find protein surface patches for interaction design",
+        "tile_detection_pesto": "Predict interface residues on a protein structure",
+        "tile_detection_scannet": "Predict protein–protein interaction sites",
+        "tile_detection_surf2spot": "Predict binding-site hotspots on a protein surface",
+    },
+    "MD trajectory analysis": {
+        "md_analysis": "Measure RMSD, RMSF, radius of gyration, and contacts over a trajectory",
+    },
+    "Candidate collection & selection": {
+        "candidate_merge": "Bring candidate outputs together across branches",
+        "candidate_analyzer": "Join measurements for the same sequence variant",
+        "filter": "Filter candidates using selected metrics and thresholds",
+        "shared_filter": "Apply a shared set of scientific filters",
+        "candidate_rank": "Rank and select candidates using comparable measurements",
+    },
 }
 
 
@@ -52,6 +99,7 @@ _matrix = st.components.v2.component(
             background: var(--st-background-color, white);
         }
         tbody tr:last-child > * { border-bottom: 0; }
+        .operation-use { display: block; font-weight: normal; }
         button {
             font: inherit;
             color: inherit;
@@ -209,14 +257,27 @@ def render_capabilities(key, open_binder, open_step):
                   and (category != _PREDICTION_CATEGORY or kind in _PREDICTION_ENGINES)}
     if category == _DOCKING_CATEGORY:
         operations["boltz2"] = {**catalog["boltz2"], "label": _BOLTZ_AFFINITY_LABEL}
+    table_key = f"{key}-operations-{category}"
+    uses = {}
+    if category == _ANALYSIS_CATEGORY:
+        tasks = {label: descriptions for label, descriptions in _ANALYSIS_TASKS.items()
+                 if operations.keys() & descriptions.keys()}
+        classified = {kind for descriptions in tasks.values() for kind in descriptions}
+        if remaining := operations.keys() - classified:
+            tasks["Other analysis tools"] = dict.fromkeys(remaining, "")
+        task = st.selectbox("Analysis task", list(tasks), key=key + "-analysis-task")
+        uses = tasks[task]
+        operations = {kind: spec for kind, spec in operations.items() if kind in uses}
+        table_key += f"-{task}"
     table = ["<table><thead><tr><th scope='col'>Tool or step</th>"
              "<th scope='col'>Pipeline</th></tr></thead><tbody>"]
     for kind, spec in sorted(operations.items(), key=lambda item: item[1]["label"].casefold()):
         label = escape(spec["label"])
-        table.append(f'<tr><th scope="row">{label}</th>'
+        purpose = f'<small class="operation-use">{escape(uses[kind])}</small>' if uses.get(kind) else ""
+        table.append(f'<tr><th scope="row">{label}{purpose}</th>'
                      f'<td><button type="button" data-engine="{escape(kind)}" '
                      f'data-pipeline="true" aria-label="Pipeline Builder · {label}">Pipeline Builder</button></td></tr>')
-    choice = _matrix(data="".join([*table, "</tbody></table>"]), key=f"{key}-operations-{category}",
+    choice = _matrix(data="".join([*table, "</tbody></table>"]), key=table_key,
                      on_choose_change=lambda: None).get("choose")
     if not choice or choice[0] not in operations:
         return

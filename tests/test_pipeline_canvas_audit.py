@@ -98,6 +98,40 @@ if 'cap-graph' not in st.session_state:
     graph.validate_graph(draft)
 
 
+def test_capabilities_distinguish_simulation_sampling_and_analysis_tasks(monkeypatch):
+    import re
+
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import design_capabilities_ui
+
+    def render_table(*, data, **_):
+        import streamlit as st
+
+        st.text(data)
+        return {}
+
+    monkeypatch.setattr(design_capabilities_ui, "_matrix", render_table)
+    app = AppTest.from_string("""
+from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
+render_capabilities('cap', lambda _: None, lambda *args, **options: None)
+""")
+    app.session_state["cap-capability"] = "Molecular dynamics"
+    app.run()
+    assert re.findall(r'data-engine="([^"]+)"', app.text[0].value) == ["tile_md_gromacs", "tile_md_openmm"]
+    app.selectbox(key="cap-capability").set_value("Conformational sampling").run()
+    assert re.findall(r'data-engine="([^"]+)"', app.text[0].value) == ["tile_bioemu2"]
+    app.selectbox(key="cap-capability").set_value("Analysis & validation").run()
+    assert app.selectbox(key="cap-analysis-task").value == "Protein design evaluation"
+    assert 'data-engine="tile_binderscope"' in app.text[0].value
+    assert 'data-engine="plip"' not in app.text[0].value
+    app.selectbox(key="cap-analysis-task").set_value("Protein–ligand pose analysis").run()
+    assert set(re.findall(r'data-engine="([^"]+)"', app.text[0].value)) == {"plip", "pandamap", "posebusters"}
+    app.selectbox(key="cap-analysis-task").set_value("MD trajectory analysis").run()
+    assert 'data-engine="md_analysis"' in app.text[0].value
+    assert "radius of gyration" in app.text[0].value
+    assert not app.exception
+
+
 def test_campaign_stop_waits_for_the_canvas_ipsae_step_before_counting_passes():
     target, generator = node("target", "target"), node("rfd4", "generator")
     generator["data"]["params"].update(task="protein_binder", num_designs=1000)

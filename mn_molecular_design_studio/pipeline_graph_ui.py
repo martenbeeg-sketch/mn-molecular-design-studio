@@ -739,6 +739,8 @@ def _open_capability_step(kind, prefix, *, prediction_mode=None, ligand_design_m
         graph, source = add_block(blank_program(), "project_design_source")
         graph, predictor = add_block(graph, kind, source=source)
         graph, _ = add_block(graph, "results", source=predictor)
+    elif kind == "md_analysis":
+        graph = new_graph("md_analysis")
     elif ligand_design_mode:
         from mn_molecular_design_studio.pipeline_tile_workflows import LIGAND_DESIGN_MODES, TILES, ligand_mode_fields
 

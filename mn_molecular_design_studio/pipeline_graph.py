@@ -191,11 +191,11 @@ NODE_CATALOG = {
         field("scannet_mode", "ScanNet prediction mode", "interface", kind="select", options=["interface", "epitope", "idp"]),
         field("scannet_use_msa", "Use MSA with ScanNet", False, kind="boolean"),
         field("masif_chain_id", "MaSIF-seed chain", "", kind="text")]),
-    "md_source": _spec("md_source", "Saved MD run", "Molecular dynamics", "Select one recorded production segment and its matching topology. Files remain on this pipeline workstation; replicas and continuation segments are never joined implicitly.", output="md_trajectory", formats=(), fields=[
+    "md_source": _spec("md_source", "Saved MD run", "Input", "Select one recorded production segment and its matching topology. Files remain on this pipeline workstation; replicas and continuation segments are never joined implicitly.", output="md_trajectory", formats=(), fields=[
         field("source_run_dir", "Source MD job", "", kind="text", section="basic"),
         field("option_id", "Recorded production segment", "", kind="text", section="basic"),
         field("topology_relative_path", "Matching topology", "", kind="text", section="basic")]),
-    "md_analysis": _spec("md_analysis", "MD Analysis", "Molecular dynamics", "Run streamed protein-aligned RMSD, protein/ligand RMSF, radius of gyration and geometric residue-contact analysis. Outputs remain attached to the exact source study, trajectory and sampling window.", accepts=["md_trajectory"], output="md_analysis", workflow="ligand.md.analysis", formats=(), fields=[
+    "md_analysis": _spec("md_analysis", "MD Analysis", "Analysis", "Run streamed protein-aligned RMSD, protein/ligand RMSF, radius of gyration and geometric residue-contact analysis. Outputs remain attached to the exact source study, trajectory and sampling window.", accepts=["md_trajectory"], output="md_analysis", workflow="ligand.md.analysis", formats=(), fields=[
         field("ligand_selection", "Ligand atom selection (MDTraj)", "resname LIG", kind="text", section="basic"),
         field("protein_selection", "Protein atom selection (MDTraj)", "protein", kind="text", section="basic"),
         field("stride", "Frame stride", 1, minimum=1, maximum=100000, section="basic"),
