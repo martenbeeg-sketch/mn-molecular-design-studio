@@ -63,7 +63,8 @@ class BrowserCache:
             if self.path.exists():
                 self._token()
             access = {key: filters[key] for key in ("project_id", "scope", "hide_smoke_test") if key in filters}
-            visible = database.groups(user, **{key: value for key, value in filters.items() if key != "include_related"})
+            visible = database.groups(user, **{key: value for key, value in filters.items()
+                                               if key not in {"include_related", "hide_pipeline_batches"}})
             accessible = database.groups(user, collection="all", **access)
             token = self._token()
             key = (token, user["id"], user.get("role"), json.dumps(filters, sort_keys=True),

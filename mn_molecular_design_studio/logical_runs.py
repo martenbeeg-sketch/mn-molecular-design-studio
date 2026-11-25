@@ -118,6 +118,29 @@ def _graph_batch_parents(rows):
     return links
 
 
+def pipeline_batch_references(user, *, project_id=None):
+    """Qualified worker identities for batches recorded by visual pipelines."""
+    from mn_molecular_design_studio.cluster import config, service
+
+    if config.load()["mode"] not in {"peer", "coordinator"}:
+        return set()
+    rows = []
+    while True:
+        page = service.shared_jobs(user, project_id=project_id or None, include_hidden=True, limit=1000, offset=len(rows))
+        rows.extend(page["items"])
+        if not page["items"] or len(rows) >= page["total"]:
+            break
+    parents = _graph_batch_parents([row for row in rows if row.get("run_id")])
+    references = set()
+    for row in rows:
+        if not row.get("run_id") or is_visual_pipeline(row):
+            continue
+        owner, project = str(row.get("owner_id") or ""), str(row.get("project_id") or "")
+        if parents.get((project, owner, row.get("cluster_job_id"))):
+            references.add((row.get("node_id"), row.get("task_group"), row["run_id"], owner, project))
+    return references
+
+
 def group_runs(rows):
     """Resolve parents before filtering or pagination; never cross access scopes.
 

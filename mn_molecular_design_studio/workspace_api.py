@@ -51,7 +51,7 @@ def browse(user, *, folder, ancestors, branch, query, historical, structures, of
     cache = BrowserCache(database.path)
     try:
         index = cache.get_index(database, user, scope="all", collection="all" if historical else "library",
-                                hide_smoke_test=False, include_related=True)
+                                hide_smoke_test=False, include_related=True, hide_pipeline_batches=True)
         index["project_names"] = {project["id"]: project["name"] for project in projects}
         scopes = scientific_scopes(index, projects)
         for parent in ancestors:

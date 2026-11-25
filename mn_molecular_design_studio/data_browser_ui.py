@@ -372,7 +372,7 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
     with st.spinner("Opening saved data…"):
         index = cache.get_index(database, user, scope="all",
             collection="all" if st.session_state.get("data-browser-indexed-history") else "library",
-            hide_smoke_test=False, include_related=True)
+            hide_smoke_test=False, include_related=True, hide_pipeline_batches=True)
     if st.session_state.get("data-browser-indexed-history"):
         st.info("Historical indexed data is included. Stored does not mean reviewed or passed. Library actions can restore the curated-only view.")
     index["project_names"] = {project["id"]: project["name"] for project in projects}

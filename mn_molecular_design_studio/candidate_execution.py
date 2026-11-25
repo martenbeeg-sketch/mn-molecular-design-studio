@@ -613,6 +613,9 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             if len(matches) > 1:
                 raise ValueError('Duplicate candidate submission receipt.')
             request = copy.deepcopy(manifest['request'])
+            # A remote worker has its own process. Carry the same policy used
+            # by the local graph child submission across the cluster envelope.
+            request['database_collection_policy'] = 'none'
             request['resources'] = dict(cpu_cores=settings['cpu_cores'], min_vram_gb=settings['min_vram_gb'], ram_gb=settings['ram_gb'])
             selected_gpu = settings.get('gpu_device', gpu_device)
             from mn_molecular_design_studio.quality_tools import WORKFLOWS as quality_workflows

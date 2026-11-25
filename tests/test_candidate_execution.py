@@ -88,6 +88,7 @@ def test_automatic_workstation_batches_freeze_and_dispatch_equal_shards(tmp_path
         frozen = json.loads(Path(manifest).read_text())
         assert frozen["workstation"] == dispatch["placement"]
         assert request["resources"]["gpu_device"] == "auto"
+        assert request["database_collection_policy"] == "none"
         jobs.append((dispatch["placement"], request["parameters"]["num_designs"], request["parameters"]["seed"]))
         return {"cluster_job_id": str(len(jobs))}
 

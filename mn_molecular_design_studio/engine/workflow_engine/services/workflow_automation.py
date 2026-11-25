@@ -1234,7 +1234,8 @@ def _submit_workflow_request(request_file: str | Path, *, defer_dispatch: bool =
     requested_collection_policy = validate_policy(
         payload.get("database_collection_policy", default_policy_for_workflow(workflow_id))
     )
-    collection_mode = "manual" if external_only else requested_collection_policy
+    collection_mode = ("manual" if external_only and requested_collection_policy == "automatic"
+                       else requested_collection_policy)
     with submission_priority(priority), collection_scope(collection_mode):
         if isinstance(parameters, list):
             from mn_molecular_design_studio.engine.workflow_engine.workflows.input_batch import run_input_batch

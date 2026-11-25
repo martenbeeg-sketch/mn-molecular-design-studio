@@ -47,6 +47,23 @@ def _import(database, *, name="Design", run_id="run-1", task="design", user=USER
                                            "tool": "generator", **(origin or {})})
 
 
+def test_saved_view_excludes_automatic_graph_batch_evidence(database, monkeypatch):
+    intermediate = _import(database, run_id="batch", origin={"type": "job"})
+    standalone = _import(database, run_id="independent", origin={"type": "job"})
+    selected = _import(database, run_id="batch", origin={"type": "results_design_collection"}, kind="curated")
+    for result, run_id in ((intermediate, "batch"), (standalone, "independent"), (selected, "batch")):
+        database.add_observation(result["group_id"], result["molecule_ids"][0], "tool", run_id, {"score": 1},
+                                 context={"task_group": "design", "run_id": run_id})
+    before = build_browser_index(database, USER)
+    batch_ref = next(run["reference"] for run in before["runs"].values() if run["run_id"] == "batch")
+    monkeypatch.setattr("mn_molecular_design_studio.logical_runs.pipeline_batch_references",
+                        lambda *args, **kwargs: {batch_ref})
+    index = build_browser_index(database, USER, hide_pipeline_batches=True)
+    [subject] = molecular_subjects(index)
+    results = subject_results(database, index, subject)
+    assert {row["group_id"] for row in results} == {standalone["group_id"], selected["group_id"]}
+
+
 def test_exact_molecule_collects_different_jobs_without_mutating_scientific_evidence(database, monkeypatch):
     first = _import(database, name="First design", run_id="first")
     second = _import(database, name="Second design", run_id="second")

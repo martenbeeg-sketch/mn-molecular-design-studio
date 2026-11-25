@@ -139,7 +139,7 @@ def _campaign_reference(provenance, node, owner, project):
 
 
 def build_browser_index(database, user, *, project_id="", scope="all", methods=None,
-                        collection="library", hide_smoke_test=True, include_related=False):
+                        collection="library", hide_smoke_test=True, include_related=False, hide_pipeline_batches=False):
     visible = database.groups(user, project_id=project_id, scope=scope, methods=methods,
                               collection=collection, hide_smoke_test=hide_smoke_test)
     accessible = database.groups(user, project_id=project_id, scope=scope, collection="all",
@@ -368,6 +368,11 @@ def build_browser_index(database, user, *, project_id="", scope="all", methods=N
     index["target_reference_names"] = target_reference_names
     index["unreferenced_targets"] = unreferenced_targets
     index["pdb_md_contexts"] = pdb_md_contexts
+    if hide_pipeline_batches and runs:
+        from mn_molecular_design_studio.logical_runs import pipeline_batch_references
+
+        batches = pipeline_batch_references(user, project_id=project_id)
+        index["pipeline_batch_run_keys"] = {key for key, row in runs.items() if row["reference"] in batches}
     from mn_molecular_design_studio.entity_names import component_id, target_names as canonical_target_names
     for molecule in molecules.values():
         if len(molecule["components"]) != 1 or molecule.get("output_record"):
@@ -660,8 +665,14 @@ def subject_results(database, index, subject, *, run_view=False, include_inputs=
             evidence_runs.get(("molecule_sources", row["source_key"]))), []).append(json.loads(row["provenance"]))
     direct = subject.get("direct_molecule_ids", subject["molecule_ids"])
     targets = subject.get("target_record_ids", set())
+    pipeline_batch_keys = index.get("pipeline_batch_run_keys", set())
+    suppressed_members = set()
 
     def included(molecule_id, group_id, run_key, context):
+        if (run_key in pipeline_batch_keys and index["groups"][group_id]["origin"].get("type") == "job"
+                and not context.get("saved_selection")):
+            suppressed_members.add((molecule_id, group_id))
+            return False
         return includes_record(index, subject, molecule_id, group_id, run_key, context, run_view=run_view)
 
     def make_result(kind, evidence_id, molecule_id, group_id, run_key, context, created_at, **values):
@@ -815,7 +826,7 @@ def subject_results(database, index, subject, *, run_view=False, include_inputs=
                                  context, group.get("updated_at", ""),
                                  structure_ids=retained_structure_ids(row["molecule_id"], row["group_id"], run_key, context),
                                  kind_label="Input / reference" if is_input else "Output record" if run_key else "Imported molecule"))
-    covered_members = {pair[:2] for pair in covered}
+    covered_members = {pair[:2] for pair in covered} | suppressed_members
     for molecule_id in sorted(subject["molecule_ids"]):
         molecule = index["molecules"][molecule_id]
         for group_id in sorted(molecule["group_ids"] & subject["group_ids"]):

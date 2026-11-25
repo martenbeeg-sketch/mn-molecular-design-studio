@@ -1976,6 +1976,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         output = {"target": {"target_pdb": str(staged_target), "target_chains": chains,
                                              "hotspots": params["hotspots"], "coldspots": params.get("coldspots", ""),
                                              "target_type": params.get("target_type", "auto")}}
+                        target_label = node["data"]["label"]
+                        if target_label != NODE_CATALOG["target"]["label"]:
+                            output["target"]["target_name"] = target_label
                         if is_idr:
                             from mn_molecular_design_studio.binder_pipeline import write_idr_fasta
 

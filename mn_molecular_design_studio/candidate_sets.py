@@ -281,7 +281,10 @@ def write_collection(parent, node_id, rows, target, *, details=None):
     counts = Counter()
     with temporary.open("w") as handle:
         for row in rows:
-            handle.write(json.dumps(json_safe(normalize_candidate(row)), sort_keys=True, allow_nan=False) + "\n")
+            normalized_row = normalize_candidate(row)
+            if target.get("target_name"):
+                normalized_row.setdefault("raw_metadata", {}).setdefault("target_name", target["target_name"])
+            handle.write(json.dumps(json_safe(normalized_row), sort_keys=True, allow_nan=False) + "\n")
             counts["normalized_candidates"] += 1
             info = metadata(row)
             counts[info.get("sequence_state", sequence_state(row))] += 1
