@@ -6,6 +6,7 @@ import secrets
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio.external_libraries import LibraryCatalog, source_columns
 from mn_molecular_design_studio.engine.workflow_engine.vendor.ligand_runtime.mn_ligand.runtime import cpu_process_limit
 from mn_molecular_design_studio.cluster import config as cluster_config
@@ -84,7 +85,7 @@ def render_setup(schema, *, user, project_selector, submit):
     sdf_only = bool(paths) and all(Path(path).suffix.lower() == ".sdf" for path in paths)
     if st.button("Inspect source fields", disabled=not paths, key=prefix + "-inspect"):
         try:
-            st.write({str(path): source_columns(Path(path).expanduser().resolve(strict=True)) for path in paths})
+            render_result_details(st, {str(path): source_columns(Path(path).expanduser().resolve(strict=True)) for path in paths})
         except (OSError, ValueError) as exc:
             st.error(str(exc))
 
@@ -199,4 +200,4 @@ def render_setup(schema, *, user, project_selector, submit):
 
     if record:
         with st.expander("Database record for this external library"):
-            st.json(record)
+            render_result_details(st, record)

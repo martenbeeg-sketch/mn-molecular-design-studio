@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
+
 
 _GENERATORS = {
     "bindcraft2": "bindcraft2",
@@ -304,7 +306,7 @@ def render_campaign_config_editor(
                 st.warning(issue)
             if gpu_inventory is None:
                 st.caption("GPU inventory was not supplied to this preview. Workstation/GPU selectors and resource requirements are shown; exact eligibility remains unresolved until authenticated placement checks.")
-            st.json(plan)
+            render_result_details(st, plan)
         except (TypeError, ValueError) as exc:
             st.warning(f"Execution plan unavailable: {exc}")
     return config, ready

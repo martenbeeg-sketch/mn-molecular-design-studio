@@ -9,6 +9,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio.binderscope import (
     METHOD_VERSION, REVISION, TOPOLOGIES, existing_assessments, prepare_browser_selection,
     project_selections, settings_key, validate_assessment_settings,
@@ -384,8 +385,30 @@ def render_job_result(run_dir):
         from mn_molecular_design_studio.data_browser import ReadOnlyLibrary
         database = ReadOnlyLibrary() if user else None
         render_design_result(lookup[chosen], database=database, user=user, key=str(run_dir))
-    with st.expander("Cohort families, diversity and coverage"):
-        st.json(report.get("cohorts") or [], expanded=False)
+    cohorts = report.get("cohorts") or []
+    if cohorts:
+        cohort_panel = st.expander("Cohort summaries", key=f"binderscope-cohorts-{run_dir}", on_change="rerun")
+        if cohort_panel.open:
+            with cohort_panel:
+                cohort_index = st.selectbox("Cohort", range(len(cohorts)),
+                    format_func=lambda index: str(cohorts[index].get("cohort") or index + 1),
+                    key=f"binderscope-cohort-{run_dir}")
+                cohort = cohorts[cohort_index]
+                summary = cohort.get("summary") or {}
+                runs = summary.get("runs") or {}
+                render_result_details(st, {
+                    **summary, "runs": [{"Run": run, **counts} for run, counts in runs.items()],
+                    "warnings": cohort.get("warnings") or summary.get("warnings"),
+                }, table_fields=("runs", "warnings"))
+                families = cohort.get("families") or {}
+                labels = families.get("fold_labels") or {}
+                if labels:
+                    st.markdown("**Fold families by design**")
+                    render_result_details(st, [
+                        {"Run": run, "Design": design, "Fold family": labels[identifier]}
+                        for run, design, identifier in families.get("design_ids") or [] if identifier in labels
+                    ])
+                render_result_details(st, {"Fold diversity": families.get("diversity")})
     archive = Path(run_dir) / "artifacts/analysis/binderscope-results.zip"
     if archive.is_file():
         st.download_button("Download complete analysis archive", archive.read_bytes(),

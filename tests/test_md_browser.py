@@ -328,10 +328,11 @@ def test_endpoint_sampling_uses_preserved_sql_parameters_without_inference():
     streamlit = FakeStreamlit()
     _render_endpoint_details(streamlit, {"mmgbsa": {"status": "success"}},
         {"sampling_parameters": {"stride": 10, "start_pct": 20, "end_pct": 100}})
-    details = next(args[0] for name, args, kwargs in streamlit.calls if name == "json")
-    assert details["Sampling stride"] == 10
-    assert details["Sampling window start (%)"] == 20
-    assert details["Sampling window end (%)"] == 100
+    rows = next(args[0] for name, args, kwargs in streamlit.calls if name == "dataframe")
+    details = {row["Field"]: row["Value"] for row in rows}
+    assert details["Sampling stride"] == "10"
+    assert details["Sampling window start (%)"] == "20"
+    assert details["Sampling window end (%)"] == "100"
     assert details["Frames analyzed"] == "not recorded"
 
 

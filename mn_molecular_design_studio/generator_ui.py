@@ -11,6 +11,7 @@ import shutil
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import generator_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import StructureVisualization, molstar_custom_component
@@ -386,4 +387,4 @@ def render_results(run_id,run_dir,candidates,parameters,result):
         molstar_custom_component([StructureVisualization(pdb=path.read_text(),color='chain-id',representation_type='cartoon')],
             key='generator-view-'+run_id+'-'+str(index),height=520,show_structure_tools=False)
         st.download_button('Download generated structure',path.read_bytes(),file_name=path.name,key='generator-download-'+run_id)
-    with st.expander('Generation details'):st.json(candidate.get('raw_metadata') or {})
+    with st.expander('Generation details'):render_result_details(st, candidate.get('raw_metadata') or {})

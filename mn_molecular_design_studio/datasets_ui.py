@@ -8,6 +8,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import datasets
 from mn_molecular_design_studio.data_browser import ReadOnlyLibrary
 from mn_molecular_design_studio.database_actions_ui import ERRORS, read_only_workspace, render_library_actions, render_selection_actions
@@ -205,4 +206,4 @@ def render_datasets(user, projects, *, database=None):
                     open_dataset_results(st.session_state, selected, record["id"])
                     st.rerun()
                 with st.expander("Input annotations & identifiers"):
-                    st.json(record["metadata"], expanded=False)
+                    render_result_details(st, record["metadata"])

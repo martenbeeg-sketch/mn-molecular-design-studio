@@ -312,9 +312,10 @@ render_complex_analysis_workspace({USER!r})
     assert len(shown) == 1
     assert shown[0] == model_b
     assert any("No saved evaluation is associated" in item.value for item in app.info) is False
-    saved_json = [item.value for item in app.json]
-    assert any("0.87" in json.dumps(value) for value in saved_json)
-    assert any("0.93" in json.dumps(value) for value in saved_json)
+    assert not app.json
+    saved_tables = [table.value.to_string() for table in app.dataframe]
+    assert any("0.87" in table for table in saved_tables)
+    assert any("0.93" in table for table in saved_tables)
     assert initial["id"] != model_b_id
 
     app.multiselect(key=f"complex-analysis-group-members-{model_b_id}-group-1").set_value(["dna:D"]).run()

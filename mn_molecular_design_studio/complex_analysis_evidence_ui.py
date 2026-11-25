@@ -7,6 +7,7 @@ import json
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio.complex_analysis_catalog import (
     saved_evidence_page, saved_evidence_summary, saved_relationship_page,
     saved_execution_groups, relationship_structure_ids,
@@ -128,15 +129,15 @@ def render_work_overview(database, user, selection):
                 for chain, sequence in sorted(sequences.items()):
                     st.caption(f"Recorded target chain {chain} · {len(sequence)} residues")
                     st.code(sequence, language=None)
-                st.json(target, expanded=False)
+                render_result_details(st, target)
     if not displayed:
         st.info("No exact original input target or assembly is recorded in the source summary. Saved evidence can still expose recorded target/preparation references; names do not supply missing identity.")
     with st.expander("Distributed source jobs, settings and provenance"):
         st.dataframe([{"Source job": (contexts.get(group["id"], {}).get("job_ref") or group["summary"]["run"]),
                        "Database membership": group["id"], "Source label": group["name"]} for group in prepared],
                      hide_index=True, use_container_width=True)
-        st.json([{ "group_id": group["id"], "origin": group.get("origin"),
-                   "saved_source_context": contexts.get(group["id"], {})} for group in prepared], expanded=False)
+        render_result_details(st, [{ "group_id": group["id"], "origin": group.get("origin"),
+                   "saved_source_context": contexts.get(group["id"], {})} for group in prepared])
     st.caption("Existing saved measurements are available without coordinates. New compatible assessments require explicit model selection and submission; no calculations start here.")
     left, right = st.columns(2)
     left.button("Review evidence & assessments", type="primary", key="overview-open-evidence",
@@ -208,7 +209,7 @@ def render_relationship_choices(database, user, selection, retained_stats):
         selection["relationship"] = relationship
         st.session_state["complex-analysis-evidence-selection"] = dict(selection)
     with st.expander("Exact molecule, target, preparation and study references"):
-        st.json(relationship)
+        render_result_details(st, relationship)
     execution = saved_execution_groups(database, user, group_ids, relationship)
     return row, execution
 
@@ -295,10 +296,10 @@ def render_saved_evidence(database, user: dict, selection: dict) -> None:
                     horizontal=True, key="complex-evidence-view")
     if view == "Sources & provenance":
         st.caption(f"Selected evidence scope: {sum(methods.values()):,} visible saved records across {len(methods)} method namespaces. Collection inventories below retain their full history.")
-        st.json({"selected_relationship": relationship, "replica": replica, "include_superseded_history": include_history}, expanded=False)
+        render_result_details(st, {"selected_relationship": relationship, "replica": replica, "include_superseded_history": include_history})
         for group in groups:
             with st.expander(group["name"], expanded=len(groups) == 1):
-                st.json({"group_id": group["id"], "project_id": group["project_id"],
+                render_result_details(st, {"group_id": group["id"], "project_id": group["project_id"],
                          "origin": group["origin"], "methods": summaries[group["id"]]["methods"]})
         return
     if view == "Models & sequences":
@@ -314,7 +315,7 @@ def render_saved_evidence(database, user: dict, selection: dict) -> None:
                                          molecule_ids=[relationship["molecule_id"]] if relationship else None)
         for record in records.get("items") or []:
             with st.expander(record.get("name") or record["id"]):
-                st.json({"molecule_id": record["id"], "components": record.get("components"),
+                render_result_details(st, {"molecule_id": record["id"], "components": record.get("components"),
                          "source_identity": record.get("origin")})
         return
     if not methods:
@@ -347,7 +348,7 @@ def render_saved_evidence(database, user: dict, selection: dict) -> None:
     with st.container(border=True):
         st.markdown("#### Exact measurement and provenance")
         st.caption(f"Evaluation {item['evaluation']['id']} · molecule {item['molecule_id']}")
-        st.json({"measurements": item["metrics"], "evaluation": item["evaluation"]}, expanded=False)
+        render_result_details(st, {"measurements": item["metrics"], "evaluation": item["evaluation"]})
         with st.expander("Measurement definitions and existing metric mappings"):
             from mn_molecular_design_studio.output_vocabulary import vocabulary
             mapped = item.get("normalized_output") or {}
@@ -356,10 +357,10 @@ def render_saved_evidence(database, user: dict, selection: dict) -> None:
             if definitions:
                 st.dataframe([{key: definition[key] for key in ("label", "unit", "scope", "description")}
                               for definition in definitions], hide_index=True, use_container_width=True)
-            st.json(mapped, expanded=False)
+            render_result_details(st, mapped)
             st.caption("Unmapped native fields retain their recorded names and source context. No equivalence, unit or affinity calibration is inferred.")
         with st.expander("Recorded parameters, units, artifact references and source context"):
-            st.json(item["context"])
+            render_result_details(st, item["context"])
     if stats["structure_count"]:
         st.button("Choose models to visualize or assess", key="evidence-go-models",
                   on_click=lambda: st.session_state.update({"complex-evidence-view": "Models & sequences"}))

@@ -6,6 +6,8 @@ import html
 import io
 import math
 
+from mn_molecular_design_studio.result_details_ui import result_field_label, result_value_text
+
 
 def candidate_state_rows(candidates):
     from mn_molecular_design_studio.binder_result_evidence import binder_decisions
@@ -65,16 +67,17 @@ def candidate_state_rows(candidates):
                 'Native attempt': collection.get('native_attempt_id'), 'Backbone': collection.get('backbone_id'),
                 'Sequence variant': collection.get('variant_id'), 'Parent variants': ', '.join(collection.get('parent_variant_ids', [])),
                 'Original sequence': collection.get('original_sequence'), 'Original structure': collection.get('original_structure'),
-                'Native measurements (original source)': str(collection.get('native_measurements', {})),
-                'Native ranking': str(native_ranking(candidate)),
+                'Native measurements (original source)': result_value_text(collection.get('native_measurements', {}), summarize_fields=True),
+                'Native ranking': result_value_text(native_ranking(candidate), summarize_fields=True),
                 'Workflow mode': (candidate.get('raw_metadata') or {}).get('pipeline_workflow', {}).get('effective_label'),
                 'Comparative ranking measurement': selection.get('ranking_metric'),
                 'Native filter': collection.get('native_filter'), 'Shared filter': collection.get('shared_filter', {}).get('status', 'not_evaluated'),
-                'Predictor outcomes': str(collection.get('predictor_matrix', {})),
-                'Measurements': str(collection.get('analysis', {}).get('measurements', {})),
-                'Predictions': len(collection.get('predictions', [])), 'Diversity': str(collection.get('deduplication', {})),
-                'Worker / GPU provenance': str({'native': native_execution or collection.get('source_provenance', {}).get('metadata', {}).get('resource_allocation', {}),
-                                               'predictions': predictor_execution})})
+                'Predictor outcomes': result_value_text(collection.get('predictor_matrix', {}), summarize_fields=True),
+                'Measurements': result_value_text(collection.get('analysis', {}).get('measurements', {}), summarize_fields=True),
+                'Predictions': len(collection.get('predictions', [])), 'Diversity': result_value_text(collection.get('deduplication', {}), summarize_fields=True),
+                'Worker / GPU provenance': result_value_text(
+                    {'native': native_execution or collection.get('source_provenance', {}).get('metadata', {}).get('resource_allocation', {}),
+                     'predictions': predictor_execution}, summarize_fields=True)})
     return rows
 
 
@@ -139,5 +142,9 @@ def render_workflow_results_summary(run_dir):
         st.caption('Starting preset: ' + summary['preset_label'] + ' · Candidates: ' + str(summary['candidate_count']))
         st.caption(summary['ranking'])
         st.dataframe(summary['generator_operations'], hide_index=True)
-        st.json(summary['stage_counts'])
+        steps = {row["node"]: row.get("tool") or row["node"] for row in summary["execution_plan"]}
+        counts = [{"Step": steps.get(step, step), "Outcome": result_field_label(outcome), "Count": count}
+                  for step, outcomes in summary["stage_counts"].items() for outcome, count in outcomes.items()]
+        if counts:
+            st.dataframe(counts, hide_index=True)
         st.dataframe(summary['execution_plan'], hide_index=True)

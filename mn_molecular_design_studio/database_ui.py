@@ -12,6 +12,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details, result_field_label, result_value_text
 from mn_molecular_design_studio import molecule_imports as imports
 from mn_molecular_design_studio.database_browser_labels import analysis_status, tool_label
 from mn_molecular_design_studio.molecular_database import MolecularDatabase, IMPORT_METHODS
@@ -765,7 +766,7 @@ def render_details(database, user, record, *, properties_outcome=None):
                         st.session_state["page"] = "Job details"
                         st.rerun()
                 if source.get("parents"):
-                    st.json(source["parents"])
+                    render_result_details(st, source["parents"])
     with scores_tab:
         if design_context is not None:
             if outcome_context is None:
@@ -795,7 +796,7 @@ def render_details(database, user, record, *, properties_outcome=None):
                 st.dataframe(rows, hide_index=True, use_container_width=True)
             with st.expander("Calculation context"):
                 observation = st.selectbox("Run", range(len(record["observations"])), format_func=lambda index: record["observations"][index]["namespace"] + " · " + record["observations"][index]["run_id"], key="database-context-" + record["id"])
-                st.json(record["observations"][observation]["context"])
+                render_result_details(st, record["observations"][observation]["context"])
 
 
 def _render_original_result_scores(context):
@@ -833,7 +834,7 @@ def _render_evaluation_measurements(result, *, compact=False):
     st.caption("Model / pose: " + (result["model"] or "not recorded") + " · version: "
                + (evaluation.get("engine_version") or evaluation.get("image_digest") or "not recorded"))
     if result["metrics"]:
-        st.dataframe([{"Metric": key, "Value": json.dumps(value, ensure_ascii=False)}
+        st.dataframe([{"Metric": result_field_label(key), "Value": result_value_text(value, summarize_fields=True)}
                       for key, value in sorted(result["metrics"].items())], hide_index=True, use_container_width=True,
                      column_order=["Value", "Metric"] if compact else None,
                      column_config={"Value": st.column_config.TextColumn(width="small")} if compact else None)
@@ -1107,7 +1108,7 @@ def render_database(user, projects):
                         st.caption("Worksheet: " + (mapping.get("sheet_name") or "not applicable") +
                                    " · SMILES: " + str(mapping.get("smiles_column") or "") +
                                    " · ID: " + str(mapping.get("id_column") or "not mapped"))
-                        st.json(summary)
+                        render_result_details(st, summary)
                         saved_rows = database.import_batch_rows(user, selected_batch_id)
                         history_frame = _import_report_frame(saved_rows)
                         st.dataframe(history_frame[:1000], hide_index=True, use_container_width=True)

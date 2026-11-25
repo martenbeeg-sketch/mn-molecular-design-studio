@@ -8,6 +8,8 @@ from typing import Any, Callable
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
+
 
 _TRAJECTORY_SUFFIXES = {".dcd", ".xtc", ".trr", ".nc", ".netcdf", ".h5", ".hdf5"}
 _TOPOLOGY_SUFFIXES = {".pdb", ".ent", ".gro", ".cif", ".mmcif", ".prmtop", ".parm7", ".psf", ".top"}
@@ -816,7 +818,7 @@ def render_md_analysis_setup(
     study = selected["study"]
     segment = selected["segment"]
     st.markdown("**Source identity and ownership**")
-    st.write({
+    render_result_details(st, {
         "Compound": study.get("compound_name") or study.get("compound_id") or row.get("campaign_name") or "not recorded",
         "Target": study.get("target_pdb_id") or row.get("pdb_id") or "not recorded",
         "Pose": study.get("source_pose_id") or study.get("selected_ligand_key") or "not recorded",

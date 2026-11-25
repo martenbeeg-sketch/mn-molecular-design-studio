@@ -148,9 +148,11 @@ def test_preview_controls_cannot_change_saved_campaign_or_dispatch():
     assert app.session_state['ready'] is True
     assert app.session_state['actual_campaign'] == original
     assert 'native_attempts_per_job' not in original
-    plan = json.loads(app.json[-1].value)
-    assert plan['native_attempts_per_job']['requested'] == 25
-    assert plan['supported_execution_plan'] is None
+    assert not app.json
+    plan = next(table.value for table in app.dataframe if "Field" in table.value.columns)
+    fields = plan.set_index("Field")["Value"]
+    assert fields["Native attempts per job › Requested"] == "25"
+    assert "Supported execution plan" not in fields
 
 
 def test_resources_resolve_adapter_parent_and_validation_defaults():

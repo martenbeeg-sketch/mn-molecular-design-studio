@@ -28,6 +28,7 @@ if os.environ.get("MDS_READ_ONLY_PREVIEW") == "1":
                    "data_browser_table", "binderscope_ui", "data_browser_ui"):
         importlib.reload(importlib.import_module("mn_molecular_design_studio." + module))
 
+from mn_molecular_design_studio.result_details_ui import render_result_details, result_field_label, result_value_text
 from mn_molecular_design_studio.cofolding_input import render_molecule_editor, prediction_settings_for
 from mn_molecular_design_studio import cofolding_results
 from mn_molecular_design_studio import ligand_compounds
@@ -1676,7 +1677,7 @@ def _render_bindcraft2_setup(schema: dict, *, generator_only: bool = False) -> N
             st.error(settings_error)
         with st.expander("Review settings to send", expanded=False):
             if settings_preview is not None and not settings_error:
-                st.json(settings_preview)
+                render_result_details(st, settings_preview)
             else:
                 st.caption("Choose valid target inputs to preview the BindCraft2 settings.")
 
@@ -2703,14 +2704,12 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False, mimosa
         parameters["target_pdb"] = str(target_input.design_path)
     with st.expander("Review settings to send", expanded=False):
         if ready:
-            st.json(
-                {
+            render_result_details(st, {
                     "workflow": schema["workflow"],
                     "parameters": parameters,
                     "resources": {"gpu_device": gpu_device},
                     "project": project_id,
-                }
-            )
+                })
         else:
             st.caption("Choose valid target, project, and campaign settings to preview the request.")
 
@@ -4298,8 +4297,7 @@ def _render_multi_engine_campaign() -> None:
         st.info("Load a target structure to configure the pipeline.")
 
     with st.expander("Review pipeline", expanded=False):
-        st.json(
-            {
+        render_result_details(st, {
                 "target": target_input.source_path.name if target_input.source_path else None,
                 "target_chains": target_input.chains,
                 "hotspots": target_input.hotspots,
@@ -4308,8 +4306,7 @@ def _render_multi_engine_campaign() -> None:
                 "design_attempts_per_engine": int(design_attempts),
                 "sequences_per_backbone": int(sequences_per_backbone),
                 "gpu_device": gpu_device,
-            }
-        )
+            })
 
     ready = bool(
         job_name
@@ -6728,7 +6725,7 @@ def _render_cofolding_prediction_results(
                 physicality = structure_path.with_name(structure_path.stem.removesuffix("_model") + "_physicality.json")
                 if physicality.is_file():
                     with st.expander("BioEmu2 physicality report", expanded=True):
-                        st.json(cofolding_results.read_payload(physicality))
+                        render_result_details(st, cofolding_results.read_payload(physicality))
 
         def confidence_metric(*names: str) -> object:
             if raw_metadata.get("confidence_available") is False:
@@ -6960,7 +6957,7 @@ def _render_cofolding_prediction_results(
                 for key, value in chain_details.items():
                     if key == "chain_ids":
                         continue
-                    st.markdown(f"**{key.replace('_', ' ').title()}**")
+                    st.markdown(f"**{result_field_label(key)}**")
                     if isinstance(value, list):
                         try:
                             array = np.asarray(value)
@@ -6977,7 +6974,7 @@ def _render_cofolding_prediction_results(
                                 continue
                         except (ValueError, TypeError):
                             pass
-                    st.json(value, expanded=False)
+                    render_result_details(st, value, field=key)
 
         render_confidence_plots(confidence_data, unavailable=confidence_error)
 
@@ -7109,20 +7106,25 @@ def _render_cofolding_prediction_results(
         ("Diffusion samples", params.get("samples") or params.get("num_diffusion_samples")), ("Recycles", params.get("num_recycles") or params.get("num_loops")),
         ("Engine options", params.get("engine_options")),
     ]
-    with st.expander("Run settings and inputs", expanded=False):
-        for label, value in settings:
-            if value not in (None, "", [], {}):
-                st.markdown(f"**{label}**  \n{escape(str(value))}")
-        input_path = next(iter(sorted(run_dir.glob("artifacts/raw/*/input_mapping.json"))), run_dir / "missing-input-mapping.json")
-        try:
-            mapping = json.loads(input_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            mapping = None
-        if mapping:
-            st.json(mapping, expanded=False)
+    settings_panel = st.expander("Run settings and inputs", key=f"prediction-settings-{run_id}", on_change="rerun")
+    if settings_panel.open:
+        with settings_panel:
+            render_result_details(st, dict(settings))
+            mapping_path = next(iter(sorted(run_dir.glob("artifacts/raw/*/input_mapping.json"))), None)
+            if mapping_path:
+                try:
+                    mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    st.caption("The recorded input mapping could not be read.")
+                else:
+                    render_result_details(st, mapping, table_fields=(
+                        "items", "chains", "protein_chains", "dna_chains", "rna_chains",
+                    ))
     if result.get("metrics"):
-        with st.expander("Run summary", expanded=False):
-            st.json(result["metrics"], expanded=False)
+        summary_panel = st.expander("Run summary", key=f"prediction-summary-{run_id}", on_change="rerun")
+        if summary_panel.open:
+            with summary_panel:
+                render_result_details(st, result["metrics"])
 
 
 @st.dialog("Pipeline computer details", width="large")
@@ -7471,7 +7473,7 @@ def _render_job_details() -> None:
     if settings_tab.open:
         with settings_tab:
             st.subheader("Inputs and recorded settings")
-            st.json({"input": input_payload, "metadata": metadata})
+            render_result_details(st, {"input": input_payload, "metadata": metadata})
 
     if logs_tab.open:
         with logs_tab:
@@ -7754,12 +7756,9 @@ def _render_job_details() -> None:
                         evidence = evidence_rows(result_candidates[:1000])
                         for row in evidence:
                             value = row.get("value")
-                            row["value"] = (
-                                json.dumps(value, sort_keys=True, default=str)
-                                if isinstance(value, (dict, list)) else "" if value is None else str(value)
-                            )
+                            row["value"] = result_value_text(value, summarize_fields=True)
                             if isinstance(row.get("effective_settings"), (dict, list)):
-                                row["effective_settings"] = json.dumps(row["effective_settings"], sort_keys=True, default=str)
+                                row["effective_settings"] = result_value_text(row["effective_settings"], summarize_fields=True)
                         st.dataframe(
                             evidence,
                             hide_index=True,
@@ -7984,10 +7983,14 @@ def _render_job_details() -> None:
             metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
             if metrics:
                 st.markdown("**Metrics**")
-                st.json(metrics)
+                render_result_details(st, metrics)
             if candidate.get("raw_metadata"):
-                with st.expander("Candidate metadata"):
-                    st.json(candidate["raw_metadata"])
+                metadata_panel = st.expander(
+                    "Candidate provenance", key=f"candidate-provenance-{run_id}", on_change="rerun",
+                )
+                if metadata_panel.open:
+                    with metadata_panel:
+                        render_result_details(st, candidate["raw_metadata"])
         elif not candidates and not csv_loaded and not has_dedicated_prediction_results and not has_dedicated_surface_results:
             if no_final_candidates:
                 st.info("This pipeline has no published final candidates. Check Pipeline steps for completed and failed stages.")
@@ -8030,7 +8033,7 @@ def _render_job_details() -> None:
                             f"ligand {linked_result['ligand_name'] or linked_result['ligand_id'] or 'not recorded'}"
                         )
                         with st.expander("Structure and source provenance"):
-                            st.json({key: value for key, value in linked_result.items() if key not in {"path", "candidate"}})
+                            render_result_details(st, {key: value for key, value in linked_result.items() if key not in {"path", "candidate"}})
                     if preview_kind == "structure" and st.button(
                         "Analyze selected structure",
                         icon=":material/biotech:",
@@ -9164,7 +9167,7 @@ def _render_legacy_database() -> None:
                 candidate = selected_candidates[0]
                 with st.expander(f"{candidate.get('candidate_id', 'Molecule')} details", expanded=True):
                     st.code(candidate.get("smiles") or candidate.get("binder_sequence") or "No sequence or SMILES recorded", language="text")
-                    st.json({key: candidate.get(key) for key in ("stage", "source_tool", "target_chains", "binder_chains", "hotspots", "metrics", "raw_metadata")})
+                    render_result_details(st, {key: candidate.get(key) for key in ("stage", "source_tool", "target_chains", "binder_chains", "hotspots", "metrics", "raw_metadata")})
                     for path_key in ("binder_pdb", "complex_pdb", "target_pdb"):
                         path_text = candidate.get(path_key)
                         path = Path(str(path_text)) if path_text else None

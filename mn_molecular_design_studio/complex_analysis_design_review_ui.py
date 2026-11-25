@@ -7,6 +7,7 @@ import json
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio.complex_analysis_design_review import (
     design_review_query, review_measurements, remember_review_selection, selected_review_models,
 )
@@ -276,19 +277,19 @@ def render_design_review(database, user, selection, *, requested_action="", work
                           for key, value in observation["metrics"].items() if isinstance(value, (int, float, str, bool)) or value is None],
                          hide_index=True, width="stretch")
             with st.expander("Selected result settings, units and residue-level evidence"):
-                st.json({"evaluation": descriptor, "measurements": observation["metrics"],
-                         "source_context": observation["context"]}, expanded=False)
+                render_result_details(st, {"evaluation": descriptor, "measurements": observation["metrics"],
+                         "source_context": observation["context"]})
             st.caption("Values retain their saved field names and method definitions. Open Scientific Inspector for residue-level evidence and the exact model.")
         else:
             st.info("No saved assessment is linked to this exact model yet. Use Calculate missing assessments to review coverage and explicitly request an analysis.")
         st.caption("Computational acceptance and experimental shortlisting are separate. Supporting decisions retain their original scope and policy.")
         with st.expander("Recorded acceptance policies and evidence"):
-            st.json(focused["decisions"], expanded=False)
+            render_result_details(st, focused["decisions"])
         with st.expander("All saved measurements, status and method limitations"):
             for observation, descriptor in focused["associated"]:
                 st.caption(_method_label(observation["namespace"]) + " · " + str(descriptor.get("status") or "Not recorded"))
-                st.json({"measurements": observation["metrics"], "evaluation": descriptor,
-                         "source_context": observation["context"]}, expanded=False)
+                render_result_details(st, {"measurements": observation["metrics"], "evaluation": descriptor,
+                         "source_context": observation["context"]})
     with shortlist_tab:
         # Streamlit tabs execute eagerly: hydrate persistent review/export only
         # after an explicit request, avoiding per-design full-record reads.
@@ -298,10 +299,10 @@ def render_design_review(database, user, selection, *, requested_action="", work
             from mn_molecular_design_studio.complex_analysis_shortlist_export import render_shortlist_review_export
             render_shortlist_review_export(user, selected, key_prefix="review-shortlist-" + token)
     with provenance_tab:
-        st.json({"molecule_id": focused["molecule_id"], "structure_id": chosen, "sha256": focused["digest"],
+        render_result_details(st, {"molecule_id": focused["molecule_id"], "structure_id": chosen, "sha256": focused["digest"],
                  "model_id": focused["model_id"], "candidate": focused["candidate"],
                  "source": focused["context"], "evaluations": [descriptor for _, descriptor in focused["associated"]],
-                 "displayed_measurements": {columns[key]: series[key] for key in metrics}}, expanded=False)
+                 "displayed_measurements": {columns[key]: series[key] for key in metrics}})
 
     if st.session_state.get("complex-analysis-assessment-open"):
         with st.container(border=True):

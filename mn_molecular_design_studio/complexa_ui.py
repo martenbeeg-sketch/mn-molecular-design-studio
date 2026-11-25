@@ -9,6 +9,7 @@ import shutil
 import pandas as pd
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import complexa_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.target_editor import render_target_source, render_target_editor, _target_widget_keys
@@ -237,7 +238,7 @@ def render_results(run_id,run_dir,candidates,parameters,result):
         molstar_custom_component([StructureVisualization(pdb=path.read_text(),color="molecule-type",representation_type="cartoon+ball-and-stick")],key="complexa-result-view-"+run_id+"-"+str(chosen),height=530,show_structure_tools=False)
         st.download_button("Download selected structure",path.read_bytes(),file_name=path.name,key="complexa-result-download-"+run_id)
     with st.expander("Generation details" if generation_only else "Native metrics and result tables"):
-        st.json(candidate.get("metrics",{}))
-        if generation_only:st.json(candidate.get('raw_metadata',{}))
+        render_result_details(st, candidate.get("metrics",{}))
+        if generation_only:render_result_details(st, candidate.get('raw_metadata',{}))
         for index,csv in enumerate(sorted((Path(run_dir)/"artifacts/raw/proteina_complexa/evaluation_results").glob("**/RAW_*combined.csv"))):
             st.download_button("Download "+csv.name,csv.read_bytes(),file_name=csv.name,key=f"complexa-csv-{run_id}-{index}")

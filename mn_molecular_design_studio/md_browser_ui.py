@@ -7,6 +7,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio.md_browser import (
     MDArtifactReader, ligand_atom_block, matching_study, refresh_requests, report_choices, report_label, snapshot_references, study_observations,
 )
@@ -105,7 +106,7 @@ def _render_study_overview(database, user, index, outcome, observations, prefix)
     st.caption("The replica / production selectors above control the structure viewer. This overview compares all selected report replicas; Expand overview gives the plots more space.")
     _render_analysis_report(st, report, text_loader=reader.text, key_prefix=prefix + "-overview-" + observation["id"])
     with st.expander("Overview source and production IDs"):
-        st.json({"Source report": observation["context"], "Replicas": report.get("replicas"), "Analysis window": report.get("analysis_window")})
+        render_result_details(st, {"Source report": observation["context"], "Replicas": report.get("replicas"), "Analysis window": report.get("analysis_window")})
 
 
 def render_md_study(database, user, index, entry, selection):
@@ -174,7 +175,7 @@ def render_md_study(database, user, index, entry, selection):
             st.caption("Segments and replicas remain separate. Requested duration is not proof of completed sampling.")
             for row in current:
                 with st.expander(row["namespace"] + " · " + report_label(row)):
-                    st.json(row["context"], expanded=False)
+                    render_result_details(st, row["context"])
         elif category == "Endpoint energy":
             choices = report_choices(observations, replica=replica, category="endpoint", production_id=production_id)
             if not choices:
@@ -238,10 +239,10 @@ def render_md_study(database, user, index, entry, selection):
                     else:
                         st.info("No rich production curves are recorded in this report. Check the attached trajectory analysis or SQL summary.")
                     with st.expander("Recorded analysis window and reference metadata"):
-                        st.json({"Analysis window": structural.get("analysis_window"),
+                        render_result_details(st, {"Analysis window": structural.get("analysis_window"),
                             "Residue numbering": structural.get("residue_numbering"),
                             "Reference": {key: value for key, value in rmsd.items() if not isinstance(value, (list, dict))},
-                            "Source": production["context"]}, expanded=False)
+                            "Source": production["context"]})
                     if analytics.get("error"):
                         st.warning(str(analytics["error"]))
         else:

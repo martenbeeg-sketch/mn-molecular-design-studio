@@ -7,6 +7,7 @@ import shutil
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import kejia_idr_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.design_validation import protein_chains, read_structure
@@ -183,4 +184,4 @@ def render_results(run_id, run_dir, candidates, parameters, result):
                                  key=f"kejia-view-{run_id}-{selected}", height=520, show_structure_tools=False)
         st.download_button("Download threaded complex", path.read_bytes(), file_name=path.name, key=f"kejia-download-{run_id}-{selected}")
     with st.expander("Threading details"):
-        st.json(row.get("raw_metadata") or {})
+        render_result_details(st, row.get("raw_metadata") or {})

@@ -11,6 +11,7 @@ import zipfile
 import pandas as pd
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import rfdiffusion3_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.target_editor import render_target_source, render_target_editor
@@ -271,6 +272,6 @@ def render_results(run_id: str, run_dir: Path, candidates: list[dict], parameter
         molstar_custom_component([StructureVisualization(pdb=path.read_text(), color="molecule-type", representation_type="cartoon+ball-and-stick")], key=f"rfd3-result-view-{run_id}-{selected}", height=560, show_controls=True, show_structure_tools=False)
         st.download_button("Download generated structure", path.read_bytes(), file_name=path.name, key=f"rfd3-result-download-{run_id}")
     with st.expander("Design settings and native metadata"):
-        st.json(candidate.get("raw_metadata") or {})
-        st.json(candidate.get("metrics") or {})
+        render_result_details(st, candidate.get("raw_metadata") or {})
+        render_result_details(st, candidate.get("metrics") or {})
     st.caption("Use this job as the source in ProteinMPNN / LigandMPNN to design sequences, then validate them with a cofolding engine.")

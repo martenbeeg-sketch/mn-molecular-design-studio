@@ -10,6 +10,7 @@ from typing import Any
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio.complex_analysis_collection import (
     aggregate_contact_footprints,
     assignment_rows,
@@ -611,7 +612,7 @@ def _render_evaluation_board(samples: list[dict]) -> list[dict]:
                                    format_func=lambda value: labels.get(value, value),
                                    key="collection-eval-detail")
         selected = next(row for row in filtered if str(row["evaluation_id"]) == selected_id)
-        st.json({"evaluation_id": selected["evaluation_id"], "observation_id": selected["observation_id"],
+        render_result_details(st, {"evaluation_id": selected["evaluation_id"], "observation_id": selected["observation_id"],
                  "method": selected["method"], "source_engine": selected["source_engine"],
                  "status": selected["status"], "metrics": selected["metrics"],
                  "parameters": selected["parameters"], "source_context": selected["provenance"]})
@@ -2127,7 +2128,7 @@ def _database_collection_samples(user: dict) -> list[dict]:
                         st.dataframe(evidence, hide_index=True, use_container_width=True)
                     targets = [target for context in contexts for target in context.get("targets") or []]
                     if targets:
-                        st.json(targets, expanded=False)
+                        render_result_details(st, targets)
     else:
         if st.button("Browse individual molecules and models (advanced)", key="complex-analysis-open-individual-browser"):
             st.session_state["complex-analysis-individual-mode"] = True

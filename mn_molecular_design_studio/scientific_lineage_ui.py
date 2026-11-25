@@ -5,6 +5,7 @@ import json
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import scientific_lineage as lineage
 
 
@@ -185,13 +186,14 @@ def render_campaign_browser(database, user):
         st.rerun()
     with st.expander("Recorded stage counts, owner-local Results and mapping limitations"):
         st.dataframe(detail["campaign"]["summary"]["counts"], hide_index=True)
-        st.json({"source_output_occurrences": detail["campaign"]["summary"].get("source_output_occurrences", 0),
+        render_result_details(st, {"source_output_occurrences": detail["campaign"]["summary"].get("source_output_occurrences", 0),
                  "output_kind_counts": detail["campaign"]["summary"].get("output_kind_counts", {}),
                  "stage_occurrence_counts": detail["campaign"]["summary"].get("stage_occurrence_counts", {}),
                  "acceptance_counts": detail["campaign"]["summary"].get("acceptance_counts", {}),
                  "Database_retained_links": detail["campaign"]["summary"].get("database_retained_candidate_model_occurrences", 0),
                  "job_relationships": detail["dependencies"], "targets": detail["campaign"]["summary"]["targets"],
-                 "mapping_warning_counts": detail["campaign"]["summary"].get("mapping_warning_counts", {})})
+                 "mapping_warning_counts": detail["campaign"]["summary"].get("mapping_warning_counts", {})},
+            table_fields=("job_relationships", "targets"))
         st.caption(f"Showing up to 100 of {detail['dependency_total']} compact job/controller relationships. Per-candidate files, metrics and trajectory contents remain in source Results.")
         dep_left, dep_right = st.columns(2)
         if dep_left.button("Previous dependencies", disabled=not dependency_offset, key="scientific-dependency-prev"):
@@ -222,7 +224,7 @@ def render_campaign_browser(database, user):
         st.session_state["scientific-output-offset"] = max(0, output_offset - 100)
         st.rerun()
     with st.expander("Database-retained source links and artifact availability"):
-        st.json(detail["outputs"])
+        render_result_details(st, detail["outputs"])
     models = {r["structure_id"]: r for r in model_page["items"]}
     if not models:
         st.info("No exact authorized retained representation matches this cohort/page. Source outputs remain inspectable in My results; missing model mappings are not replaced by another structure.")

@@ -12,6 +12,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
+
 
 def open_results_board(run_dir=None, candidate_ids=None, *, job=None):
     from mn_molecular_design_studio.logical_runs import source_reference
@@ -553,7 +555,7 @@ def render_results_board(user, *, workflow_schema=None, submit=None):
         with st.expander(identifier, expanded=len(chosen) == 1):
             workspace._show_structure(item['path'], item['candidate'].get('raw_metadata') or {},
                 workspace.component_inventory(item['path'].read_bytes(), item['path'].name), key='results-board-view-'+identifier)
-            st.json({'candidate_id': identifier, 'run_id': job['run_id'], 'structure': item['relative_path'],
+            render_result_details(st, {'candidate_id': identifier, 'run_id': job['run_id'], 'structure': item['relative_path'],
                      'structure_sha256': hashlib.sha256(item['path'].read_bytes()).hexdigest(),
                      'source_metadata': item['candidate'].get('raw_metadata') or {}})
     if st.button('Return to exact source Results', key='results-board-return'):

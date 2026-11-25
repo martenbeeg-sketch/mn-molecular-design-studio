@@ -8,6 +8,8 @@ import io
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
+
 
 def _run_root(run_dir: str | Path) -> Path:
     root = Path(run_dir).expanduser().resolve(strict=True)
@@ -281,7 +283,7 @@ def _render_structural_dynamics(st, structural: dict[str, Any], rmsd: dict[str, 
     ) if key in pocket}
     if pocket_details:
         st.markdown("**Reference-site retention**")
-        st.json(pocket_details)
+        render_result_details(st, pocket_details)
     displacement = _finite_series(pocket.get("ligand_centroid_displacement_angstrom"))
     retained = pocket.get("reference_site_retained")
     if time_ns and (any(value is not None for value in displacement) or isinstance(retained, list)):
@@ -309,7 +311,7 @@ def _render_structural_dynamics(st, structural: dict[str, Any], rmsd: dict[str, 
             st.dataframe(contact_rows, use_container_width=True, hide_index=True)
     if isinstance(hotspot, dict) and hotspot:
         st.caption(str(hotspot.get("description") or "Recorded interaction score metadata"))
-        st.json(hotspot)
+        render_result_details(st, hotspot)
     distance_series = contacts.get("distance_series")
     if isinstance(distance_series, dict) and distance_series:
         labels = list(distance_series)
@@ -329,7 +331,7 @@ def _render_structural_dynamics(st, structural: dict[str, Any], rmsd: dict[str, 
         st.markdown(f"**{title}**")
         meta = {key: value for key, value in payload.items() if key != "residues" and value not in (None, [], {})}
         if meta:
-            st.json(meta)
+            render_result_details(st, meta)
         rows = _rows(payload.get("residues"))
         if rows:
             st.dataframe(rows, use_container_width=True, hide_index=True)
@@ -349,7 +351,7 @@ def _render_structural_dynamics(st, structural: dict[str, Any], rmsd: dict[str, 
     interface = structural.get("interface_rin")
     if isinstance(interface, dict) and (interface.get("applicable") or interface.get("interfaces") or interface.get("residue_pairs")):
         st.markdown("**Recorded interface residue interaction network**")
-        st.json({key: value for key, value in interface.items() if key not in {"interfaces", "residue_pairs", "nodes"}})
+        render_result_details(st, {key: value for key, value in interface.items() if key not in {"interfaces", "residue_pairs", "nodes"}})
         for key, title in (("interfaces", "Interfaces"), ("residue_pairs", "Residue pairs"), ("nodes", "Nodes")):
             rows = _rows(interface.get(key))
             if rows:
@@ -443,7 +445,7 @@ def _render_analysis_tables(st, report: dict[str, Any], *, show_series=True) -> 
     aggregate = report.get("aggregate")
     if isinstance(aggregate, dict) and aggregate:
         st.markdown("**Available scalar summaries**")
-        st.json(aggregate)
+        render_result_details(st, aggregate)
     if not any((replicas, series, consensus, isinstance(matrix, dict), isinstance(aggregate, dict) and aggregate)):
         st.info("The analysis result contains no supported RMSD, contact, or scalar summary fields.")
 
@@ -511,7 +513,7 @@ def _render_md_analysis_summary(st, summary: dict[str, Any], *, run_root: Path |
     units = summary.get("units") if isinstance(summary.get("units"), dict) else {}
     parameters = summary.get("parameters") if isinstance(summary.get("parameters"), dict) else {}
     st.markdown("**Trajectory analysis summary**")
-    st.json({
+    render_result_details(st, {
         "Analysis": summary.get("analysis", "not recorded"),
         "Selected frames": summary.get("selected_frame_count", "not recorded"),
         "Selected time range (ns)": summary.get("selected_time_range_ns", "not recorded"),
@@ -675,7 +677,7 @@ def _render_endpoint_details(st, endpoint: dict[str, Any], record: dict[str, Any
             "Source previous duration (ns)": _finite(production.get("previous_duration_ns")),
             "Source requested total (ns)": _finite(production.get("target_duration_ns")),
         })
-    st.json(details)
+    render_result_details(st, details)
     if record.get("trajectory_snapshot_matches") is False:
         st.warning("The endpoint input records a different trajectory snapshot from the copied production trajectory.")
     lineage_warnings = record.get("trajectory_lineage_warnings")
@@ -777,7 +779,7 @@ def _render_study(st, run_root: Path, study: dict[str, Any], *, json_loader=None
     if isinstance(history, dict) and history:
         st.markdown("**Source analysis history**")
         st.caption("History metadata references other source jobs; these paths are shown but are not opened here.")
-        st.json(history)
+        render_result_details(st, history, table_fields=("production_runs", "analysis_runs", "mmgbsa_runs"))
     if production_with_results:
         production_with_results.sort(key=lambda item: (
             item.get("status") in {"completed", "success"},

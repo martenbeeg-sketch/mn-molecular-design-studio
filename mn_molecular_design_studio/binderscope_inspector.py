@@ -8,6 +8,7 @@ import json
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio.binderscope_view import render_linked_inspector
 from mn_molecular_design_studio.binderscope_presentation import (
     contact_map, contact_network, contact_rows, highlight_selections, residue_label,
@@ -81,7 +82,7 @@ def _render_context(result):
     st.caption("Tag/fusion assessments are geometric probes of one conformation, not simulations or guarantees. Missing environment context is not an all-clear.")
     for label, field in (("Binding-mode evidence", "binding_modes"), ("Specificity evidence", "specificity"), ("Scaffold / paratope evidence", "paratope")):
         with st.expander(label):
-            st.json(result.get(field) or {"status": "Unavailable"}, expanded=False)
+            render_result_details(st, result.get(field) or {"status": "Unavailable"})
 
 
 def _render_structure(result, database, user, pair, key):
@@ -209,9 +210,10 @@ def _render_chemistry(result):
     else:
         st.caption("None recorded." if "liab" in analysis else "Not available.")
     if analysis.get("global_flags"):
-        st.write(analysis["global_flags"])
+        render_result_details(st, analysis["global_flags"])
     with st.expander("Sequence properties and secondary structure"):
-        st.json({field: analysis.get(field) for field in ("seq_props", "comp", "disulfides", "ssbond_basis", "segments")}, expanded=False)
+        render_result_details(st, {field: analysis.get(field) for field in ("seq_props", "comp", "disulfides", "ssbond_basis", "segments")},
+                              table_fields=("segments", "disulfides"))
 
 
 def render_inspector(result, *, database=None, user=None, key=""):
@@ -254,9 +256,9 @@ def render_inspector(result, *, database=None, user=None, key=""):
     with tabs[3]:
         _render_context(result)
     with tabs[4]:
-        st.write(source.get("assessment") or {"status": "No recorded per-design settings"})
+        render_result_details(st, source.get("assessment") or {"status": "No recorded per-design settings"})
         st.caption("Original admission, generator scores and model identities are retained separately in the design's score history. These views do not recompute or silently substitute another structure.")
-        st.json(source, expanded=False)
+        render_result_details(st, source)
         st.download_button("Download this assessment (JSON)", json.dumps(result, indent=2), "binderscope-assessment.json", "application/json", key=key + "-json")
 
 

@@ -19,6 +19,7 @@ from mn_molecular_design_studio.pipeline_graph import (
     shared_template_starting_points, validate_graph,
 )
 from mn_molecular_design_studio.api_client import StudioAPIConflictError
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
 
@@ -1740,8 +1741,21 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 + " · " + item["saved_at"][:19] + " · " + item["revision"][:10])
             st.download_button("Download pipeline graph", json.dumps(snapshot["graph"], indent=2),
                                file_name=f"pipeline-{snapshot['revision'][:10]}.json", mime="application/json")
-            with st.expander("Graph and parameters"):
-                st.json(snapshot["graph"], expanded=False)
+            with st.expander("Pipeline steps and connections"):
+                graph = snapshot["graph"]
+                steps = {node["id"]: node["data"].get("label") or node["data"]["kind"] for node in graph["nodes"]}
+                st.dataframe([{"Step": steps[node["id"]], "Tool": node["data"]["kind"]} for node in graph["nodes"]],
+                             hide_index=True)
+                if graph["edges"]:
+                    st.dataframe([{"From": steps.get(edge["source"], edge["source"]),
+                                   "To": steps.get(edge["target"], edge["target"])} for edge in graph["edges"]],
+                                 hide_index=True)
+                if steps:
+                    selected_step = st.selectbox(
+                        "Step settings", list(steps), format_func=steps.get, key=prefix + "-archived-step",
+                    )
+                    node = next(node for node in graph["nodes"] if node["id"] == selected_step)
+                    render_result_details(st, node["data"].get("params") or {})
         else:
             st.caption("No saved pipelines in this project.")
         return

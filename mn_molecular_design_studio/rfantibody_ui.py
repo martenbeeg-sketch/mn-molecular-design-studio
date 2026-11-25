@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import rfantibody_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import StructureVisualization, molstar_custom_component
@@ -667,10 +668,10 @@ def render_results(run_id: str, run_dir: Path, candidates: list[dict], parameter
     score = candidate.get("metrics") or {}
     shown_metrics = {key.replace("_", " ").title(): value for key, value in score.items() if isinstance(value, (int, float, str, bool)) and key not in {"binder_ca_trace_c3", "binder_ca_trace_segments"}}
     with st.expander("Structure scores and design metadata", expanded=False):
-        st.json(shown_metrics)
-        st.json(candidate.get("raw_metadata") or {})
+        render_result_details(st, shown_metrics)
+        render_result_details(st, candidate.get("raw_metadata") or {})
     with st.expander("Requested settings", expanded=False):
-        st.json({key: value for key, value in parameters.items() if key not in {"target_pdb", "framework_pdb"}})
+        render_result_details(st, {key: value for key, value in parameters.items() if key not in {"target_pdb", "framework_pdb"}})
     render_confidence_guide()
 
 

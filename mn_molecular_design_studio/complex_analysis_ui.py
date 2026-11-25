@@ -13,6 +13,8 @@ import tempfile
 from pathlib import Path, PurePosixPath
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
+
 
 STRUCTURE_SUFFIXES = {".pdb", ".ent", ".cif", ".mmcif", ".pdbqt", ".sdf", ".mol"}
 VIEWER_MAX_BYTES = 50 * 1024 * 1024
@@ -779,7 +781,7 @@ def _render_remote_results_source(user: dict, opened: dict, *, workflow_schema=N
     _show_structure(path, raw, components, key=key,
                     highlighted_selections=_active_biotite_highlights(key))
     with st.expander("Remote Results provenance", expanded=False):
-        st.json({
+        render_result_details(st, {
             "source_workstation": node_name,
             "node_id": remote_job.get("node_id"),
             "cluster_job_id": opened.get("cluster_job_id"),
@@ -1592,10 +1594,10 @@ def _render_inspector_measurements(items: list[dict], *, evaluators: set[str] | 
                     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
             elif rows:
                 with st.expander(f"Saved {artifact['name']}"):
-                    st.json(rows[0])
+                    render_result_details(st, rows[0])
         with st.expander("Evaluation provenance", expanded=False):
             context = observation.get("context") if isinstance(observation.get("context"), dict) else {}
-            st.json({
+            render_result_details(st, {
                 "evaluation_id": evaluation.get("id"), "observation_id": observation.get("id"),
                 "evaluator": item["evaluator"], "run_id": evaluation.get("run_id") or observation.get("run_id"),
                 "source_structure_id": context.get("source_structure_id") or context.get("representation_id"),
@@ -1629,7 +1631,7 @@ def _render_inspector_findings(data: dict, viewer_key: str) -> None:
         st.caption("Mol* selection: " + ", ".join(selected["selectors"]))
     else:
         st.info("This output does not contain a uniquely resolvable author residue reference in the selected representation, so no highlight is inferred.")
-    st.json({"evaluator": selected["evaluator"], "artifact": selected["artifact"],
+    render_result_details(st, {"evaluator": selected["evaluator"], "artifact": selected["artifact"],
              "residue_references": selected["residue_refs"], "stored_evaluator_fields": selected["raw"]})
     descriptor = next((item["evaluation"] for item in data["evaluations"]
                        if item["evaluator"] == selected["evaluator"]), {})
@@ -1737,7 +1739,7 @@ def _render_inspector_tag_fusion(items: list[dict], viewer_key: str) -> None:
             st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
     st.caption("These are coordinate-based advisories. Flexible polymer conformations, tag–receptor interactions, expression, and experimental SPR/BLI behavior are not simulated.")
     with st.expander("Evaluation provenance, definitions and limitations"):
-        st.json({"evaluation_id": item["evaluation"].get("id"), "run_id": item["evaluation"].get("run_id"),
+        render_result_details(st, {"evaluation_id": item["evaluation"].get("id"), "run_id": item["evaluation"].get("run_id"),
                  "source": result.get("source"), "parameters": result.get("parameters"),
                  "method_parameters": result.get("method_parameters"),
                  "reference_context": result.get("reference_context"),
@@ -1802,7 +1804,7 @@ def _render_inspector_liabilities(items: list[dict], viewer_key: str, evidence: 
         st.dataframe(pd.DataFrame([{"Input": row.get("data"), "Status": row.get("status"), "Reason": row.get("reason")}
                                    for row in missing]), hide_index=True, use_container_width=True)
     with st.expander("Methods and provenance", expanded=False):
-        st.json({"evaluation_id": item["evaluation"].get("id"), "run_id": item["evaluation"].get("run_id"),
+        render_result_details(st, {"evaluation_id": item["evaluation"].get("id"), "run_id": item["evaluation"].get("run_id"),
                  "source": result.get("source"), "selected_component_chains": result.get("selected_component_chains"),
                  "selected_partner_chains": result.get("selected_partner_chains"), "parameters": result.get("parameters"),
                  "method_provenance": result.get("method_provenance"),
@@ -1920,7 +1922,7 @@ def _render_inspector_interface_chemistry(items: list[dict], viewer_key: str) ->
                 "Evidence basis": row.get("evidence_basis"),
             } for row in hbond_rows], hide_index=True, use_container_width=True)
         with st.expander("Method parameters, evidence basis and limitations"):
-            st.json({"parameters": result.get("parameters"), "hydrogen_bond_basis_counts": metrics.get("interfacial_hydrogen_bond_evidence_basis_counts"),
+            render_result_details(st, {"parameters": result.get("parameters"), "hydrogen_bond_basis_counts": metrics.get("interfacial_hydrogen_bond_evidence_basis_counts"),
                      "assumptions": result.get("methodological_assumptions"), "attribution": result.get("attribution")})
 
 
@@ -1972,7 +1974,7 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
                                       for key, value in item["confidence_metrics"].items()],
                                      hide_index=True, use_container_width=True)
                     if item["confidence_outputs"]:
-                        st.json(item["confidence_outputs"])
+                        render_result_details(st, item["confidence_outputs"])
                     normalized = item["observation"].get("normalized_output")
                     provenance = normalized.get("provenance") if isinstance(normalized, dict) else None
                     if isinstance(provenance, dict) and provenance:
@@ -2043,7 +2045,7 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
                             "Closest context atom": ((row.get("closest_atom_pair") or {}).get("context") or {}).get("atom_name"),
                         } for row in evidence], hide_index=True, use_container_width=True)
                     with st.expander("Method, exact identities and limitations"):
-                        st.json({"method": result.get("method"), "method_version": result.get("method_version"),
+                        render_result_details(st, {"method": result.get("method"), "method_version": result.get("method_version"),
                                  "source": result.get("source"), "reference": result.get("reference"),
                                  "placement": result.get("placement"), "parameters": result.get("parameters"),
                                  "reference_coordinate_origin": result.get("reference_coordinate_origin"),
@@ -2104,7 +2106,7 @@ def _render_biotite_results(user: dict, evaluation: dict, *, source_candidate_id
         item = evaluation.get("selected_item") or {}
         metadata = evaluation.get("metadata") or {}
         database_source = metadata.get("database_source") if isinstance(metadata.get("database_source"), dict) else {}
-        st.json({
+        render_result_details(st, {
             "evaluation_run": f"{evaluation.get('task_group')}/{evaluation.get('run_id')}",
             "workflow": "analysis.biotite_interface",
             "source_kind": metadata.get("upstream_source_kind") or "results",
@@ -2194,7 +2196,7 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                 metrics = _read_json(path)
                 if metrics:
                     with st.expander("PEP-Patch surface metrics"):
-                        st.json(metrics)
+                        render_result_details(st, metrics)
             for path in sorted((run_dir / "artifacts" / "analysis").glob("item_*/residue_patches*.csv")):
                 try:
                     frame = pd.read_csv(path, index_col=0)
@@ -2224,17 +2226,17 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
             placement = _read_json(run_dir / "artifacts" / "analysis" / "reference_placement" / "reference_placement.json")
             if placement:
                 with st.expander("Rigid transformation, exact structures, mapped residues and limitations"):
-                    st.json(placement)
+                    render_result_details(st, placement)
             summary = _read_json(run_dir / "artifacts" / "analysis" / "reference_placement_summary.json")
             if summary:
                 with st.expander("Registered evaluator summary", expanded=False):
-                    st.json(summary)
+                    render_result_details(st, summary)
         if workflow_id == "analysis.reference_environment" and status in {"completed", "succeeded"}:
             result = _read_json(run_dir / "artifacts" / "analysis" / "reference_environment" / "reference_environment.json")
             if result:
                 st.dataframe([result.get("measurements", {})], hide_index=True, use_container_width=True)
-                with st.expander("Residue/atom evidence, method and limitations", expanded=True):
-                    st.json(result)
+                with st.expander("Residue and atom evidence", expanded=True):
+                    render_result_details(st, result, table_fields=("residue_evidence", "closest_atom_pairs"))
         if workflow_id in {"analysis.tag_fusion_suitability", "analysis.tag_fusion_context"} and status in {"completed", "succeeded"}:
             result = _read_json(run_dir / "artifacts" / "analysis" / "tag_fusion_suitability.json")
             if result:
@@ -2242,21 +2244,21 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                 if result.get("not_applicable_reason"):
                     st.info(result["not_applicable_reason"])
                 with st.expander("Terminal evidence, tag/fusion clearance and scientific limitations", expanded=True):
-                    st.json(result)
+                    render_result_details(st, result)
                 if result.get("adaptation_attribution"):
                     st.caption(result["adaptation_attribution"])
         if workflow_id == "analysis.sequence_liability" and status in {"completed", "succeeded"}:
             result = _read_json(run_dir / "artifacts" / "analysis" / "sequence_liability" / "sequence_liability.json")
             if result:
                 st.markdown(f"**Assessment status:** `{result.get('assessment_status', 'unknown')}` · **Method:** `{result.get('method', 'unavailable')}`")
-                with st.expander("Residue-linked findings, measurements and limitations", expanded=True):
-                    st.json(result)
+                with st.expander("Residue-linked findings", expanded=True):
+                    render_result_details(st, result, table_fields=("findings",))
         if workflow_id == "analysis.binder_interface_chemistry" and status in {"completed", "succeeded"}:
             result = _read_json(run_dir / "artifacts" / "analysis" / "binder_interface_chemistry.json")
             if result:
                 st.dataframe([result.get("metrics", {})], hide_index=True, use_container_width=True)
-                with st.expander("Residue annotations, hydrogen-bond geometry, settings and assumptions", expanded=True):
-                    st.json(result)
+                with st.expander("Residue annotations and hydrogen-bond geometry", expanded=True):
+                    render_result_details(st, result, table_fields=("residue_annotations", "hydrogen_bonds", "contacts"))
     evaluator = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
                  "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.native_ligand_interactions": "native_ligand_interactions", "analysis.posebusters": "posebusters",
                  "analysis.reference_environment": "reference_environment",
@@ -2286,7 +2288,7 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
         metadata = evaluation.get("metadata") or {}
         database_source = metadata.get("database_source") if isinstance(metadata.get("database_source"), dict) else {}
         selection_database_source = selection.get("database_source") if isinstance(selection.get("database_source"), dict) else {}
-        st.json({
+        render_result_details(st, {
             "evaluation_run": f"{evaluation.get('task_group')}/{evaluation.get('run_id')}",
             "workflow": workflow_id,
             "source_kind": metadata.get("upstream_source_kind") or "results",
@@ -2532,7 +2534,7 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
         st.caption(f"Analysis entry: {entry.get('entry_mode')} · source candidate {entry.get('native_candidate_id')} · "
                    f"model {entry.get('model_id') or 'unspecified'} · {entry.get('method')}")
         with st.expander("Original candidate and structure provenance", expanded=False):
-            st.json({key: entry.get(key) for key in (
+            render_result_details(st, {key: entry.get(key) for key in (
                 "candidate_id", "native_candidate_id", "variant_id", "parents", "parent_variant_ids", "target",
                 "source_run_dir", "source_run", "source_structure", "structure_sha256", "model_id", "prediction_id", "method", "acceptance")})
             origin = Path(str(entry.get("source_run_dir") or ""))
@@ -3293,7 +3295,7 @@ def _render_optional_reference_context(user: dict, record: dict, structure: dict
                     f"source coverage {float(mapping.get('source_coverage') or 0):.3f} · "
                     f"mapped sequence identity {float(mapping.get('mapped_sequence_identity') or 0):.3f}"
                 )
-                st.json(mapping.get("mapping_parameters") or {})
+                render_result_details(st, mapping.get("mapping_parameters") or {})
             st.caption("The exact associated Database reference is displayed beside the selected complex above in its original coordinate frame.")
         elif saved:
             status_message = {
@@ -4204,7 +4206,7 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
                 raw_candidate_metadata = candidate_context.get("raw_metadata") if isinstance(candidate_context.get("raw_metadata"), dict) else {}
                 if not _evaluation_matches_structure(evaluation, structure):
                     st.caption("This evaluation was selected explicitly, but the saved records do not establish an exact structure association.")
-                st.json({
+                render_result_details(st, {
                     "evaluation": {key: value for key, value in evaluation.items() if key != "observation_id"},
                     "stored_metrics": observation.get("metrics") or {},
                     "normalized_scores": observation.get("normalized_output", {}).get("metrics", {}),
@@ -4214,7 +4216,7 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
     else:
         st.info("No saved evaluation is associated with this structure. No confidence or scientific measurements are inferred.")
     with st.expander("Structure provenance", expanded=False):
-        st.json({
+        render_result_details(st, {
             "record_id": record["id"],
             "record_origin": record.get("origin") or {},
             "source_groups": record.get("groups") or [],
@@ -4329,7 +4331,7 @@ def _render_results_source(user: dict, opened: dict, *, workflow_schema=None, pr
     _show_component_groups(components, viewer_key)
     if candidate:
         st.markdown("#### Saved candidate evidence")
-        st.json({
+        render_result_details(st, {
             "candidate_id": candidate_id,
             "stage": candidate.get("stage"),
             "source_tool": candidate.get("source_tool") or metadata.get("tool"),
@@ -4337,7 +4339,7 @@ def _render_results_source(user: dict, opened: dict, *, workflow_schema=None, pr
             "confidence_outputs": candidate_metadata.get("confidence_outputs") or {},
         })
     with st.expander("Results provenance", expanded=False):
-        st.json({
+        render_result_details(st, {
             "source_job": f"{source_ref[0]}/{source_ref[1]}",
             "source_project_id": source_access.get("project_id"),
             "source_owner_id": source_access.get("owner_id"),

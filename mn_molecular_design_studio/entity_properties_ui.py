@@ -5,6 +5,7 @@ import uuid
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import entity_names as names, entity_properties as properties
 
 ERRORS = (ValueError, PermissionError, OSError, RuntimeError, sqlite3.Error)
@@ -66,7 +67,7 @@ def _properties_dialog(user, choices, *, read_only=False):
             st.markdown("**Previous names / aliases**")
             st.write("; ".join(snapshot["aliases"]))
         with st.expander("Identity and original source · read-only"):
-            st.json(snapshot["source"], expanded=False)
+            render_result_details(st, snapshot["source"])
         if st.button("Edit metadata", key="properties-edit-button-" + dialog_key, disabled=not writable, type="primary"):
             st.session_state[edit_key] = {"snapshot": snapshot, "instance": uuid.uuid4().hex}
             st.rerun(scope="app")

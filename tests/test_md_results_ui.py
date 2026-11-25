@@ -200,11 +200,13 @@ def test_manifest_renderer_shows_study_lineage_replica_analysis_and_separate_end
     assert "prod-1" in strings and "prod-2" in strings
     assert "continues" not in strings  # lineage is shown using the source run ID field
     assert "endpoint-2" in strings
-    endpoint_details = next(call[1][0] for call in st.calls if call[0] == "json" and "Trajectory snapshot matches" in str(call[1][0]))
-    assert endpoint_details["Trajectory snapshot matches"] is False
+    assert not any(call[0] == "json" for call in st.calls)
+    endpoint_rows = next(call[1][0] for call in st.calls if call[0] == "dataframe" and "Trajectory snapshot matches" in str(call[1][0]))
+    endpoint_details = {row["Field"]: row["Value"] for row in endpoint_rows}
+    assert endpoint_details["Trajectory snapshot matches"] == "No"
     assert endpoint_details["Source production status"] == "completed"
-    assert endpoint_details["Source MD job"]["run_id"] == "studio-md"
-    assert endpoint_details["Legacy source MD job"]["run_id"] == "prod-1"
+    assert endpoint_details["Source MD job › Run id"] == "studio-md"
+    assert endpoint_details["Legacy source MD job › Run id"] == "prod-1"
     assert "different trajectory snapshot" in strings
     lineage = next(call[1][0] for call in st.calls if call[0] == "dataframe" and "This segment (ns)" in str(call[1][0]))
     assert lineage[0]["Requested total (ns)"] == 20

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import peptide_trap_input as inputs
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
 from mn_molecular_design_studio.kejia_idr_ui import _render_template_preview
@@ -120,4 +121,4 @@ def render_results(run_id, run_dir, candidates, parameters, result):
         ])], key="peptide-trap-result-view-" + run_id + "-" + str(index), height=520, show_controls=True, show_structure_tools=False)
         st.download_button("Download designed complex", path.read_bytes(), file_name=path.name, key="peptide-trap-download-" + run_id)
     with st.expander("Design details"):
-        st.json(row.get("raw_metadata") or {})
+        render_result_details(st, row.get("raw_metadata") or {})

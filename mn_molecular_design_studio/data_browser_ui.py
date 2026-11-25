@@ -9,6 +9,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details, result_field_label, result_value_text
 from mn_molecular_design_studio.data_browser import (
     ReadOnlyLibrary, admission_measurements, concise_result_label, expand_scope, listed_results, load_saved_record,
     navigation_tree, producing_evaluations, saved_receptor_file, scope_path, source_collection_scope, dataset_results_scope,
@@ -128,7 +129,8 @@ def _table_controls(database, index, entries, visible, snapshot, signature, page
         cached = (table_key, result_table(database, index, visible, cache=cache))
         st.session_state["data-browser-page-table"] = cached
     rows = cached[1]
-    available = table_columns(rows)
+    available = [field for field in table_columns(rows)
+                 if not (field.startswith("Analysis · ") and field.endswith(" · Records"))]
     automatic = table_profile(rows)
     st.caption(automatic + " columns · original scores and separately linked post-analysis")
     with st.expander("Table columns & CSV export"):
@@ -137,7 +139,8 @@ def _table_controls(database, index, entries, visible, snapshot, signature, page
             disabled=preset in {"Compact", "All columns"},
             help="Add model, version, confidence, terminal accessibility and target-reference RMSD to activity presets. Compact stays compact; All columns includes everything.") if PREFIX + "Status" in available else False
         columns_key = hashlib.sha256(json.dumps([available, table_profile(rows, preset), details]).encode()).hexdigest()[:16]
-        columns = st.multiselect("Visible columns", available, default=default_columns(rows, preset, binderscope_details=details), format_func=column_label,
+        columns = st.multiselect("Visible columns", available, default=[field for field in default_columns(rows, preset, binderscope_details=details) if field in available],
+            format_func=column_label,
             key="data-browser-columns-v4-" + columns_key)
         st.caption("Native scores and inputs belong to each row’s displayed evaluation, not a best-score merge. "
             "Analysis numbers require one completed, verified same-structure evaluation (or the exact MD segment). "
@@ -149,7 +152,7 @@ def _table_controls(database, index, entries, visible, snapshot, signature, page
         export_mode = st.selectbox("CSV rows", ["Current listing", "All original evaluations"], key="data-browser-csv-mode")
         st.caption(f"Exports all {len(entries):,} matching entries across every page, with all columns, "
             "including recorded input parameters, native results and source identifiers. "
-            "Linked analysis has separate columns and complete JSON evidence. The evaluation option expands "
+            "Linked analysis includes its stored evidence. The evaluation option expands "
             "original models / replicates without adding analysis-only rows.")
         export_key = ("binderscope-summary-v5", snapshot, signature, export_mode)
         prepared = st.session_state.get("data-browser-prepared-csv")
@@ -166,6 +169,16 @@ def _table_controls(database, index, entries, visible, snapshot, signature, page
             st.download_button(f"Download CSV ({prepared[2]:,} rows)", prepared[1], file_name="saved-results-" + signature + ".csv",
                 mime="text/csv", on_click="ignore", key="data-browser-table-csv")
     return rows, columns
+
+
+def _result_table_cell(field, value):
+    if isinstance(value, str) and field.startswith(("Analysis · ", "Input · ", "Result · ")) and value[:1] in {"[", "{"}:
+        try:
+            structured = json.loads(value)
+        except ValueError:
+            return value
+        return result_value_text(structured, summarize_fields=True)
+    return value
 
 
 def _render_structure(database, user, record, preferred):
@@ -271,84 +284,89 @@ def _render_details(database, user, cache, index, entry):
     validations = [row for row in connected if row not in analyses and (
         row.get("receipt", {}).get("role") == "design_validation" or row.get("receipt", {}).get("design_refold"))]
     other_calculations = [row for row in connected if row["id"] not in originals and row not in analyses and row not in validations]
-    scores_tab, parameters_tab, history_tab = st.tabs(["Scores & analyses", "Parameters", "History"])
+    scores_tab, parameters_tab, history_tab = st.tabs(
+        ["Scores & analyses", "Parameters", "History"], key="data-browser-detail-tabs", on_change="rerun",
+    )
     from mn_molecular_design_studio.database_ui import _render_evaluation_measurements
-    with scores_tab:
-        st.markdown("**Original result scores**")
-        if not original_results:
-            preserved = admission_measurements(record)
-            if preserved:
-                st.caption("Generator measurements preserved in SQL admission evidence; these are not a newly reconstructed Evaluation.")
-                st.dataframe(preserved, hide_index=True, use_container_width=True, column_order=["Value", "Measurement", "Tool"],
-                    column_config={"Value": st.column_config.TextColumn(width="small")})
-            elif record["observations"]:
-                for observation in record["observations"]:
-                    st.dataframe([{"Metric": name, "Value": json.dumps(value, ensure_ascii=False)}
-                        for name, value in observation["metrics"].items()], hide_index=True, use_container_width=True)
-            else:
-                st.caption("No original measurements are recorded on this SQL result. Missing values are not zero.")
-        for original in original_results:
-            label = calculation_label(original)
-            with st.expander(label, expanded=len(original_results) == 1 or original["evaluation_id"] == result["evaluation_id"]):
-                st.caption(original["structure_relation"])
-                _render_evaluation_measurements(original, compact=True)
-        st.markdown("**Attached post-analysis**")
-        if not analyses:
-            st.caption("No post-analysis is recorded for this design / target context.")
-        for analysis in analyses:
-            with st.expander(tool_label(analysis["tool"]) + " · " + analysis["structure_relation"],
-                             expanded=analysis["tool"] == "binderscope" and len(analyses) == 1):
-                if analysis["tool"] == "binderscope":
-                    from mn_molecular_design_studio.binderscope_ui import render_design_result
-                    from mn_molecular_design_studio.binderscope import saved_result
-                    assessment = saved_result(database, user, analysis)
-                    if assessment:
-                        assessment = {**assessment, "_studio_target_label": entry["outcome"].get("target_reference_label") or entry["outcome"].get("target_name") or "Saved target"}
-                        render_design_result(assessment, database=database, user=user, key=analysis["observation_id"], compact=True)
-                    else:
-                        st.caption("This assessment is no longer accessible.")
+    if scores_tab.open:
+        with scores_tab:
+            st.markdown("**Original result scores**")
+            if not original_results:
+                preserved = admission_measurements(record)
+                if preserved:
+                    st.caption("Generator measurements preserved in SQL admission evidence; these are not a newly reconstructed Evaluation.")
+                    st.dataframe(preserved, hide_index=True, use_container_width=True, column_order=["Value", "Measurement", "Tool"],
+                        column_config={"Value": st.column_config.TextColumn(width="small")})
+                elif record["observations"]:
+                    for observation in record["observations"]:
+                        st.dataframe([{"Metric": result_field_label(name), "Value": result_value_text(value, summarize_fields=True)}
+                            for name, value in observation["metrics"].items()], hide_index=True, use_container_width=True)
                 else:
-                    _render_evaluation_measurements(analysis, compact=True)
-        if validations:
-            with st.expander(f"Design-internal refolding ({len(validations)})"):
-                for validation in validations:
-                    st.markdown("**" + tool_label(validation["tool"]) + "**")
-                    _render_evaluation_measurements(validation, compact=True)
-        if unresolved:
-            st.caption(f"{unresolved} calculations have unresolved links and are not presented as attached scores.")
-    with parameters_tab:
-        validation = record.get("metadata", {}).get("validation_acceptance")
-        if validation:
-            with st.expander("Saved admission policy and measurement provenance"):
-                st.json(validation, expanded=False)
-        if record["observations"]:
-            for observation in record["observations"]:
-                st.caption(observation["namespace"] + " · parameters and context recorded in SQL")
-                st.json(observation["context"], expanded=False)
-        elif not validation:
-            st.caption("No calculation parameters are recorded for this saved molecular identity.")
-    with history_tab:
-        st.caption("Display labels do not rename scientific identities. Original names and identifiers remain here.")
-        st.write({"Original name": entry["outcome"]["name"], "Molecule ID": record["id"],
-                  "Admission": entry["outcome"].get("acceptance_level", "Not recorded")})
-        naming = record.get("metadata", {}).get("studio_naming") or {}
-        if naming.get("native_names"):
-            st.write({"Native names": naming["native_names"]})
-        creation = record.get("metadata", {}).get("design_creation")
-        if creation:
-            with st.expander("Design creation time and original output evidence"):
-                st.json(creation, expanded=False)
-        st.dataframe([{"Tool": tool_label(row["tool"]), "Run": row["run_id"], "Candidate": row.get("candidate", ""),
-                       "Model / pose": row["model"], "Collection": row["collection"]} for row in entry["outcome"]["originals"]],
-                     hide_index=True, use_container_width=True)
-        with st.expander("Source evidence"):
-            st.json(record["sources"], expanded=False)
-        if other_calculations:
-            with st.expander(f"Other calculations for this molecule ({len(other_calculations)})"):
-                st.caption("These are not asserted to be post-analysis of the selected result. Open their own saved result to inspect scores.")
-                st.dataframe([{"Method": tool_label(row["tool"]), "Run": row["run_id"],
-                    "Relationship": row["structure_relation"]} for row in other_calculations],
-                    hide_index=True, use_container_width=True)
+                    st.caption("No original measurements are recorded on this SQL result. Missing values are not zero.")
+            for original in original_results:
+                label = calculation_label(original)
+                with st.expander(label, expanded=len(original_results) == 1 or original["evaluation_id"] == result["evaluation_id"]):
+                    st.caption(original["structure_relation"])
+                    _render_evaluation_measurements(original, compact=True)
+            st.markdown("**Attached post-analysis**")
+            if not analyses:
+                st.caption("No post-analysis is recorded for this design / target context.")
+            for analysis in analyses:
+                with st.expander(tool_label(analysis["tool"]) + " · " + analysis["structure_relation"],
+                                 expanded=analysis["tool"] == "binderscope" and len(analyses) == 1):
+                    if analysis["tool"] == "binderscope":
+                        from mn_molecular_design_studio.binderscope_ui import render_design_result
+                        from mn_molecular_design_studio.binderscope import saved_result
+                        assessment = saved_result(database, user, analysis)
+                        if assessment:
+                            assessment = {**assessment, "_studio_target_label": entry["outcome"].get("target_reference_label") or entry["outcome"].get("target_name") or "Saved target"}
+                            render_design_result(assessment, database=database, user=user, key=analysis["observation_id"], compact=True)
+                        else:
+                            st.caption("This assessment is no longer accessible.")
+                    else:
+                        _render_evaluation_measurements(analysis, compact=True)
+            if validations:
+                with st.expander(f"Design-internal refolding ({len(validations)})"):
+                    for validation in validations:
+                        st.markdown("**" + tool_label(validation["tool"]) + "**")
+                        _render_evaluation_measurements(validation, compact=True)
+            if unresolved:
+                st.caption(f"{unresolved} calculations have unresolved links and are not presented as attached scores.")
+    if parameters_tab.open:
+        with parameters_tab:
+            validation = record.get("metadata", {}).get("validation_acceptance")
+            if validation:
+                with st.expander("Saved admission policy and measurement provenance"):
+                    render_result_details(st, validation)
+            if record["observations"]:
+                for observation in record["observations"]:
+                    st.caption(observation["namespace"] + " · parameters and context recorded in SQL")
+                    render_result_details(st, observation["context"])
+            elif not validation:
+                st.caption("No calculation parameters are recorded for this saved molecular identity.")
+    if history_tab.open:
+        with history_tab:
+            st.caption("Display labels do not rename scientific identities. Original names and identifiers remain here.")
+            render_result_details(st, {"Original name": entry["outcome"]["name"], "Molecule ID": record["id"],
+                      "Admission": entry["outcome"].get("acceptance_level", "Not recorded")})
+            naming = record.get("metadata", {}).get("studio_naming") or {}
+            if naming.get("native_names"):
+                render_result_details(st, {"Native names": naming["native_names"]})
+            creation = record.get("metadata", {}).get("design_creation")
+            if creation:
+                with st.expander("Design creation time and original output evidence"):
+                    render_result_details(st, creation)
+            st.dataframe([{"Tool": tool_label(row["tool"]), "Run": row["run_id"], "Candidate": row.get("candidate", ""),
+                           "Model / pose": row["model"], "Collection": row["collection"]} for row in entry["outcome"]["originals"]],
+                         hide_index=True, use_container_width=True)
+            with st.expander("Source evidence"):
+                render_result_details(st, record["sources"])
+            if other_calculations:
+                with st.expander(f"Other calculations for this molecule ({len(other_calculations)})"):
+                    st.caption("These are not asserted to be post-analysis of the selected result. Open their own saved result to inspect scores.")
+                    st.dataframe([{"Method": tool_label(row["tool"]), "Run": row["run_id"],
+                        "Relationship": row["structure_relation"]} for row in other_calculations],
+                        hide_index=True, use_container_width=True)
 
 
 def render_data_browser(user, projects, *, database=None, workflow_schema=None, submit=None):
@@ -575,7 +593,8 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
                 displayed_columns = list(columns)
                 if has_viewers:
                     displayed_columns.insert(displayed_columns.index("Name") + 1 if "Name" in displayed_columns else 0, VIEWER_COLUMN)
-                displayed_rows = [{field: row.get(field) for field in displayed_columns} for row in displayed_rows]
+                displayed_rows = [{field: _result_table_cell(field, row.get(field)) for field in displayed_columns}
+                                  for row in displayed_rows]
                 retained_rows = [position for position, entry in enumerate(visible) if entry["id"] in page_selection["selected"]]
                 event = st.dataframe(displayed_rows, hide_index=True, width="stretch", height=720 if layout == "Table" else 565,
                     column_order=displayed_columns,

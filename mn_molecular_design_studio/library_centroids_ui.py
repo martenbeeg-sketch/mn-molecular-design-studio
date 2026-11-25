@@ -5,6 +5,7 @@ import secrets
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio.external_libraries import LibraryCatalog, FEATURE_SCHEMA
 from mn_molecular_design_studio.cluster import config as cluster_config
 from mn_molecular_design_studio.library_preparation_ui import _worker_choices
@@ -218,4 +219,4 @@ def render_setup(schema, *, user, project_selector, submit):
             st.error(str(exc))
 
     with st.expander("External library record"):
-        st.json(record)
+        render_result_details(st, record)

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from html import escape
 import math
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
+
 
 INTERACTIONS = {
     "contact": ("Geometric contact", "contact_occupancy", "#64748b"),
@@ -297,4 +299,4 @@ def render_interaction_diagram(st, structural, *, ligand_smiles="", ligand_pdb="
         st.dataframe(list(diagram.atom_rows), hide_index=True, width="stretch")
         window = structural.get("analysis_window")
         if isinstance(window, dict) and window:
-            st.json(window)
+            render_result_details(st, window)

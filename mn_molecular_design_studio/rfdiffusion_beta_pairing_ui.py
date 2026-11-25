@@ -7,6 +7,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import rfdiffusion_beta_pairing_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import StructureVisualization, molstar_custom_component
@@ -208,4 +209,4 @@ def render_results(run_id, run_dir, candidates, parameters, result):
         )
         st.download_button("Download generated complex", path.read_bytes(), file_name=path.name, key=f"beta-pairing-download-{run_id}-{selected_index}")
     with st.expander("Generation details"):
-        st.json(candidate.get("raw_metadata") or {})
+        render_result_details(st, candidate.get("raw_metadata") or {})

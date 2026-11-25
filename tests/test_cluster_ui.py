@@ -260,7 +260,7 @@ def test_campaign_candidate_results_show_measured_values_and_keep_native_metrics
     by_id = {row["Candidate"]: row for row in rows}
     assert by_id["design-a"]["Validation complex iptm (0–1)"] == 0.72
     assert by_id["design-a"]["Mean structure Cα pLDDT (0–100)"] == 84.9
-    assert '"pae": 6.1' in by_id["design-a"]["Native metrics"]
+    assert 'PAE = 6.1' in by_id["design-a"]["Native metrics"]
     assert by_id["design-b"]["Mean structure Cα pLDDT (0–100)"] == 88.314
     assert by_id["design-b"]["Mol-1 model summary pLDDT (0–100)"] == 84.976
     assert by_id["design-b"]["Validation complex iptm (0–1)"] == 0.81
@@ -360,7 +360,7 @@ def test_campaign_results_load_candidate_metrics_from_the_owning_workstation(iso
     assert candidate_table.iloc[0]["Candidate"] == "design-42"
     assert candidate_table.iloc[0]["Validation complex iptm (0–1)"] == 0.74
     assert candidate_table.iloc[0]["Mean structure Cα pLDDT (0–100)"] == 88.2
-    assert '"pae": 7.4' in candidate_table.iloc[0]["Native metrics"]
+    assert 'PAE = 7.4' in candidate_table.iloc[0]["Native metrics"]
 
 
 def test_selected_pipeline_includes_new_and_hidden_steps_and_blocks_active_purge(isolated, monkeypatch):

@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import rfpeptides_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import StructureVisualization, molstar_custom_component
@@ -230,7 +231,7 @@ def render_results(run_id: str, run_dir: Path, candidates: list[dict], parameter
         if peptide_path:
             download_cols[1].download_button("Download peptide backbone", peptide_path.read_bytes(), file_name=peptide_path.name, key=f"rfpeptides-peptide-download-{run_id}-{selected}")
     with st.expander("Job parameters and provenance", expanded=False):
-        st.json({
+        render_result_details(st, {
             "engine_version": metrics.get("engine_version"),
             "diffusion_steps": metrics.get("diffusion_steps"),
             "target_chain_map": metrics.get("target_chain_map"),

@@ -100,10 +100,12 @@ render_saved_evidence(MolecularDatabase(), {OWNER!r}, {{"group_ids": [{group!r}]
     assert [metric.value for metric in app.metric] == ['1', '1', '1']
     next(widget for widget in app.selectbox if widget.label == 'Recorded method').select('md.mmgbsa.gb').run()
     assert not app.exception
-    assert len(app.dataframe[-1].value) == 3
+    assert any(len(table.value) == 3 and list(table.value.columns) != ["Field", "Value"] for table in app.dataframe)
+    assert not app.json
     app.radio[0].set_value('Sources & provenance').run()
     assert not app.exception
-    assert any(group in str(item.value) for item in app.json)
+    assert any(group in table.value.to_string() for table in app.dataframe)
+    assert not app.json
 
 
 def test_project_choice_with_all_projects_survives_navigation():

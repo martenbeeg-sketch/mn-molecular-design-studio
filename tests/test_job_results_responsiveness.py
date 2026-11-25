@@ -32,6 +32,7 @@ def test_partial_pipeline_results_defers_details_and_ignores_empty_evidence(tmp_
     (run / "molecular_design_studio.json").write_text(json.dumps({
         "project_id": "fixture", "studio_owner_id": development_user()["id"],
     }))
+    (run / "input.json").write_text(json.dumps({"params": {"batch_size": 50}}))
     (run / "result.json").write_text(json.dumps({
         "success": False, "outputs": {"raw_trace": "x" * 600_000},
     }))
@@ -56,7 +57,7 @@ def test_partial_pipeline_results_defers_details_and_ignores_empty_evidence(tmp_
     assert any("no published final candidates" in item.value for item in app.info)
     assert not any("No columns to parse" in item.value for item in app.warning)
     assert not any("Choose a file" in item.label or item.label in {"Log file", "Structure file"} for item in app.selectbox)
-    assert not any("raw_trace" in item.proto.body for item in app.json)
+    assert not app.json
     assert not any(item.label == "Run result" for item in app.expander)
     assert any(item.proto.label == "Download run record (JSON)" for item in app.get("download_button"))
     assert not any(item.value == "Job files" for item in app.subheader)
@@ -67,3 +68,34 @@ def test_partial_pipeline_results_defers_details_and_ignores_empty_evidence(tmp_
     assert any(item.value == "Job files" for item in app.subheader)
     assert any("Choose a file" in item.label for item in app.selectbox)
     assert not any("no published final candidates" in item.value for item in app.info)
+
+    app.session_state[f"job-detail-tabs-{run.name}"] = "Job settings"
+    app.run()
+    assert not app.exception
+    assert not app.json
+    settings = next(table.value for table in app.dataframe if "Field" in table.value.columns)
+    assert settings.set_index("Field").loc["Input › Params › Batch size", "Value"] == "50"
+
+
+def test_result_details_preserve_values_and_bound_large_payloads():
+    app = AppTest.from_string("""
+import streamlit as st
+from mn_molecular_design_studio.result_details_ui import render_result_details
+
+render_result_details(st, {
+    "metrics": {"plddt": 87.2, "passed": False, "failed_count": 0},
+    "diagnostic": "oversized" * 100_000,
+    "matrix": [[1, 2, 3]] * 600,
+    "records": [{"sample_id": f"sample-{index}", "rank": index} for index in range(500)],
+}, table_fields=("records",))
+""").run()
+    assert not app.exception
+    assert not app.json
+    fields = app.dataframe[0].value.set_index("Field")["Value"]
+    assert fields["Metrics › pLDDT"] == "87.2"
+    assert fields["Metrics › Passed"] == "No"
+    assert fields["Metrics › Failed count"] == "0"
+    assert len(fields["Diagnostic"]) <= 240
+    assert fields["Matrix"] == "600 entries"
+    assert len(app.dataframe[1].value) == 100
+    assert any("100 of 500 entries" in item.value for item in app.caption)

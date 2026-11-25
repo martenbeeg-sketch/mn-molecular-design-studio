@@ -20,6 +20,8 @@ import streamlit as st
 
 from . import config, progress as job_progress, transport
 
+from mn_molecular_design_studio.result_details_ui import render_result_details, result_value_text
+
 
 _TOOL_LABELS = {
     "visual_pipeline": "Visual pipeline",
@@ -675,7 +677,7 @@ def _campaign_parameter_rows(members):
                 decoded = json.loads(encoded)
             except json.JSONDecodeError:
                 decoded = encoded
-            label = decoded if isinstance(decoded, str) else encoded
+            label = result_value_text(decoded, summarize_fields=True)
             rendered.append(f"{label} ({count} jobs)")
         rows.append({
             "Parameter": labels.get(key.casefold(), key.replace("_", " ").strip().title()),
@@ -750,7 +752,7 @@ def _campaign_candidate_result_rows(records):
             "Workstation": config.display_name(member.get("node_name") or "Not assigned"),
             "Sequence": candidate.get("binder_sequence") or candidate.get("sequence") or "—",
             **common_columns,
-            "Native metrics": json.dumps(native, ensure_ascii=False, sort_keys=True, default=str) if native else "—",
+            "Native metrics": result_value_text(native, summarize_fields=True),
         }
         rows.append(row)
     for row in rows:
@@ -1021,7 +1023,7 @@ def _render_results_campaign_batches(members, elapsed_label=None, token=None):
             if operation.get("errors"):
                 st.error(f"{len(operation['errors'])} source collection(s) could not be submitted. Their existing data is retained.")
                 with st.expander("Dispatch errors"):
-                    st.json(operation["errors"])
+                    render_result_details(st, operation["errors"])
                 if st.button("Retry unsubmitted work", key="retry-" + output_id):
                     import os
                     base = os.environ.get("MDS_API_BASE_URL") or load_settings()["api_base_url"]
@@ -1031,7 +1033,7 @@ def _render_results_campaign_batches(members, elapsed_label=None, token=None):
             if operation.get("excluded"):
                 st.caption(f"{len(operation['excluded'])} unfinished or unavailable source collections were excluded when this output's inputs were frozen.")
             with st.expander("Output settings"):
-                st.json(operation.get("payload", {}).get("parameters", {}))
+                render_result_details(st, operation.get("payload", {}).get("parameters", {}))
         st.caption("Select this complete output in another tool. Analysis and filtering outputs keep their original source lineage.")
         _render_run_output_results(logical[0], output, token)
     else:
@@ -2786,7 +2788,10 @@ def render_job(reference, user, token, submit):
             response = _request("/jobs/" + jid + "/actions", token, {"action": "cancel"}, method="POST")
             st.success(f"Cancellation requested, including {response.get('downstream_count', 0)} recorded downstream jobs. Workstations confirm when execution has stopped.")
     if row.get("metrics"):
-        st.json(row.get("metrics", {}), expanded=False)
+        metrics_panel = st.expander("Run metrics", key=f"remote-metrics-{jid}", on_change="rerun")
+        if metrics_panel.open:
+            with metrics_panel:
+                render_result_details(st, row["metrics"])
     acceptance_counts = (row.get("candidate_summary") or {}).get("acceptance_counts") or {}
     accepted_count = int(acceptance_counts.get("accepted") or 0)
     if accepted_count and row.get("local_reference") and row.get("availability") == "online":
@@ -3071,10 +3076,17 @@ def render_job(reference, user, token, submit):
                         height=min(260, 35 * (len(filter_rows) + 1) + 3),
                     )
             _render_remote_docking_preview(jid, row, data, token)
-            with st.expander("Run settings and inputs"):
-                st.json(data.get("input", {}))
-            with st.expander("Run summary"):
-                st.json(data.get("result", {}))
+            settings_panel = st.expander("Run settings and inputs", key=f"remote-inputs-{jid}", on_change="rerun")
+            if settings_panel.open:
+                with settings_panel:
+                    render_result_details(st, data.get("input") or {})
+            record = data.get("result") or {}
+            if isinstance(record, dict):
+                summary = {key: record[key] for key in ("success", "status", "error", "message", "warnings")
+                           if key in record}
+                if record.get("metrics") and record["metrics"] != row.get("metrics"):
+                    summary["Metrics"] = record["metrics"]
+                render_result_details(st, summary)
             if candidates and not prediction_job and "rfantibody" in tool:
                 from mn_molecular_design_studio.rfantibody_ui import render_confidence_guide
                 render_confidence_guide()

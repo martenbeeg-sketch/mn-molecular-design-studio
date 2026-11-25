@@ -7,6 +7,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio.complex_analysis_comparison import (
     compatibility_report,
     external_alignment_template,
@@ -560,7 +561,7 @@ def _render_supplied_alignment_overlay(sources: list[dict]) -> None:
             "provenance is supplied by the user and is not independently authenticated."
         )
         with st.expander("Full external source metadata"):
-            st.json(external_provenance)
+            render_result_details(st, external_provenance)
     from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import molstar_custom_component
     from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer.dataclasses import StructureVisualization
 
@@ -736,7 +737,7 @@ def _render_interface_clustering_results(user: dict, evaluation: dict, *, key: s
                 st.markdown("##### Cluster assignments saved by this evaluation")
                 st.dataframe(frame, hide_index=True, use_container_width=True)
     with st.expander("Interface Clustering provenance", expanded=False):
-        st.json({
+        render_result_details(st, {
             "workflow": "analysis.interface_clustering",
             "analysis_job": f"{evaluation.get('task_group')}/{evaluation.get('run_id')}",
             "collection_id": collection.get("collection_id"),
@@ -883,7 +884,7 @@ def _render_foldseek_results(user: dict, evaluation: dict, *, key: str) -> None:
                 st.markdown("##### Foldseek cluster assignments saved by this evaluation")
                 st.dataframe(frame, hide_index=True, use_container_width=True)
     with st.expander("Foldseek provenance", expanded=False):
-        st.json({
+        render_result_details(st, {
             "workflow": "analysis.foldseek",
             "analysis_job": f"{evaluation.get('task_group')}/{evaluation.get('run_id')}",
             "collection_id": collection.get("collection_id"),

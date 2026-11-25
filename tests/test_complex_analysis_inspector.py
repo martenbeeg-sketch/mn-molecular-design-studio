@@ -228,5 +228,7 @@ _render_inspector_measurements([{item!r}])
         "Method": "saved ipSAE definition",
         "Source tool": "ipsae",
     }
-    provenance = json.loads(app.json[0].value)
-    assert provenance["evaluation_context"]["settings"] == {"interface_threshold_angstrom": 12.0}
+    assert not app.json
+    provenance = next(table.value for table in app.dataframe if "Field" in table.value.columns)
+    fields = provenance.set_index("Field")["Value"]
+    assert fields["Evaluation context › Settings › Interface threshold angstrom"] == "12.0"
