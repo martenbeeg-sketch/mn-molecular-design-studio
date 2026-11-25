@@ -1492,7 +1492,9 @@ def test_openmm_md_tile_is_registered_with_typed_complex_and_trajectory_ports():
     }
 
 
-def test_openmm_md_tile_uses_studio_bundled_runtime_and_records_trajectory(tmp_path, monkeypatch):
+@pytest.mark.parametrize("duration_ns,steps,report_interval", [(0.1, 50_000, 5000), (0.005, 2500, 2500)])
+def test_openmm_md_tile_uses_studio_bundled_runtime_and_records_trajectory(tmp_path, monkeypatch,
+                                                                         duration_ns, steps, report_interval):
     complex_path, sdf_path = _write_gromacs_inputs(tmp_path)
     runtime_root = tmp_path / "studio-ligand-runtime"
     (runtime_root / "mn_ligand" / "workflows").mkdir(parents=True)
@@ -1518,7 +1520,7 @@ def test_openmm_md_tile_uses_studio_bundled_runtime_and_records_trajectory(tmp_p
 
     monkeypatch.setattr(ligand_tools, "run_docker_job", fake_docker)
     run_dir = ligand_tools.run_ligand_openmm_md(
-        complex_path, sdf_path, "LIG|A|501|_", production_ns=0.1, cpu_cores=2,
+        complex_path, sdf_path, "LIG|A|501|_", production_ns=duration_ns, cpu_cores=2,
         database_bound_source={"schema": "studio.bound-pose-source.v1", "structure_id": "source-pose"},
     )
     contract = json.loads((run_dir / "artifact_contract.json").read_text())
@@ -1529,7 +1531,8 @@ def test_openmm_md_tile_uses_studio_bundled_runtime_and_records_trajectory(tmp_p
     assert captured["gpu_device"] == "0"
     assert captured["extra_mounts"] == [(runtime_root, "/studio-ligand-runtime", True)]
     assert captured["environment"] == {"PYTHONPATH": "/studio-ligand-runtime"}
-    assert config["production_steps"] == 50_000
+    assert config["production_steps"] == steps
+    assert config["production_report_interval"] == report_interval
     assert config["mmgbsa_enabled"] is False
     assert config["preparation_protocol"] == "current_staged"
     assert contract["workflow"] == "ligand.md.openmm"
@@ -1580,7 +1583,13 @@ def test_gromacs_md_validates_bound_residue_against_sdf_heavy_atoms(tmp_path, mo
         )
 
 
-def test_gromacs_md_tile_stages_typed_artifacts_and_mounts_studio_runtime_read_only(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "production_ns, expected_steps, expected_report_interval",
+    [(0.1, 50_000, 5_000), (0.005, 2_500, 2_500)],
+)
+def test_gromacs_md_tile_stages_typed_artifacts_and_mounts_studio_runtime_read_only(
+    tmp_path, monkeypatch, production_ns, expected_steps, expected_report_interval,
+):
     complex_path, sdf_path = _write_gromacs_inputs(tmp_path)
     runtime_root = tmp_path / "studio-ligand-runtime"
     (runtime_root / "mn_ligand" / "workflows").mkdir(parents=True)
@@ -1610,7 +1619,7 @@ def test_gromacs_md_tile_stages_typed_artifacts_and_mounts_studio_runtime_read_o
 
     monkeypatch.setattr(ligand_tools, "run_docker_job", fake_docker)
     run_dir = ligand_tools.run_ligand_gromacs_md(
-        complex_path, sdf_path, "LIG|A|501|_", production_ns=0.1, cpu_cores=2, use_gpu=False,
+        complex_path, sdf_path, "LIG|A|501|_", production_ns=production_ns, cpu_cores=2, use_gpu=False,
         database_bound_source={"schema": "studio.bound-pose-source.v1", "structure_id": "source-pose"},
     )
 
@@ -1621,7 +1630,8 @@ def test_gromacs_md_tile_stages_typed_artifacts_and_mounts_studio_runtime_read_o
     assert captured["gpu_device"] == "none"
     assert captured["extra_mounts"] == [(runtime_root, "/studio-ligand-runtime", True)]
     assert captured["environment"] == {"PYTHONPATH": "/studio-ligand-runtime"}
-    assert config["production_steps"] == 50_000
+    assert config["production_steps"] == expected_steps
+    assert config["production_report_interval"] == expected_report_interval
     assert "prepare_gromacs_system" in runner and "run_gromacs_production" in runner
     assert contract["inputs"][0]["type"] == "protein_ligand_complex/pdb/v1"
     assert contract["outputs"][0]["type"] == "md_trajectory_set/v1"

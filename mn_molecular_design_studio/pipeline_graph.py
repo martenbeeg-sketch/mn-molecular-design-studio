@@ -2521,12 +2521,16 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
                 raise PipelineInputError(node_id, 'Enter an RNA sequence for the protein–RNA task.')
             if task == 'protein_macrocyclic' and not params.get('cyclic_partner'):
                 raise PipelineInputError(node_id, 'Mark the protein partner as cyclic for the macrocyclic task.')
-            optional_target_path = str(params.get('target_pdb') or '').strip()
-            for selection_key in ('compound_set_file', 'sequence_file'):
-                if require_files and params.get(selection_key) and not Path(params[selection_key]).expanduser().is_file():
-                    raise PipelineInputError(node_id, f'The {selection_key} collection in Molecular inputs does not exist.')
-            if require_files and optional_target_path and not Path(optional_target_path).expanduser().is_file():
-                raise PipelineInputError(node_id, 'The optional target PDB path in Molecular inputs does not exist.')
+            if require_files:
+                from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+                for field in ('compound_set_file', 'sequence_file', 'target_pdb'):
+                    value = str(params.get(field) or '').strip()
+                    if not value:
+                        continue
+                    path = resolve_stored_path(value, must_exist=True)
+                    if path is None or not path.is_file():
+                        label = 'optional target PDB path' if field == 'target_pdb' else f'{field} collection'
+                        raise PipelineInputError(node_id, f'The {label} in Molecular inputs does not exist.')
         if require_inputs and kind == "boltz2" and node["data"]["params"].get("predict_affinity"):
             source_id = cofold_source_context.get(node_id)
             if not source_id or cofold_task_context.get(node_id) != "protein_ligand":
@@ -2840,7 +2844,7 @@ def _protein_design_starter(template_id):
     elif template_id == "protein_design_comparison":
         from mn_molecular_design_studio.candidate_pipeline import new_pipeline
 
-        graph = new_pipeline(generators=["bindcraft2", "rfd4"], predictors=["boltz2"], mode="modular_design")
+        graph = new_pipeline(generators=["bindcraft2_generator", "rfd4"], predictors=["boltz2"], mode="modular_design")
     else:
         graph = new_task_graph("targeted_protein_binder")
     for node in graph["nodes"]:

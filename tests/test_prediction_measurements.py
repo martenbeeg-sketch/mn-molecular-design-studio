@@ -7,6 +7,7 @@ from Bio.PDB import Atom, Chain, Model, PDBIO, Residue, Structure
 from mn_molecular_design_studio.cofolding_results import enrich_candidate
 from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import _analysis_source_candidates
 from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
+from mn_molecular_design_studio.engine.workflow_engine.workflows.refolding import _source_candidates
 from mn_molecular_design_studio.output_vocabulary import PREFIX, candidate_output, vocabulary
 from mn_molecular_design_studio.prediction_measurements import (
     PAE_MATRIX_ENGINES,
@@ -108,3 +109,28 @@ def test_saved_prediction_pae_is_available_to_acceptance_without_reprediction(tm
     assert decision["measurements"][field]["value"] == pytest.approx(4 / 31, abs=1e-6)
     assert decision["measurements"][field]["status"] == "measured"
     assert PREFIX + "confidence.validation.interface.pae_bidirectional_norm31" == field
+
+
+def test_refolding_uses_sequence_analysis_with_verified_parent(tmp_path):
+    designed = {"candidate_id": "variant", "stage": "sequence_design", "binder_sequence": "ACDE"}
+    qc = {
+        "candidate_id": "variant_qc",
+        "stage": "analysis",
+        "source_tool": "sequence_qc",
+        "parents": ["variant"],
+        "binder_sequence": "ACDE",
+        "raw_metadata": {"source_candidate": designed},
+    }
+    rows = [
+        {**qc, "candidate_id": "other_analysis", "source_tool": "plip"},
+        {**qc, "candidate_id": "wrong_parent", "parents": ["different_variant"]},
+        {**qc, "candidate_id": "changed_sequence", "binder_sequence": "AAAA"},
+        {**qc, "candidate_id": "no_sequence", "binder_sequence": ""},
+        qc,
+    ]
+    path = tmp_path / "candidates.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    candidates = _source_candidates(path, {"sequence_design"})
+    assert [candidate["candidate_id"] for candidate in candidates] == ["variant_qc"]
+    assert candidates[0]["stage"] == "analysis"
+    assert candidates[0]["raw_metadata"]["source_candidate"] == designed

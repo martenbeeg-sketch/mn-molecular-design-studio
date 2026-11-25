@@ -154,6 +154,37 @@ def test_real_graph_collection_sizes_and_predictor_matrix(collection_harness, si
     assert all(s[1]["data"]["kind"] not in {"ligandmpnn", "foundry_mpnn"} for s in h.submissions)
 
 
+def test_direct_sequence_design_edge_only_refolds_sequenced_candidates(collection_harness, monkeypatch):
+    from mn_molecular_design_studio import chaperone_adapter
+
+    monkeypatch.setattr(chaperone_adapter, "worker_configuration", lambda: {
+        "python": "fixture-worker", "source": "", "blocks": "", "source_revision": "fixture",
+    })
+
+    def roundtrip(rows):
+        rows = copy.deepcopy(rows)
+        for row in rows:
+            row["raw_metadata"]["chaperone_interop"] = {"fixture": True}
+        return rows
+
+    monkeypatch.setattr(chaperone_adapter, "roundtrip_candidates", roundtrip)
+    h = collection_harness
+    graph = h.graph(2, 0, backbone=(0,))
+    for edge in graph["edges"]:
+        if edge["source"] == "shared-filter" and edge["target"].startswith("predictor-"):
+            edge["source"] = "sequence-preparation"
+    run = gp.run_graph_pipeline(graph, "direct sequence-to-refolding edge", "owner", "project", reuse_completed=False)
+    nodes = read_json(run / "graph_execution.json")["nodes"]
+    assert nodes["sequence-preparation"]["output"]["stage_counts"]["backbone_only"] == 1
+    assert nodes["sequence-preparation"]["output"]["stage_counts"]["sequence_ready"] == 2
+    for branch in ("predictor-0", "predictor-1"):
+        assert nodes[branch]["status"] == "completed"
+        assert nodes[branch]["candidate_count"] == 2
+        requests = [request for request, node, _ in h.submissions if node["id"].startswith(branch)]
+        assert sum(len(request["parameters"]["tasks"]) for request in requests) == 2
+        assert all(task["binder_sequence"] == "GGG" for request in requests for task in request["parameters"]["tasks"])
+
+
 def test_graph_prediction_edge_uses_configured_chaperone_handler(collection_harness, monkeypatch):
     pytest.importorskip("chaperone")
     import sys
@@ -197,6 +228,65 @@ def test_graph_prediction_edge_uses_configured_chaperone_handler(collection_harn
                for prediction in predictions), [
                    prediction["candidate"].get("raw_metadata", {}) for prediction in predictions
                ]
+
+
+def test_acceptance_tile_receives_chaperone_candidate_port(collection_harness, monkeypatch):
+    from mn_molecular_design_studio import chaperone_adapter
+
+    h = collection_harness
+    source = h.source("refolds", "optimized_prediction_mol1", 1)
+    monkeypatch.setattr(chaperone_adapter, "worker_configuration", lambda: {
+        "python": "fixture-worker", "source": "", "blocks": "", "source_revision": "fixture",
+    })
+
+    def roundtrip(rows):
+        rows = copy.deepcopy(rows)
+        for row in rows:
+            row["raw_metadata"]["chaperone_interop"] = {"fixture": True}
+        return rows
+
+    monkeypatch.setattr(chaperone_adapter, "roundtrip_candidates", roundtrip)
+
+    def node(identifier, kind, **params):
+        return {"id": identifier, "data": {"kind": kind, "params": params}}
+
+    graph = pg.new_graph("blank")
+    graph["nodes"] = [
+        node("source", "project_design_source", source_run_dir=str(source),
+             source_scope="complex_results", selected_candidate_ids=["refolds-0"]),
+        node("acceptance", "tile_validation_acceptance", workflow_parameters={
+            "acceptance_policy": {"mandatory_filters": [{"field": "iptm", "operator": ">=", "value": 0.7}]},
+        }),
+        node("results", "results"),
+    ]
+    graph["edges"] = [
+        {"id": "candidate-input", "source": "source", "target": "acceptance",
+         "sourceHandle": "out", "targetHandle": "candidates"},
+        {"id": "accepted-results", "source": "acceptance", "target": "results",
+         "sourceHandle": "out", "targetHandle": "in"},
+    ]
+    requests = []
+
+    def submit(request, parent, node, **kwargs):
+        params = request["parameters"]
+        candidates = Path(params["candidates_jsonl"])
+        assert candidates.is_relative_to(Path(params["source_run_dir"]))
+        row = json.loads(candidates.read_text())
+        assert row["raw_metadata"]["chaperone_interop"]["handoff_node"] == "acceptance"
+        requests.append(request)
+        job = h.tmp_path / "acceptance-worker"
+        manifest = job / "artifacts/normalized_candidates/candidates.jsonl"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps(row) + "\n")
+        write_json(job / "metadata.json", {"status": "completed"})
+        write_json(job / "result.json", {"success": True})
+        return job
+
+    monkeypatch.setattr(gp, "_submit", submit)
+    result = read_json(gp.run_graph_pipeline(graph, "acceptance port", "owner", "project",
+                                            reuse_completed=False) / "result.json")
+    assert result["success"]
+    assert [request["workflow"] for request in requests] == ["analysis.validation_acceptance"]
 
 
 def test_first_chaperone_tool_handoff_seeds_identity_and_resolves_native_parent(tmp_path, monkeypatch):
@@ -250,6 +340,35 @@ def test_first_chaperone_tool_handoff_seeds_identity_and_resolves_native_parent(
     assert result["complex_pdb"] == target_path
     assert result["metrics"]["iptm"] == 0.82
     assert result["raw_metadata"]["chaperone_handoffs"][0]["handoff_node"] == "prediction-input"
+
+
+def test_analysis_preserves_handoff_from_standalone_prediction(tmp_path):
+    prediction = {"candidate_id": "predicted-0", "stage": "complex_refolding",
+                  "source_tool": "optimized_prediction_esmfold", "binder_sequence": "GGG",
+                  "raw_metadata": {"chaperone_interop": {"adapter": "chaperone",
+                      "design_id": "predicted-0", "handoff_node": "sequence-qc"}}}
+    source = cs.write_collection(tmp_path, "handoff", [prediction], {})
+    measured = {**prediction, "raw_metadata": {}, "metrics": {"sequence_length": 3}}
+    output = gp._local_source(tmp_path, "qc-result", [measured], {})
+    collected = cs.attach_stage(tmp_path, "sequence-qc", output, source,
+                               category="Analysis", scientific_key="qc-fixture", settings={})
+    result = next(cs.iter_candidates(collected))
+    assert result["candidate_id"] == "predicted-0"
+    assert result["metrics"]["sequence_length"] == 3
+    assert result["raw_metadata"]["chaperone_handoffs"] == [prediction["raw_metadata"]["chaperone_interop"]]
+    assert cs.metadata(result) == {}
+
+
+def test_analysis_uses_exact_parent_when_a_variant_shares_its_backbone_alias(tmp_path):
+    backbone = {"candidate_id": "backbone", "source_tool": "fixture", "stage": "generation.backbone"}
+    variant = {"candidate_id": "variant", "source_tool": "fixture", "stage": "generation.backbone_sequence",
+               "binder_sequence": "GGG", "raw_metadata": {"source_candidate": {"candidate_id": "backbone"}}}
+    source = cs.write_collection(tmp_path, "inputs", [backbone, variant], {})
+    rows = [{**row, "candidate_id": row["candidate_id"] + "-qc", "parents": [row["candidate_id"]]}
+            for row in [backbone, variant]]
+    output = gp._local_source(tmp_path, "qc", rows, {})
+    collected = cs.attach_stage(tmp_path, "qc", output, source, category="Analysis", scientific_key="qc", settings={})
+    assert [row["parents"] for row in cs.iter_candidates(collected)] == [["backbone"], ["variant"]]
 
 
 def test_different_generator_sizes_native_rejection_duplicates_and_export(collection_harness):

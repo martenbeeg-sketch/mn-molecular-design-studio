@@ -255,7 +255,8 @@ def group_runs(rows):
     by_dependency = {dependency_identity(row): row for row in rows}
     for row in rows:
         sources = dependencies[dependency_identity(row)]
-        if reference(row) not in parents and len(sources) == 1:
+        # An independently launched pipeline can reuse a saved input and still own its execution.
+        if not is_visual_pipeline(row) and reference(row) not in parents and len(sources) == 1:
             parents[reference(row)] = by_dependency[next(iter(sources))]
             row["_dependency_parented"] = True
 
@@ -286,7 +287,11 @@ def group_runs(rows):
         if all(r.get("hidden") for r in item["jobs"]):
             continue
         item["jobs"].sort(key=lambda r: (str(r.get("created_at") or ""), reference(r)))
-        item["status"] = status(item["jobs"])
+        root = item["root"]
+        single_pipeline = is_visual_pipeline(root) and all(
+            row["_logical_root_ref"] == reference(root) for row in item["jobs"]
+        )
+        item["status"] = status([root] if single_pipeline else item["jobs"])
         item["job_count"] = len(item["jobs"])
         item["updated_at"] = max((str(r.get("updated_at") or r.get("created_at") or "") for r in item["jobs"]), default="")
         item["outputs"] = run_outputs(item)

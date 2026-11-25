@@ -639,6 +639,14 @@ def sequence_inputs(parent, node_id, source, params):
     return write_collection(parent, node_id + "_sequence_inputs", eligible(), source["target"])
 
 
+def prediction_inputs(parent, node_id, source):
+    """Keep original backbones in the upstream collection for lineage only."""
+    if not source.get("stage_counts", {}).get("backbone_only"):
+        return source
+    return write_collection(parent, node_id + "_prediction_inputs",
+        (row for row in iter_candidates(source) if sequence_state(row) != "backbone_only"), source["target"])
+
+
 def rank(parent, node_id, source, params):
     """Ordered measurements within recorded predictor protocols, then exact diversity.
 
@@ -770,7 +778,7 @@ def export_collection(parent, source, graph, node_states):
     write_json(destination / ("native_artifacts.json" if summary["effective_mode"] == "native_complete" else "selected_artifacts.json"), selected_files)
     with (destination / "analysis_results.jsonl").open("w") as analyses:
         for row in iter_candidates(source, review=True):
-            analyses.write(json.dumps(dict(candidate_id=row["candidate_id"], variant_id=metadata(row)["variant_id"],
+            analyses.write(json.dumps(dict(candidate_id=row["candidate_id"], variant_id=metadata(row).get("variant_id"),
                 analysis=metadata(row).get("analysis"), analysis_results=metadata(row).get("analysis_results", []),
                 selection=row.get("raw_metadata", {}).get("selection")), sort_keys=True) + "\n")
     write_json(destination / "checksums.json", {str(p.relative_to(destination)): file_digest(p) for p in destination.rglob("*") if p.is_file() and p.name != "checksums.json"})
@@ -852,7 +860,8 @@ def _inherit_handoff_receipts(parent, node_id, output, source):
     return result
 
 
-def attach_stage(parent, node_id, output, source, *, category, scientific_key, settings, evidence_namespace=None):
+def attach_stage(parent, node_id, output, source, *, category, scientific_key, settings, evidence_namespace=None,
+                 retained_sequence_source=None):
     """Carry stable variant identities through existing MPNN/prediction adapters."""
     if not source.get("candidate_set_manifest"):
         return output
@@ -870,23 +879,35 @@ def attach_stage(parent, node_id, output, source, *, category, scientific_key, s
                 db.execute("INSERT OR IGNORE INTO parents VALUES (?,?,?)", (alias, row["candidate_id"], payload))
         def transformed():
             if category == "Sequence design":
-                yield from iter_candidates(source)
+                yield from iter_candidates(retained_sequence_source or source)
             for row in iter_candidates(output):
-                ids = [row["candidate_id"], *row.get("parents", [])]
+                explicit_parents = set(row.get("parents") or [])
+                ids = [row["candidate_id"], *(row.get("parents") or [])]
                 direct = row.get("raw_metadata", {}).get("source_candidate", {})
                 if direct.get("candidate_id"):
                     ids.append(direct["candidate_id"])
-                matches = {}
+                matches, exact_parents = {}, {}
                 for key in dict.fromkeys(ids):
                     for candidate_id, payload in db.execute(
                             "SELECT candidate_id, payload FROM parents WHERE alias=?", (key,)):
-                        matches[candidate_id] = json.loads(payload)
+                        previous = json.loads(payload)
+                        matches[candidate_id] = previous
+                        if candidate_id == key and key in explicit_parents:
+                            exact_parents[candidate_id] = previous
+                # An explicit canonical parent takes precedence over native aliases
+                # shared by a retained backbone and its new sequence variants.
+                matches = exact_parents or matches
                 if len(matches) != 1:
                     raise ValueError("Collection stage lost or ambiguously mapped its input candidate.")
                 original = next(iter(matches.values()))
                 info = copy.deepcopy(metadata(original))
                 native_id = row["candidate_id"]
                 if category == "Sequence design" and row["candidate_id"] == original["candidate_id"]:
+                    continue
+                if not info:
+                    # Standalone predictions and saved Run collections may carry handoff receipts without design lineage.
+                    _append_handoff_receipts(row, original)
+                    yield row
                     continue
                 if category == "Sequence design":
                     info.update(parent_variant_ids=[info["variant_id"]],

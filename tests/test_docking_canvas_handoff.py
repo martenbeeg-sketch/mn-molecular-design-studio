@@ -45,7 +45,8 @@ def _docking_source(root, *, external_pose=False):
     return source
 
 
-def test_selected_docking_pose_becomes_exact_candidate_and_plip_request(tmp_path, monkeypatch):
+@pytest.mark.parametrize("tool", ["plip", "pandamap", "posebusters"])
+def test_selected_docking_pose_becomes_exact_analysis_candidate(tmp_path, monkeypatch, tool):
     from mn_molecular_design_studio.cluster import config
     from mn_molecular_design_studio.engine.workflow_engine.workflows import quality
     from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import (
@@ -83,8 +84,8 @@ def test_selected_docking_pose_becomes_exact_candidate_and_plip_request(tmp_path
            "run_id": "dock-001", "run_dir": str(source), "status": "completed",
            "has_docking_results": True, "selected_pose_ids": [chosen_id], "source_job_reference": source_ref}
     deferred = run_graph.deferred_source(row, {})
-    request = run_graph.source_request("plip", {}, deferred, "PLIP selected poses")
-    assert request["workflow"] == "analysis.plip"
+    request = run_graph.source_request(tool, {}, deferred, "Analyze selected pose")
+    assert request["workflow"] == f"analysis.{tool}"
     assert request["parameters"]["candidate_ids"] == [chosen_id]
     assert request["parameters"]["candidates_jsonl"] is None
     assert request["parameters"]["source_job_reference"] == source_ref
@@ -92,7 +93,7 @@ def test_selected_docking_pose_becomes_exact_candidate_and_plip_request(tmp_path
 
     captured = {}
     monkeypatch.setattr(quality, "run_quality", lambda *args, **kwargs: captured.update(kwargs) or source)
-    quality.run_plip(**request["parameters"])
+    getattr(quality, f"run_{tool}")(**request["parameters"])
     assert captured["candidate_ids"] == [chosen_id]
     assert captured["source_job_reference"] == source_ref
 

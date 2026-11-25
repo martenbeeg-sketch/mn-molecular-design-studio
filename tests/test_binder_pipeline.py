@@ -102,7 +102,7 @@ def test_multidomain_target_reuses_verified_structural_routes():
                             graph=graph, target_node_id=target["id"])
 
 
-@pytest.mark.parametrize("refolder", ["boltz2", "rf3", "prediction_openfold3_ob0"])
+@pytest.mark.parametrize("refolder", ["boltz2", "rf3", "prediction_openfold3_ob0", "prediction_mol1"])
 def test_rfd4_modular_presets_connect_only_the_requested_stages(refolder):
     arguments = {"target_input": "multidomain", "binder_format": "miniprotein"}
     generation = new_binder_pipeline("rfd4-generator", **arguments)
@@ -121,6 +121,25 @@ def test_rfd4_modular_presets_connect_only_the_requested_stages(refolder):
     assert json.loads(_settings(native, "rfd4")["options_json"])["refold"] is True
     with pytest.raises(ValueError, match="refolding engine"):
         new_binder_pipeline("rfd4-generator", **arguments, refold_engine=refolder)
+
+
+@pytest.mark.parametrize(("route_id", "kind", "needs_mpnn"), [
+    ("rfd3", "rfd3", True),
+    ("bindcraft2-generator", "bindcraft2_generator", False),
+    ("boltzgen-generator", "boltzgen_generator", True),
+    ("complexa-generator", "complexa_generator", False),
+])
+def test_generator_presets_connect_mol1_with_target_msa_and_protein_mpnn_when_needed(route_id, kind, needs_mpnn):
+    graph = new_binder_pipeline(route_id, target_input="structure", binder_format="miniprotein",
+                                refold_engine="prediction_mol1", interface_analysis=True)
+    expected = ["target", kind, *(["ligandmpnn"] if needs_mpnn else []), "prediction_mol1", "ipsae",
+                "candidate_merge", "shared_filter", "results"]
+    assert [node["data"]["kind"] for node in graph["nodes"]] == expected
+    assert _settings(graph, "prediction_mol1")["target_use_msa"] is True
+    if needs_mpnn:
+        settings = _settings(graph, "ligandmpnn")
+        assert settings["sequence_stage"] == "initial"
+        assert settings["backend"] == "shared_ligandmpnn"
 
 
 @pytest.mark.parametrize("route", ROUTES, ids=lambda route: route.id)

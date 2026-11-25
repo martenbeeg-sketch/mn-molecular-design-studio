@@ -68,6 +68,10 @@ CONFIG_KEYS = {"methods", "comparison", "mode", "binder_format", "inputs", "meth
                "soluble_settings", "sequence_qc", "interface_analysis", "selection", "additional_validation"}
 
 
+def needs_initial_sequence_design(method, *, binder_format="protein"):
+    return method in BACKBONE or (method == "boltzgen_generator" and binder_format == "protein")
+
+
 def prediction_methods(mode="protein", inputs=None):
     """Use the same capability profiles/preflight as the existing prediction tools."""
     from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, _cofold_model_kinds
@@ -312,11 +316,12 @@ def new_task_graph(task_id, configuration=None):
             # Target/collection inputs belong to the source; standalone generators own their inputs.
             _update(retained[0], inputs)
             chain(branch, retained)
-            if method in BACKBONE:
+            if needs_initial_sequence_design(method, binder_format=binder_format):
                 chain(branch, [_node("ligandmpnn", prefix + "-initial", {
                     "sequence_stage": "initial", "model_type": initial_model,
                     "sequences": config.get("sequences", 1), "fix_interface_residues": False,
-                }, "Initial sequences · preserve native or design backbone")])
+                    "backend": "shared_ligandmpnn",
+                }, "ProteinMPNN · sequence design for backbones")])
             if binder_format == "vhh" and method in VHH_METHODS:
                 chain(branch, [_node("sabr", prefix + "-antibody-constraints")])
             if config.get("soluble_mpnn"):

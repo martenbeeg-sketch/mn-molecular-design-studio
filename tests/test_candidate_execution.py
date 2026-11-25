@@ -562,6 +562,30 @@ def test_peer_batch_lifecycle_uses_durable_controller_identity(tmp_path, monkeyp
     assert calls == [('submit', development), ('poll', development), ('cancel', development), ('cancel', development)]
 
 
+@pytest.mark.parametrize("kind", ["bindcraft2_generator", "boltzgen_generator"])
+def test_generator_shards_do_not_invent_unsupported_seed_parameters(tmp_path, kind):
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import validate_workflow_request
+    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
+    from test_prediction_configuration_gpu import small_complex
+
+    target = small_complex(tmp_path / "generator-fixture")
+    node = {"id": "generator", "data": {"kind": kind, "label": kind}}
+    params = {field["name"]: field["default"] for field in NODE_CATALOG[kind]["fields"]}
+    params["num_designs"] = 3
+    source = {"target": {"target_pdb": target["complex_pdb"], "target_chains": ["T"]}}
+    batches = ce.initialize(tmp_path, node, source, params, "b" * 64,
+        ce.policy({"mode": "sharded", "batch_size": 2}), make_source=gp._local_source,
+        make_request=gp.node_request, read_rows=gp._absolute_candidates)
+
+    assert [batch["unit_count"] for batch in batches] == [2, 1]
+    for batch in batches:
+        request = ce.read_manifest(batch)["request"]
+        assert "seed" not in request["parameters"]
+        path = tmp_path / (batch["batch_id"] + "-request.json")
+        path.write_text(json.dumps(request))
+        validate_workflow_request(path)
+
+
 def test_prediction_manifest_binds_configured_cpu_resource_before_validation(tmp_path):
     from mn_molecular_design_studio import candidate_pipeline as cp, pipeline_graph as pg
     from test_prediction_configuration_gpu import small_complex

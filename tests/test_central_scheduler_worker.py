@@ -32,6 +32,31 @@ def test_local_preview_cannot_start_or_register_a_central_bridge(monkeypatch):
     assert central_scheduler_worker.run_service() == 0
 
 
+@pytest.mark.parametrize("job_type,controller", [("visual_pipeline", True), ("analysis", False)])
+def test_scheduler_routes_controllers_separately_from_native_steps(tmp_path, monkeypatch, job_type, controller):
+    from mn_molecular_design_studio.engine.workflow_engine.core import central_scheduler
+
+    (tmp_path / "metadata.json").write_text(json.dumps({"job_type": job_type}))
+    (tmp_path / "worker_request.json").write_text(json.dumps({"kind": "workflow_call"}))
+    submitted, woken = {}, []
+
+    def submit(**request):
+        submitted.update(request)
+        return {"job_id": "test-job", "status": "queued"}
+
+    monkeypatch.setattr(central_scheduler, "_client", lambda: SimpleNamespace(submit_job=submit))
+    monkeypatch.setattr(central_scheduler, "_central_resource_request", lambda _run: {})
+    monkeypatch.setattr(central_scheduler, "scheduler_client_module", lambda: SimpleNamespace(SchedulerAPIError=ValueError))
+    monkeypatch.setattr(central_scheduler, "ensure_scheduler_worker_service", lambda controllers=False: woken.append(controllers))
+    monkeypatch.setattr(central_scheduler, "scheduler_mode", lambda: "central")
+
+    central_scheduler.submit_run(tmp_path)
+
+    expected = (central_scheduler.PIPELINE_CONTROLLER_WORKFLOW_ID if controller else central_scheduler.WORKFLOW_ID)
+    assert submitted["workflow"] == expected
+    assert woken == ([False, True] if controller else [False])
+
+
 def test_queued_python_and_workspace_override_a_stale_demo_bridge(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core.workflow_queue import _submission_environment
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(tmp_path / "real"))

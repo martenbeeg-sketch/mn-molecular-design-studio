@@ -942,7 +942,12 @@ def run_gromacs_production(
         "mass_repartition_factor": mass_repartition_factor,
     }
     production_mdp = output_dir / "production.mdp"
-    production_mdp.write_text(render_gromacs_mdp(production_stage))
+    production_steps = int(production_stage["steps"])
+    report_interval = max(
+        1,
+        min(production_steps, int(config.get("production_report_interval") or round(10_000 / timestep_fs))),
+    )
+    production_mdp.write_text(render_gromacs_mdp(production_stage, trajectory_interval_steps=report_interval))
     production_stage["mdp"] = production_mdp.name
     final_gro, final_checkpoint, energy = _run_stage(
         output_dir=output_dir,
@@ -1013,11 +1018,8 @@ def run_gromacs_production(
         topology_pdb=str(final_pdb),
         production_traj=str(trajectory),
         ligand_id="LIG",
-        production_steps=int(production_stage["steps"]),
-        production_report_interval=max(
-            1,
-            int(config.get("production_report_interval") or 5000),
-        ),
+        production_steps=production_steps,
+        production_report_interval=report_interval,
         dt_ps=timestep_fs / 1000.0,
         residue_mapping=(
             config.get("residue_mapping")

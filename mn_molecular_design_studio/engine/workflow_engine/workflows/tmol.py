@@ -147,6 +147,12 @@ def run_tmol(
         filename = f'{item["id"]}.cif'
         relative = f"artifacts/tmol/{filename}"
         if record.get("status") == "completed" and (output / filename).is_file():
+            metadata = {"name": item["name"], "input_sha256": item["input_sha256"],
+                        "tmol_mode": mode, "tmol_version": summary.get("tmol_version"),
+                        "source_candidate_id": source_candidate.get("candidate_id")}
+            protein_chains = source_candidate.get("raw_metadata", {}).get("protein_chains")
+            if isinstance(protein_chains, list):
+                metadata["protein_chains"] = protein_chains
             rows.append({
                 "candidate_id": item["id"], "source_tool": "tmol", "stage": "structure_refinement",
                 "complex_pdb": relative, "parents": [source_candidate["candidate_id"]] if source_candidate else [],
@@ -155,9 +161,7 @@ def run_tmol(
                 "target_chains": source_candidate.get("target_chains", []),
                 "metrics": {key: record[key] for key in
                             ("tmol_energy_before", "tmol_energy_after", "tmol_energy_change")},
-                "raw_metadata": {"name": item["name"], "input_sha256": item["input_sha256"],
-                                 "tmol_mode": mode, "tmol_version": summary.get("tmol_version"),
-                                 "source_candidate_id": source_candidate.get("candidate_id")},
+                "raw_metadata": metadata,
             })
             record["structure"] = relative
         elif record.get("status") == "completed":

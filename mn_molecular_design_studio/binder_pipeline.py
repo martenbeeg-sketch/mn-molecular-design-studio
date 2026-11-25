@@ -36,9 +36,16 @@ RFD4_MODULAR_ROUTES = frozenset({"rfd4-generator", "rfd4-external"})
 RFD4_PRESET_ROUTES = RFD4_MODULAR_ROUTES | {"rfd4-internal"}
 RFD4_REFOLD_ENGINES = {
     "boltz2": "Boltz-2",
+    "prediction_mol1": "Mol-1",
+    "af2": "AlphaFold2 Initial Guess",
     "rf3": "RosettaFold3",
     "prediction_openfold3_ob0": "OpenFold3 OpenBind-0",
 }
+SEPARATE_REFOLD_ROUTES = frozenset({
+    "rfd4-external", "rfd3", "rfdiffusion", "genie3", "pxdesign", "protpardelle-binder",
+    "rfdiffusion-beta-pairing", "bindcraft2-generator", "boltzgen-generator", "complexa-generator",
+    "esmfold2-protein",
+})
 
 
 @dataclass(frozen=True)
@@ -54,7 +61,7 @@ class Route:
     @property
     def target_inputs(self) -> tuple[str, ...]:
         if self.target_input == "structure" and (
-            self.method in {"bindcraft2", "boltzgen"}
+            self.method in {"bindcraft2", "boltzgen", "bindcraft2_generator", "boltzgen_generator", "complexa_generator"}
             or self.id in RFD4_PRESET_ROUTES or self.id in {"rfd3", "pxdesign", "genie3", "complexa"}
         ):
             return STRUCTURE_TARGET_INPUTS
@@ -68,6 +75,8 @@ ROUTES = (
           "Generate designs, refold them with an editable prediction step, then apply Studio acceptance."),
     Route("rfd4-internal", "RFD4-Proteina", "Native workflow", "structure", "miniprotein", "rfd4",
           "Co-design and refold with RFD4's internal OpenFold3 workflow, then apply Studio acceptance."),
+    Route("bindcraft2-generator", "BindCraft2", "Generator + separate refolding", "structure", "miniprotein",
+          "bindcraft2_generator", "Generate binder designs and pass their sequences to the selected refolder."),
     Route("bindcraft2", "BindCraft2", "Native validation and filters", "structure", "miniprotein", "bindcraft2",
           "Run the complete BindCraft2 workflow, including its native admission filters."),
     Route("rfd3", "RFdiffusion3", "Separate sequence design and refold", "structure", "miniprotein", "rfd3",
@@ -87,6 +96,8 @@ ROUTES = (
     *(Route(key, engine, "Sequence design and Boltz-2", "structure", "miniprotein", key,
             "Generate backbones, design sequences, refold with Boltz-2 and apply Studio acceptance.")
       for key, engine in (("rfdiffusion", "RFdiffusion"), ("genie3", "Genie3"), ("pxdesign", "PXDesign"))),
+    Route("complexa-generator", "Proteina-Complexa", "Generator + separate refolding", "structure", "miniprotein",
+          "complexa_generator", "Generate binder designs and pass their sequences to the selected refolder."),
     Route("complexa", "Proteina-Complexa", "Native validation and filters", "structure", "miniprotein",
           "complexa", "Run the complete Proteina-Complexa protein binder workflow."),
     Route("esmfold2-protein", "ESMFold2 Binder", "External Boltz-2 refold", "structure", "miniprotein",
@@ -95,6 +106,8 @@ ROUTES = (
             "BindCraft2", "Native validation and filters", "structure", fmt,
             "bindcraft2", "Use the native format preset and its built-in validation and filters.")
       for fmt in ("large_protein", "vhh", "scfv", "fab", "arp", "multidomain", "homo_oligomer")),
+    Route("boltzgen-generator", "BoltzGen", "Generator + separate refolding", "structure", "miniprotein",
+          "boltzgen_generator", "ProteinMPNN assigns sequences to backbone-only candidates before separate refolding."),
     *(Route("boltzgen-vhh-native" if fmt == "vhh" else f"boltzgen-{fmt}",
             "BoltzGen", "Native validation and ranking", "structure", fmt, "boltzgen",
             f"Run the full BoltzGen workflow using its {FORMATS[fmt].lower()} protocol.")
@@ -242,13 +255,13 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
     if type(soluble_mpnn) is not bool or type(interface_analysis) is not bool:
         raise ValueError("Optional sequence redesign and interface analysis must be true or false.")
     if refold_engine is not None and (
-        route.id != "rfd4-external" or not isinstance(refold_engine, str) or refold_engine not in RFD4_REFOLD_ENGINES
+        route.id not in SEPARATE_REFOLD_ROUTES or not isinstance(refold_engine, str) or refold_engine not in RFD4_REFOLD_ENGINES
     ):
-        raise ValueError("Choose a supported separate refolding engine for the modular RFD4 preset.")
+        raise ValueError("Choose a supported separate refolding engine for this generator preset.")
     if soluble_mpnn and route.id not in RFD4_MODULAR_ROUTES:
         raise ValueError("Optional sequence redesign is available in the modular RFD4 presets.")
-    if interface_analysis and route.id not in {"rfd4-internal", "rfd4-external"}:
-        raise ValueError("The optional interface analysis requires an RFD4 preset with refolding.")
+    if interface_analysis and route.id not in SEPARATE_REFOLD_ROUTES | {"rfd4-internal"}:
+        raise ValueError("The optional interface analysis requires the preset to include refolding.")
     if type(interface_constraints) is not bool:
         raise ValueError("Interface constraints must be true or false.")
     if interface_constraints and not supported_interface_constraints(route):

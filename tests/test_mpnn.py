@@ -60,6 +60,36 @@ def test_auto_interface_lock_requires_a_valid_sequence_matching_the_structure(de
     assert not native._candidate_sequence_matches_structure(candidate, source / "designed.cif", ["B"])
 
 
+@pytest.mark.parametrize(("tool", "placeholder"), [("pxdesign_generator", "xpb"), ("boltzgen_generator", "UNK")])
+def test_generator_backbone_staging_preserves_target_and_native_structure(tmp_path, design_source_factory, tool, placeholder):
+    from Bio.PDB import MMCIFIO
+    from Bio.PDB.Atom import Atom
+    from mn_molecular_design_studio.design_validation import read_structure
+
+    source, candidate = design_source_factory()
+    structure = read_structure(source / "designed.cif")
+    for chain in ("A", "B"):
+        residue = next(structure[0][chain].get_residues())
+        residue.resname = placeholder
+        for name in ("N", "C"):
+            if name not in residue:
+                residue.add(Atom(name, residue["CA"].coord.copy(), 0., 1., " ", f" {name}  ", 0, element=name))
+    original = tmp_path / "native.cif"
+    writer = MMCIFIO()
+    writer.set_structure(structure)
+    writer.save(str(original))
+    staged = tmp_path / "staged.cif"
+    candidate.update(source_tool=tool, stage="generation.backbone", complex_pdb=str(original), binder_sequence=None)
+
+    mpnn._stage_generator_backbone(candidate, staged)
+
+    assert candidate["complex_pdb"] == str(staged)
+    assert candidate["binder_sequence"] is None
+    assert next(read_structure(staged)[0]["B"].get_residues()).resname == "GLY"
+    assert next(read_structure(staged)[0]["A"].get_residues()).resname == placeholder
+    assert next(read_structure(original)[0]["B"].get_residues()).resname == placeholder
+
+
 def test_auto_interface_lock_is_applied_to_shared_mpnn(capture_runner, monkeypatch):
     source, _, collection, _, commands, _ = capture_runner
     monkeypatch.setattr(native, "_candidate_sequence_matches_structure", lambda *a: True)

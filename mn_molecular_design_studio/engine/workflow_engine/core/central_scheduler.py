@@ -19,6 +19,7 @@ from mn_molecular_design_studio.engine.workflow_engine.runtime import app_home, 
 
 APP_ID = "mn-molecular-design-studio"
 WORKFLOW_ID = "molecular_design_studio.run"
+PIPELINE_CONTROLLER_WORKFLOW_ID = "molecular_design_studio.pipeline_controller"
 BACKEND = "mn-compute-scheduler"
 SERVICE_DIR_NAME = "_mn_compute_scheduler_worker"
 _submission_priority: ContextVar[int] = ContextVar("mnd_studio_scheduler_priority", default=0)
@@ -156,7 +157,7 @@ def _service_dir() -> Path:
     return app_home() / SERVICE_DIR_NAME
 
 
-def ensure_scheduler_worker_service() -> None:
+def ensure_scheduler_worker_service(*, controllers: bool = False) -> None:
     if scheduler_mode() != "central":
         return
     # Settings may have changed since this API process started. Refresh the
@@ -165,15 +166,20 @@ def ensure_scheduler_worker_service() -> None:
 
     ensure_studio_workspace()
     service_dir = _service_dir()
+    if controllers:
+        service_dir = service_dir / "controllers"
     service_dir.mkdir(parents=True, exist_ok=True)
     owner_path = service_dir / "service.lock" / "owner.json"
     owner = read_json(owner_path)
     if _alive(owner.get("pid")):
         return
     log_path = service_dir / "worker.log"
+    command = [sys.executable, "-m", "mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler_worker", "--service"]
+    if controllers:
+        command.append("--controllers")
     with log_path.open("a", encoding="utf-8") as log:
         subprocess.Popen(
-            [sys.executable, "-m", "mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler_worker", "--service"],
+            command,
             # The engine directory contains a bundled resource package also
             # named ``mn_compute_scheduler``. Starting there puts it at
             # sys.path[0] and shadows the external SchedulerClient package
@@ -187,6 +193,12 @@ def ensure_scheduler_worker_service() -> None:
         )
 
 
+def _wake_scheduler_workers(workflow: str) -> None:
+    ensure_scheduler_worker_service()
+    if workflow == PIPELINE_CONTROLLER_WORKFLOW_ID:
+        ensure_scheduler_worker_service(controllers=True)
+
+
 def submit_run(run_dir: Path) -> dict[str, Any]:
     """Idempotently submit a prepared app run and wake this app's scheduler workers."""
     run_dir = run_dir.expanduser().resolve()
@@ -198,6 +210,7 @@ def submit_run(run_dir: Path) -> dict[str, Any]:
         return {"backend": "local-worker-service", "job_id": ""}
 
     priority = _submission_priority.get()
+    workflow = PIPELINE_CONTROLLER_WORKFLOW_ID if metadata.get("job_type") == "visual_pipeline" else WORKFLOW_ID
 
     # Prevent the legacy local scanner from racing a job accepted by the central queue.
     metadata.update(
@@ -228,7 +241,7 @@ def submit_run(run_dir: Path) -> dict[str, Any]:
                 raise RuntimeError(f"Could not confirm existing scheduler job {existing_id}: {exc}") from exc
             existing = {}
         if existing and str(existing.get("status") or "") in {"queued", "running"}:
-            ensure_scheduler_worker_service()
+            _wake_scheduler_workers(str(existing.get("workflow") or WORKFLOW_ID))
             return existing
 
     generation = int(metadata.get("scheduler_submission_generation") or 0) + 1
@@ -240,7 +253,7 @@ def submit_run(run_dir: Path) -> dict[str, Any]:
     try:
         job = client.submit_job(
             app_id=APP_ID,
-            workflow=WORKFLOW_ID,
+            workflow=workflow,
             run_id=run_dir.name,
             run_dir=str(run_dir),
             name=str(metadata.get("tool") or metadata.get("job_type") or run_dir.name),
@@ -275,7 +288,7 @@ def submit_run(run_dir: Path) -> dict[str, Any]:
         }
     )
     write_json(run_dir / "metadata.json", metadata)
-    ensure_scheduler_worker_service()
+    _wake_scheduler_workers(workflow)
     return job
 
 

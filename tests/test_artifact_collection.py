@@ -121,6 +121,26 @@ def test_managed_source_structure_uses_existing_cross_run_reference(tmp_path, mo
     assert read_candidates(run)[0]["complex_pdb"] == str(structure)
 
 
+@pytest.mark.parametrize("as_uri", [False, True])
+def test_returned_worker_input_is_published_with_candidate(tmp_path, monkeypatch, as_uri):
+    app = tmp_path / "studio"
+    staged = app / "cluster/accepted-inputs/submission/inputs/00001/model.cif"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("data_preserved_candidate\n#\n")
+    monkeypatch.setattr(portable_paths, "app_home", lambda: app)
+    run = tmp_path / "runs/design/sequence-worker"
+    source = "app:///cluster/accepted-inputs/submission/inputs/00001/model.cif" if as_uri else str(staged)
+
+    write_candidates(run, "fixture-sequence-worker", [_candidate(source)])
+    persisted = json.loads((run / "artifacts/normalized_candidates/candidates.jsonl").read_text())
+    assert persisted["complex_pdb"].startswith("artifacts/materialized_candidates/")
+    assert persisted["raw_metadata"]["materialized_source_paths"]["complex_pdb"] == (
+        "app:///cluster/accepted-inputs/submission/inputs/00001/model.cif"
+    )
+    staged.unlink()
+    assert Path(read_candidates(run)[0]["complex_pdb"]).read_text() == "data_preserved_candidate\n#\n"
+
+
 def test_missing_required_candidate_output_prevents_successful_finalization(tmp_path, monkeypatch):
     run = tmp_path / "runs" / "design" / "missing-required"
     write_candidates(run, "fixture-generator", [_candidate("/work/artifacts/raw/fixture/output/missing.cif")])

@@ -478,7 +478,6 @@ def _render_field(field, values, key):
                   "protein_protein":"Protein / protein", "protein_ligand":"Protein / ligand",
                   "protein_dna":"Protein / DNA", "protein_rna":"Protein / RNA",
                   "protein_macrocyclic":"Protein / macrocyclic peptide",
-                  "protein":"Protein monomer",
                   "miniprotein":"Miniprotein", "scfv":"Antibody (scFv)", "vhh":"Nanobody (VHH)",
                   "trastuzumab_framework_vhvl":"Trastuzumab framework", "atezolizumab_framework_vhvl":"Atezolizumab framework",
                   "ocankitug_framework_vhvl":"Ocankitug framework", "caplacizumab_vhh":"Caplacizumab VHH",
@@ -488,6 +487,9 @@ def _render_field(field, values, key):
                   "alphafold3":"Official AlphaFold3", "openfold3":"OpenFold3 P2", "openbind0":"OpenBind-0",
                   "boltz2":"Boltz-2 weights", "protenix2":"Protenix V2", "rosettafold3":"RosettaFold3",
                   "intellifold2":"IntelliFold2", "opendde":"OpenDDE"}
+        if name == "task_type":
+            from mn_molecular_design_studio.scientific_tasks import PREDICTION_MODES
+            labels.update(PREDICTION_MODES)
         return st.selectbox(label, options, index=options.index(value) if value in options else 0,
                             format_func=lambda v: labels.get(v, str(v)), **kwargs)
     if field["type"] == "number":
@@ -558,6 +560,16 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""
 
     descriptors = [dict(parameter) for parameter in parameter_descriptors(tile.workflow)
                    if parameter["name"] not in sources]
+    preparing_library = tile.workflow == "library.prepare"
+    if preparing_library:
+        from mn_molecular_design_studio.runtime import app_home, reference_root
+
+        descriptors = [parameter for parameter in descriptors if parameter["name"] != "create_centroids"]
+        reference = reference_root()
+        if reference.is_relative_to(app_home().resolve()):
+            st.caption("Library preparation requires an external reference directory configured by a Studio administrator.")
+        else:
+            st.caption(f"Choose a new output folder under the configured external reference directory ({reference}).")
     mode_fields = ligand_mode_fields(tile, design_mode)
     for parameter in descriptors:
         if parameter["name"] in mode_fields:
@@ -696,6 +708,12 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""
                                 value = str(save(owner_id, upload.name, upload.getvalue()))
                             elif value:
                                 st.caption(Path(value).name)
+                        elif preparing_library and name == "source_files":
+                            paths = st.text_area(
+                                "Source files *", value="\n".join(value or []), key=f"{key}-{name}",
+                                help="Enter one accessible CSV or SDF path per line.",
+                            )
+                            value = [line.strip() for line in paths.splitlines() if line.strip()]
                         else:
                             value = _render_workflow_parameter(parameter, value, key)
                     except (ValueError, OSError) as exc:

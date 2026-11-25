@@ -203,13 +203,15 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
                 "binder_chains": candidate.get("binder_chains") or [], "target_chains": candidate.get("target_chains") or []}
         protein_chains = raw.get("protein_chains")
         if (profile["kind"] == "sequence" and not item["sequence"] and selected_structure is None
-                and len(item["binder_chains"]) == 1 and isinstance(protein_chains, list)):
-            chain_id = item["binder_chains"][0]
-            recorded_chains = [chain for chain in protein_chains if isinstance(chain, dict) and chain.get("id") == chain_id]
+                and len(item["binder_chains"]) <= 1 and isinstance(protein_chains, list)):
+            requested_chains = item["binder_chains"]
+            recorded_chains = [chain for chain in protein_chains if isinstance(chain, dict)
+                               and (not requested_chains or chain.get("id") in requested_chains)]
             if len(recorded_chains) == 1 and isinstance(recorded_chains[0].get("sequence"), str):
-                item["sequence"] = recorded_chains[0]["sequence"]
+                chain = recorded_chains[0]
+                item["sequence"] = chain["sequence"]
                 candidate["raw_metadata"] = {**raw, "analysis_sequence_source": {
-                    "kind": "recorded_protein_chain", "chain_id": chain_id,
+                    "kind": "recorded_protein_chain", "chain_id": chain.get("id"),
                 }}
         if candidate_ligand_selection is not None:
             item["ligand_selection"] = dict(candidate_ligand_selection)
@@ -451,25 +453,33 @@ def run_pandamap(source_run_dir: Path, candidates_jsonl: Path | None = None, cpu
                  candidate_ids: list[str] | None = None, selected_structure_path: Path | None = None,
                  selected_model_id: str | None = None, ligand_selection: dict | None = None,
                  ligand_selections: dict[str, dict] | None = None,
-                 binder_chains: list[str] | None = None, target_chains: list[str] | None = None) -> Path:
+                 binder_chains: list[str] | None = None, target_chains: list[str] | None = None,
+                 source_job_reference: str | None = None, source_workstation_id: str | None = None,
+                 source_workstation: str | None = None) -> Path:
     """PandaMap interactions on selected ligand poses, preserving source receptor residue numbering."""
     if binder_chains or target_chains:
         raise ValueError("PandaMap selects one ligand residue and does not accept protein interface chain groups.")
     ligand_parameters = {"ligand_selections": ligand_selections} if ligand_selections is not None else {}
     return run_quality(source_run_dir, candidates_jsonl, tool="pandamap", settings={}, cpu_cores=cpu_cores,
         candidate_ids=candidate_ids, selected_structure_path=selected_structure_path,
-        selected_model_id=selected_model_id, ligand_selection=ligand_selection, **ligand_parameters)
+        selected_model_id=selected_model_id, ligand_selection=ligand_selection,
+        source_job_reference=source_job_reference, source_workstation_id=source_workstation_id,
+        source_workstation=source_workstation, **ligand_parameters)
 
 
 def run_posebusters(source_run_dir: Path, candidates_jsonl: Path | None = None, cpu_cores: int = 4,
                     candidate_ids: list[str] | None = None, selected_structure_path: Path | None = None,
                     selected_model_id: str | None = None, ligand_selection: dict | None = None,
                     ligand_selections: dict[str, dict] | None = None,
-                    binder_chains: list[str] | None = None, target_chains: list[str] | None = None) -> Path:
+                    binder_chains: list[str] | None = None, target_chains: list[str] | None = None,
+                    source_job_reference: str | None = None, source_workstation_id: str | None = None,
+                    source_workstation: str | None = None) -> Path:
     """PoseBusters geometry/chemistry checks using a SMILES-matched native ligand pose and receptor."""
     if binder_chains or target_chains:
         raise ValueError("PoseBusters selects one ligand residue and does not accept protein interface chain groups.")
     ligand_parameters = {"ligand_selections": ligand_selections} if ligand_selections is not None else {}
     return run_quality(source_run_dir, candidates_jsonl, tool="posebusters", settings={}, cpu_cores=cpu_cores,
         candidate_ids=candidate_ids, selected_structure_path=selected_structure_path,
-        selected_model_id=selected_model_id, ligand_selection=ligand_selection, **ligand_parameters)
+        selected_model_id=selected_model_id, ligand_selection=ligand_selection,
+        source_job_reference=source_job_reference, source_workstation_id=source_workstation_id,
+        source_workstation=source_workstation, **ligand_parameters)

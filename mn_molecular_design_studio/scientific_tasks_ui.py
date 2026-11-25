@@ -5,7 +5,7 @@ import streamlit as st
 
 from mn_molecular_design_studio.pipeline_graph import MAIN_STARTERS, NODE_CATALOG, LEGACY_STARTER_TEMPLATES, new_graph
 from mn_molecular_design_studio.scientific_tasks import (
-    TASKS, NATIVE, BACKBONE, PREDICTION_MODES, method_limitations,
+    TASKS, NATIVE, PREDICTION_MODES, method_limitations, needs_initial_sequence_design,
     task_methods, prediction_methods, new_task_graph, workload,
 )
 
@@ -155,7 +155,7 @@ def _render_task_recipe(prefix, task, *, compact=False):
             count_label = ("CDR sequence variants per parent" if task == "antibody_cdr_redesign" else
                            "Designs per register (Peptide Trap) / maximum templates (Kejia)" if task == "template_peptide_idr" else "Generation attempts per method")
             config["num_designs"] = st.number_input(count_label, min_value=1, max_value=10000, value=1, key=prefix + "-attempts")
-            if set(methods) & BACKBONE:
+            if any(needs_initial_sequence_design(method, binder_format=binder_format) for method in methods):
                 config["sequences"] = st.number_input("Initial ProteinMPNN sequences per backbone", min_value=1, max_value=1000, value=1, key=prefix + "-sequences")
             has_native = bool(set(methods) & NATIVE)
             validate = not has_native or st.checkbox("Optional additional prediction after native workflow", key=prefix + "-native-validation")
@@ -261,6 +261,8 @@ def _render_workflow_mode(prefix, workflow_mode):
             index=sequence_choices.index(default_sequence), format_func=lambda kind: NODE_CATALOG[kind]['label'],
             key=prefix + '-mode-sequence-engine')
         st.caption('Initial sequence design runs on compatible backbone-only candidates. Sequence-complete native outputs keep their sequence and bypass this step.')
+        if any(needs_initial_sequence_design(kind) for kind in selected_generators):
+            st.caption("The selected generators can return sequence-free backbones. The draft includes the initial sequence-design step.")
         redesign = st.checkbox("Optional sequence redesign", value=False,
             key=prefix + "-mode-interface-redesign",
             help="Generate conditional child sequences from eligible sequence-complete structures. The original candidate and its evidence remain in Results.")

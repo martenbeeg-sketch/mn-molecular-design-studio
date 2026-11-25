@@ -141,8 +141,11 @@ def test_capability_selection_and_legacy_graphs():
         for invalid in ('rfd4', 'rfdiffusion', 'esm_binder', 'bindcraft2_generator'):
             with pytest.raises(ValueError, match='unsupported'):
                 cp.new_pipeline([invalid], mode=mode)
-    composed = cp.new_pipeline(['bindcraft2'], mode='modular_design')
-    assert any(node['data']['kind'] == 'bindcraft2' for node in composed['nodes'])
+    assert {"bindcraft2_generator", "boltzgen_generator", "rfdiffusion"} <= set(wm.methods("modular_design"))
+    with pytest.raises(ValueError, match="unsupported"):
+        cp.new_pipeline(["bindcraft2"], mode="modular_design")
+    composed = cp.new_pipeline(["bindcraft2_generator"], mode="modular_design")
+    assert any(node['data']['kind'] == 'bindcraft2_generator' for node in composed['nodes'])
     assert wm.capability('rfd4')['complete_native_workflow'] is False
     assert 'workflow_mode' not in pg.clean_graph(cp.new_pipeline())
     assert wm.native_ranking({'metrics': {'native_rank': float('nan')}})['rank'] is None
@@ -193,15 +196,13 @@ def test_design_compatibility_catalog_covers_registry_and_measurement_routes():
     assert len(catalog['workflows']) >= 20
     assert {row['workflow'] for row in catalog['complete_native_workflows']} >= {
         'design.bindcraft2', 'design.boltzgen', 'design.pxdesign', 'design.genie3',
-        'design.protpardelle_1c', 'design.proteina_complexa',
+        'design.protpardelle_1c', 'design.proteina_complexa', 'design.bindcraft',
     }
-    assert {'design.bindcraft', 'design.rfantibody', 'design.rfpeptides'} <= {
-        row['workflow'] for row in catalog['standalone_registered_routes']
+    assert {'design.rfantibody', 'design.rfpeptides'} <= {
+        row['workflow'] for row in catalog['specialized_graph_routes']
     }
-    graph_rows = {kind: spec['scientific_workflow'] for kind, spec in pg.NODE_CATALOG.items()
-                  if spec.get('category') in {'Design engine', 'Design pipeline'}}
-    assert graph_rows['rfd4']['tool'] == 'rfd4_proteina'
-    assert graph_rows['esm_binder']['tool'] == 'esmfold2_binder_design'
+    assert pg.NODE_CATALOG['rfd4']['scientific_workflow']['tool'] == 'rfd4_proteina'
+    assert pg.NODE_CATALOG['esm_binder']['scientific_workflow']['tool'] == 'esmfold2_binder_design'
     assert any('interface.contacts' in {m['key'] for m in route['measurements']}
                for route in catalog['shared_analysis_routes'])
     assert any('interface.ipsae.minimum' in {m['key'] for m in route['measurements']}
@@ -364,6 +365,11 @@ def test_independent_generators_and_prediction_overlap(pdl1_harness, monkeypatch
             index = len(active)
             tool = 'bindcraft2' if index == 0 else 'boltzgen'
             child = h.source('native-' + str(index), tool, 12)
+            rows_path = child / 'artifacts/normalized_candidates/candidates.jsonl'
+            rows = [json.loads(line) for line in rows_path.read_text().splitlines()]
+            for row in rows:
+                row['raw_metadata']['binder_format'] = 'miniprotein'
+            rows_path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
             write_json(child / 'metadata.json', dict(status='running', tool=tool))
             active[str(child)] = child
             if index == 1:

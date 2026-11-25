@@ -64,7 +64,8 @@ def methods(mode):
         route = capability(kind)
         if not route['target_connected'] or not route['route_registered']:
             continue
-        if route['complete_native_workflow'] or mode == 'modular_design' and route['modular_source']:
+        criterion = 'generator_only' if mode == 'modular_design' else 'complete_native_workflow'
+        if route[criterion]:
             selected.append(kind)
     return selected
 
@@ -209,8 +210,9 @@ def compatibility_catalog():
     # module/function routes without submitting a job or invoking a model.
     registered_rows = workflow_catalog(category='design')
     graph_by_workflow = {}
+    design_categories = {'Design engine', 'Design pipeline', 'Antibody and peptide design'}
     for kind, specification in NODE_CATALOG.items():
-        if specification.get('category') in {'Design engine', 'Design pipeline'} and specification.get('workflow'):
+        if specification.get('category') in design_categories and specification.get('workflow'):
             graph_by_workflow.setdefault(specification['workflow'], []).append(kind)
 
     workflows = []

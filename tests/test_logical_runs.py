@@ -66,6 +66,29 @@ def test_graph_steps_are_named_outputs_and_the_combined_result_is_not_duplicated
     assert len(run["outputs"][1]["sources"]) == 2
 
 
+def test_pipeline_reusing_a_saved_input_keeps_its_own_run_and_steps():
+    original = row("original", task_group="campaign", tool="visual_pipeline")
+    saved_trajectory = row("trajectory", task_group="ligand-md", campaign_id="original")
+    analysis = row("reused", task_group="campaign", tool="visual_pipeline",
+                   dependency_refs=[{"run_id": "trajectory", "task_group": "ligand-md"}])
+    worker = row("analysis-worker", task_group="md-analysis", campaign_id="reused",
+                 graph_node_id="md-analysis")
+    grouped = runs.group_runs([original, saved_trajectory, analysis, worker])
+    assert {run["name"]: {job["run_id"] for job in run["jobs"]} for run in grouped} == {
+        "original": {"original", "trajectory"},
+        "reused": {"reused", "analysis-worker"},
+    }
+
+
+def test_completed_pipeline_keeps_worker_retry_history_without_becoming_partial():
+    root = row("pipeline", task_group="campaign", tool="visual_pipeline")
+    worker = row("replacement", campaign_id="pipeline", graph_node_id="simulation")
+    first_attempt = row("first", campaign_id="pipeline", graph_node_id="simulation", status="cancelled")
+    grouped, = runs.group_runs([root, worker, first_attempt])
+    assert grouped["status"] == "completed"
+    assert {job["run_id"] for job in grouped["jobs"]} == {"pipeline", "first", "replacement"}
+
+
 def test_remote_graph_receipts_are_scoped_to_the_run_owner_and_project(isolated):
     root = dict(row("pipeline"), task_group="campaign", tool="visual_pipeline",
                 node_id="organizer", pipeline_batch_jobs={"submitted-id": "refold"})

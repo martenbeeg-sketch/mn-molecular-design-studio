@@ -122,11 +122,28 @@ def _candidate_artifacts(run_dir: Path) -> list[dict[str, str]]:
     return artifacts
 
 
+def _refolding_source_stage(candidate: dict[str, Any]) -> str | None:
+    # Sequence analyses keep the original sequence and provenance for refolding.
+    while candidate.get("stage") == "analysis" and candidate.get("source_tool") in {"sequence_qc", "proteinsol"}:
+        sequence = candidate.get("binder_sequence")
+        parent = (candidate.get("raw_metadata") or {}).get("source_candidate")
+        if (
+            not sequence
+            or not isinstance(parent, dict)
+            or not parent.get("candidate_id")
+            or parent["candidate_id"] not in (candidate.get("parents") or [])
+            or parent.get("binder_sequence") != sequence
+        ):
+            break
+        candidate = parent
+    return candidate.get("stage")
+
+
 def _source_candidates(candidates_jsonl: Path, allowed_stages: set[str]) -> list[dict[str, Any]]:
     candidates = [
         candidate
         for candidate in read_candidates(Path(candidates_jsonl))
-        if candidate.get("stage") in allowed_stages
+        if _refolding_source_stage(candidate) in allowed_stages
     ]
     if not candidates:
         stages = ", ".join(sorted(allowed_stages))

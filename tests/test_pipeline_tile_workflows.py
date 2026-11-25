@@ -277,6 +277,39 @@ def test_tmol_catalog_connects_saved_structures_and_ligands():
         tiles.validate_parameters(tiles.TILES[kind], {}, {"candidates", "ligand"}, runnable=True)
 
 
+def test_tmol_keeps_recorded_protein_chain_sequences(tmp_path, monkeypatch, design_source_factory):
+    from types import SimpleNamespace
+
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import tmol
+
+    source, candidate = design_source_factory(missing_occupancy=False)
+    candidate.update(binder_sequence=None, binder_chains=[], target_chains=[])
+    protein_chains = [{"id": "A", "role": "unspecified", "sequence": "ACDEFG"}]
+    candidate["raw_metadata"] = {"protein_chains": protein_chains, "pae_path": "before_refinement.npz"}
+    candidate_path = source / "artifacts/normalized_candidates/candidates.jsonl"
+    candidate_path.write_text(json.dumps(candidate) + "\n")
+    run = tmp_path / "tmol"
+    monkeypatch.setattr(tmol, "create_job", lambda *args: SimpleNamespace(run_dir=run, artifacts_dir=run / "artifacts"))
+    monkeypatch.setattr(tmol, "finish_job", lambda *args: None)
+
+    def finish_native(run_dir, *args, **kwargs):
+        output = run_dir / "artifacts/tmol"
+        (output / "structure_00001.cif").write_bytes((source / "designed.cif").read_bytes())
+        (output / "summary.json").write_text(json.dumps({"records": [{
+            "id": "structure_00001", "status": "completed", "tmol_energy_before": 1.0,
+            "tmol_energy_after": 1.0, "tmol_energy_change": 0.0,
+        }]}))
+        return 0
+
+    monkeypatch.setattr(tmol, "run_docker_job", finish_native)
+    tmol.run_tmol(source_run_dir=source, candidates_jsonl=candidate_path, mode="score")
+    row, = read_candidates(run / "artifacts/normalized_candidates/candidates.jsonl")
+    assert row["raw_metadata"]["protein_chains"] == protein_chains
+    assert row["parents"] == [candidate["candidate_id"]]
+    assert "pae_path" not in row["raw_metadata"]
+
+
 def test_tmol_mcp_schema_rejects_missing_inputs_and_requests_cuda(tmp_path):
     from mn_molecular_design_studio.cluster.capabilities import requirements
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import (

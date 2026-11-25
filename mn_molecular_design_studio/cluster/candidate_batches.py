@@ -134,11 +134,17 @@ def pack_request(request, destination):
             saved_contract = key == 'raw_metadata' and 'scientific_contract' in value
             if saved_contract:
                 skipped.add('scientific_contract')
+            saved_settings = key == 'raw_metadata' and 'effective_settings' in value
+            if saved_settings:
+                skipped.add('effective_settings')
             result = {k: ({'origin_node': config.identity(), 'record': json.dumps(v, sort_keys=True)}
                           if k in provenance else transform(v, base, k))
                       for k, v in value.items() if k not in skipped}
             if saved_contract:
                 result['scientific_contract'] = copy.deepcopy(value['scientific_contract'])
+            if saved_settings:
+                # These are upstream engine settings, including container-local checkpoints.
+                result['effective_settings'] = copy.deepcopy(value['effective_settings'])
             if owned_source:
                 # The coordinator checks source project access and pins the
                 # request to the workstation that owns these paths.
@@ -452,14 +458,14 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
     source_ref = source.path.strip('/')
     source_prefix = source_ref + '/' if source.scheme == 'cluster' and source.netloc == job.get('node_id') else None
 
-    def source_structure(reference):
+    def source_artifact(reference):
         state = batch.setdefault('source_artifacts', {})
         if not state.get('job_id'):
             with store.connect() as db:
                 record = db.execute('SELECT id FROM jobs WHERE node_id=? AND local_ref=?',
                                     (source.netloc, source_ref)).fetchone()
             if not record or store.job(record['id'], user).get('project_id') != project_id:
-                raise ValueError('The saved source structure must belong to this project.')
+                raise ValueError('The saved source artifact must belong to this project.')
             state['job_id'] = record['id']
         relative = reference[len(source_prefix):]
         path = _artifact(state, state['job_id'], relative, user, directory / 'source',
@@ -468,21 +474,23 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
             missing.add(reference)
         return str(path) if path is not None else 'cluster://' + source.netloc + '/' + reference
 
-    def rewrite(value, key=''):
+    def rewrite(value, key='', parent_key=''):
         if isinstance(value, dict):
-            return {k: rewrite(v, k) for k, v in value.items()}
+            return {k: rewrite(v, k, key) for k, v in value.items()}
         if isinstance(value, list):
-            return [rewrite(v, key) for v in value]
+            return [rewrite(v, key, parent_key) for v in value]
         if not isinstance(value, str):
             return value
         relative = None
+        pae_source = parent_key == 'prediction_pae_measurement' and key == 'source'
         if value.startswith('runs:///'):
             reference = value.removeprefix('runs:///')
             local_ref = str(job.get('local_reference') or '') + '/'
             if reference.startswith(local_ref):
                 relative = reference[len(local_ref):]
-            elif source_prefix and reference.startswith(source_prefix) and key in {'complex_pdb', 'binder_pdb', 'target_pdb'}:
-                return source_structure(reference)
+            elif (source_prefix and reference.startswith(source_prefix)
+                  and (pae_source or key in {'complex_pdb', 'binder_pdb', 'target_pdb'})):
+                return source_artifact(reference)
             else:
                 # Other run references are origin provenance. The collected
                 # snapshot carries no local copy of those files.
@@ -494,6 +502,8 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
         elif value in artifacts:
             relative = value
         elif not value.startswith('/') and value.startswith(('artifacts/', 'outputs/')) and Path(value).suffix:
+            if pae_source and source_prefix:
+                return source_artifact(source_prefix + value)
             relative = value
         if relative:
             if relative in {collection, 'metadata.json', 'input.json', 'result.json'}:

@@ -40,7 +40,7 @@ def test_catalogue_has_six_standard_and_two_experimental_tasks_and_blank():
 def test_binder_methods_route_backbones_codesigns_and_native_workflows(method):
     result = new_task_graph("targeted_protein_binder", {"methods": [method]})
     sequence = [n for n in result["nodes"] if n["data"]["kind"] == "ligandmpnn"]
-    assert bool(sequence) == (method in BACKBONE)
+    assert bool(sequence) == (method in (BACKBONE | {"boltzgen_generator"}))
     if sequence:
         assert sequence[0]["data"]["params"]["sequence_stage"] == "initial"
         assert sequence[0]["data"]["params"]["model_type"] == "protein_mpnn"
@@ -265,6 +265,20 @@ def test_multi_engine_prediction_has_independent_results_and_engine_settings(exe
     assert boltz["seed"] == 42 and boltz["num_recycles"] == 2
 
 
+def test_molecular_inputs_accept_managed_reference_paths(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import portable_paths
+
+    monkeypatch.setattr(portable_paths, "reference_root", lambda: tmp_path)
+    (tmp_path / "fixture.pdb").write_text("END\n")
+    (tmp_path / "fixture.fasta").write_text(">fixture\nGAGG\n")
+    draft = new_task_graph("molecular_structure_prediction", {
+        "methods": ["prediction_mol1"],
+        "inputs": {"target_protein_sequences": "GAGG", "target_pdb": "reference:///fixture.pdb",
+                   "sequence_file": "reference:///fixture.fasta"},
+    })
+    assert graph.validate_graph(draft, require_inputs=True)["graph"]["id"] == draft["id"]
+
+
 def test_api_supports_task_configuration_and_old_identifiers(api_data):
     client, project = api_data["client"], api_data["project"]["id"]
     listing = client.get("/api/v1/pipelines/templates").json()
@@ -390,7 +404,7 @@ def test_shared_protein_design_routes_open_and_save_independently(api_data):
         downstream = next(node for node in route["nodes"] if node["data"]["kind"] == expected)
         assert any(edge["source"] == rfd4["id"] and edge["target"] == downstream["id"] for edge in route["edges"])
     comparison = kinds(previews["protein_design_comparison"]["graph"])
-    assert comparison.count("target") == 1 and "bindcraft2" in comparison and "rfd4" in comparison
+    assert comparison.count("target") == 1 and "bindcraft2_generator" in comparison and "rfd4" in comparison
     assert kinds(previews["protein_design_new_fold"]["graph"]) == ["protpardelle", "ligandmpnn", "esmfold", "results"]
     redesign = previews["protein_design_redesign"]
     assert kinds(redesign["graph"]) == ["target", "esm_if1", "esmfold", "results"]

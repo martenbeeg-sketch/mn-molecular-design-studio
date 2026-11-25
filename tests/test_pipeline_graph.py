@@ -785,7 +785,12 @@ def test_shared_campaign_child_is_started_after_graph_lineage_is_persisted(tmp_p
     submitted, started = [], []
 
     def submit(path, *, defer_dispatch=False):
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import _SUBMISSION_TAGS
+
         submitted.append((json.loads(Path(path).read_text()), defer_dispatch))
+        metadata = json.loads((child / "metadata.json").read_text())
+        metadata.update(_SUBMISSION_TAGS.get())
+        (child / "metadata.json").write_text(json.dumps(metadata))
         return {"job": {"run_dir": str(child)}}
 
     def start(run_dir):
@@ -811,6 +816,8 @@ def test_shared_campaign_child_is_started_after_graph_lineage_is_persisted(tmp_p
 
 @pytest.mark.parametrize("workflow", ["design.bindcraft2", "design.rfd4_proteina"])
 def test_distributed_tile_submission_uses_cpu_controller_and_normal_workflow_api(tmp_path, monkeypatch, workflow):
+    from mn_molecular_design_studio.cluster import config as cluster_config
+
     monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
     parent = tmp_path / "parent"
     child = tmp_path / "child"
@@ -840,7 +847,11 @@ def test_distributed_tile_submission_uses_cpu_controller_and_normal_workflow_api
     runner._submit(request, parent, {"id": "tile-1"}, owner_id="owner", project_id="project", gpu_device="all")
 
     assert len(submitted) == 1
-    assert submission_context == [{"studio_owner_id": "owner", "studio_project_id": "project", "studio_development_mode": True}]
+    assert submission_context == [{
+        "studio_owner_id": "owner", "studio_project_id": "project", "studio_development_mode": True,
+        "pipeline_parent_node_id": cluster_config.identity(), "pipeline_parent_run_dir": str(parent),
+        "campaign_id": parent.name, "campaign_name": "Fixture", "graph_node_id": "tile-1",
+    }]
     assert submitted[0]["parameters"]["distributed_campaign"]["enabled"] is True
     assert submitted[0]["parameters"]["distributed_campaign"]["workstation_selection"] == "eligible"
     assert submitted[0]["resources"]["gpu_device"] == "none"
@@ -1063,17 +1074,21 @@ def execution_harness(monkeypatch,tmp_path,design_source_factory):
         calls.append(n["data"]["kind"])
         p=tmp_path/f"child-{len(calls)}";p.mkdir()
         c=copy.deepcopy(base);c["candidate_id"]="design";c["complex_pdb"]=str(source/"designed.cif")
-        c["stage"]={"rfd3":"generation.backbone","foundry_mpnn":"generation.backbone_sequence"}.get(n["data"]["kind"],"complex_refolding")
+        c["stage"] = {"rfd3": "generation.backbone", "rfd4": "generation.backbone_sequence",
+                      "foundry_mpnn": "generation.backbone_sequence"}.get(n["data"]["kind"], "complex_refolding")
         if c["stage"] == "complex_refolding":
             c["source_tool"] = n["data"]["kind"]
             c["candidate_id"] = c["source_tool"] + "-prediction"
             params = request["parameters"]
             tasks = params.get("tasks")
             if tasks:
-                c["parents"] = [tasks[0]["source_candidate_id"]]
-            else:
+                parent_id = tasks[0].get("source_candidate_id")
+                c["parents"] = [parent_id] if parent_id else []
+            elif params.get("candidates_jsonl"):
                 parent_row = json.loads(Path(params["candidates_jsonl"]).read_text().splitlines()[0])
                 c["parents"] = [parent_row["candidate_id"]]
+            else:
+                c["parents"] = []
         c["metrics"]={"ranking_score":.8}
         normalized=p/"artifacts/normalized_candidates";normalized.mkdir(parents=True)
         (normalized/"candidates.jsonl").write_text(json.dumps(c)+"\n")
@@ -1363,15 +1378,21 @@ def test_api_saves_and_validates_without_queuing_jobs(monkeypatch,tmp_path):
 
 
 def test_cancel_only_stops_active_jobs_owned_by_this_pipeline(monkeypatch,tmp_path):
+    from mn_molecular_design_studio.cluster import candidate_batches
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
     parent=tmp_path/"pipeline";parent.mkdir()
     nodes={}
     for name,status,owner in [("running","running",str(parent)),("done","completed",str(parent)),("unrelated","running","another-pipeline")]:
         child=tmp_path/name;child.mkdir();(child/"metadata.json").write_text(json.dumps({"status":status,"pipeline_parent_run_dir":owner}));nodes[name]={"job_run_dir":str(child)}
+    nodes["remote"] = {"batches": [{"status": "running", "cluster_job_id": "peer-job",
+                                   "prepared_envelope": {"source_run_dir": "cluster://peer/refolding-validation/source"}}]}
     (parent/"graph_execution.json").write_text(json.dumps({"nodes":nodes}))
     stopped=[];monkeypatch.setattr(jobs,"stop_job",lambda p,**k:stopped.append(p.name))
+    remote = []
+    monkeypatch.setattr(candidate_batches, "cancel", lambda batch, **kwargs: remote.append(batch["cluster_job_id"]))
     runner.cancel_graph_children(parent)
     assert stopped==["running"]
+    assert remote == ["peer-job"]
 
 
 def test_canvas_host_renders_without_running_a_job(monkeypatch):

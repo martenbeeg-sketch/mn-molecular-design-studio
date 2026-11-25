@@ -1000,20 +1000,19 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     shared_campaign_child = bool(
         isinstance(distributed_campaign, dict) and distributed_campaign.get("_shared_objective")
     )
-    # Shared controllers verify their graph parent and branch before opening
-    # the shared ledger, so persist lineage before launching those workers.
+    # Publish lineage with the initial job metadata. Results can index the
+    # child as soon as it exists, and shared controllers also need this link.
+    from mn_molecular_design_studio.cluster import config as cluster_config
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import submission_tags
     parent_metadata = read_json(parent / "metadata.json")
+    pipeline_name = read_json(parent / "input.json").get("params", {}).get("pipeline_name", "Pipeline")
     with submission_tags(studio_owner_id=owner_id, studio_project_id=project_id,
-                         studio_development_mode=bool(parent_metadata.get("studio_development_mode"))):
+                         studio_development_mode=bool(parent_metadata.get("studio_development_mode")),
+                         pipeline_parent_node_id=cluster_config.identity(), pipeline_parent_run_dir=str(parent),
+                         campaign_id=parent.name, campaign_name=pipeline_name, graph_node_id=node["id"]):
         result = submit_workflow_request(path, defer_dispatch=True) if shared_campaign_child else submit_workflow_request(path)
     mark_studio_job(result, owner_id=owner_id, project_id=project_id)
     child = _path(result["job"]["run_dir"])
-    metadata = read_json(child / "metadata.json")
-    from mn_molecular_design_studio.cluster import config as cluster_config
-    metadata["pipeline_parent_node_id"] = cluster_config.identity()
-    metadata.update(pipeline_parent_run_dir=str(parent), campaign_id=parent.name, campaign_name=read_json(parent / "input.json").get("params", {}).get("pipeline_name", "Pipeline"), graph_node_id=node["id"])
-    write_json(child / "metadata.json", metadata)
     if shared_campaign_child:
         from mn_molecular_design_studio.engine.workflow_engine.core.local_worker import spawn_worker_for_run
         spawn_worker_for_run(child)
@@ -1362,14 +1361,19 @@ def _child_analysis_output(child: Path, target: dict) -> dict:
 
 
 def cancel_graph_children(run_dir: Path) -> None:
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json_raw, stop_job
     from mn_molecular_design_studio.candidate_execution import cancel
-    cancel(run_dir, read_json(run_dir / "graph_execution.json"))
-    for node in read_json(run_dir / "graph_execution.json").get("nodes", {}).values():
+    # Execution records also hold remote inputs and outputs. Cancel by job ID
+    # without resolving those artifacts on the controller.
+    state = read_json_raw(run_dir / "graph_execution.json")
+    cancel(run_dir, state)
+    for node in state.get("nodes", {}).values():
         raw = node.get("job_run_dir")
-        if not raw:
+        if not raw or str(raw).startswith("cluster://"):
             continue
-        child = Path(raw)
+        child = resolve_stored_path(raw, run_dir=run_dir, must_exist=True)
+        if child is None:
+            continue
         metadata = read_json(child / "metadata.json")
         if metadata.get("pipeline_parent_run_dir") == str(run_dir) and metadata.get("status") in {"queued", "running", "pending"}:
             stop_job(child, reason="Parent pipeline was cancelled")
@@ -1460,7 +1464,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         category = NODE_CATALOG[nodes[node_id]["data"]["kind"]]["category"]
         source_parents = [output_for_edge(edge) for edge in plan["incoming_edges"][node_id]
                           if edge["source"] in outputs]
+        retained_sequence_source = None
         if len(source_parents) == 1 and node_id in handoff_sources:
+            if category == "Sequence design" and source_parents[0].get("candidate_set_manifest"):
+                retained_sequence_source = source_parents[0]
             source_parents[0] = handoff_sources[node_id]
         analysis_refs = []
         seen_analysis_refs = set()
@@ -1475,7 +1482,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         if output.get("candidates_jsonl") and source_parents and has_stage and not output.get("disabled"):
             output = candidate_sets.attach_stage(parent, node_id, output, source_parents[0], category=category,
                 scientific_key=key, settings=nodes[node_id]["data"]["params"],
-                evidence_namespace=nodes[node_id]["data"].get("evidence_namespace"))
+                evidence_namespace=nodes[node_id]["data"].get("evidence_namespace"),
+                retained_sequence_source=retained_sequence_source)
         if analysis_refs:
             output["analysis_runs"] = analysis_refs
         if category == "Analysis" and source_parents:
@@ -1755,6 +1763,12 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             cached = read_json(cache_root / f"{key}.json").get("output") if reuse_completed else None
                             output = cached if cached and _cache_valid(cached) else candidate_sets.write_collection(parent, node_id + "_preserved", candidate_sets.iter_candidates(original_source), source["target"])
                             complete(node_id, output, key, "cached" if output is cached else "completed"); progressed = True; continue
+                    if (NODE_CATALOG[kind]["category"] == "Structure prediction"
+                            and source.get("candidate_set_manifest") and kind not in pipeline_tile_workflows.TILES):
+                        prediction_source = candidate_sets.prediction_inputs(parent, node_id, source)
+                        if prediction_source is not source:
+                            source = prediction_source
+                            handoff_sources[node_id] = source
                     if source.get("candidate_set_manifest") and source.get("candidate_count") == 0:
                         key = fingerprint(kind, {**params, "empty_collection": True}, [o["fingerprint"] for o in upstream])
                         output = candidate_sets.write_collection(parent, node_id + "_empty", [], source["target"])
@@ -1914,8 +1928,14 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if chaperone_handoff_enabled:
                         cached_handoff = read_json(cache_root / f"{key}.json").get("output") if reuse_completed else None
                         if not (cached_handoff and _cache_valid(cached_handoff)):
-                            source = candidate_sets.chaperone_handoff(parent, node_id, source)
-                            if source is not None:
+                            adapted_source = candidate_sets.chaperone_handoff(parent, node_id, source)
+                            if adapted_source is not None:
+                                workflow_inputs = source.get("workflow_inputs", {})
+                                if "candidates" in workflow_inputs:
+                                    adapted_source = {**adapted_source, "workflow_inputs": {
+                                        **workflow_inputs, "candidates": adapted_source,
+                                    }}
+                                source = adapted_source
                                 handoff_sources[node_id] = source
                     native_invocation = (graph.get('workflow_mode') and settings['placement'] != 'local'
                         and not (settings['mode'] == 'sharded' and candidate_execution.supports(kind, source))
@@ -2048,11 +2068,12 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if kind == 'cofold_input':
                         task = {key: copy.deepcopy(params.get(key, '')) for key in (
                             'task_type', 'target_protein_sequences', 'partner_protein_sequences',
-                            'dna_sequences', 'rna_sequences', 'ligand_input_type', 'ligand_ccd_codes', 'ligand_smiles', 'compound_set_file', 'sequence_file',
+                            'dna_sequences', 'rna_sequences', 'ligand_input_type', 'ligand_ccd_codes', 'ligand_smiles',
                             'cyclic_partner', 'target_chain_id', 'compound_name',
                         )}
-                        target_pdb = str(params.get('target_pdb') or '').strip()
-                        task['target_pdb'] = str(_path(target_pdb)) if target_pdb else ''
+                        for field in ('target_pdb', 'compound_set_file', 'sequence_file'):
+                            value = str(params.get(field) or '').strip()
+                            task[field] = str(_path(value)) if value else ''
                         complete(node_id, {'molecule_task': task}, key);progressed=True;continue
                     if kind == "binder_context":
                         target = copy.deepcopy(source.get("target") or {})

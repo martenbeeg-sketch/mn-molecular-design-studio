@@ -175,3 +175,20 @@ def test_scorer_occupancy_default_preserves_exact_atom_order(tmp_path, design_so
     assert path.read_bytes() != before
     assert {key:value for key,value in after.items() if key != '_atom_site.occupancy'} == data
     assert _prepare_ipsae_optional_cif_fields(path)['defaulted_fields'] == {}
+
+
+def test_mol1_pae_is_staged_for_the_cif_reader_without_changing_the_saved_file(tmp_path):
+    import json
+
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import _stage_ipsae_pae
+
+    matrix = [[0, 2], [3, 0]]
+    source = tmp_path / "mol1_pae.json"
+    source.write_text(json.dumps({"predicted_aligned_error": matrix, "source": "Mol-1 token_pair_pae"}))
+    prepared = tmp_path / "prepared_pae.json"
+
+    assert _stage_ipsae_pae(source, prepared, tmp_path / "prediction.cif")
+    assert json.loads(prepared.read_text())["pae"] == matrix
+    assert json.loads(source.read_text())["predicted_aligned_error"] == matrix
+    assert not _stage_ipsae_pae(source, prepared, tmp_path / "prediction.pdb")
+    assert prepared.read_bytes() == source.read_bytes()

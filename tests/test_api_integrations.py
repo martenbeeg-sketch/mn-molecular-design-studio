@@ -748,6 +748,34 @@ def test_saved_pipeline_revisions_are_accessible_only_in_the_original_scope(api_
     assert client.get(version_path, params=query, headers=headers(data, "student")).status_code == 404
 
 
+def test_pipeline_validates_a_database_selection_in_its_own_project(api_data):
+    from mn_molecular_design_studio import molecule_imports, workspace
+    from mn_molecular_design_studio.capability_pipeline import build_capability_graph
+    from mn_molecular_design_studio.database_selections import freeze_protein_selection
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    data = api_data
+    project = data["project"]["id"]
+    student = data["student"]
+    database = MolecularDatabase()
+    imported = database.import_records(student, molecule_imports.parse_sequences("GAGA"), project_id=project)
+    source = freeze_protein_selection(database, student, imported["molecule_ids"], project)
+    graph = build_capability_graph("sequence_qc", source="molecule_source")
+    node = next(node for node in graph["nodes"] if node["data"]["kind"] == "molecule_source")
+    node["data"]["params"]["source_run_dir"] = str(source)
+    headers = {"Authorization": "Bearer " + data["student_token"]}
+    request = {"graph": graph, "project_id": project}
+
+    response = data["client"].post("/api/v1/pipelines/validate", json=request, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["ready_to_run"] is True
+
+    other_project = workspace.create_project("Other API course", owner_id=data["admin"]["id"])["id"]
+    response = data["client"].post("/api/v1/pipelines/validate", json={**request, "project_id": other_project})
+    assert response.status_code == 422
+    assert "must belong to the selected project" in response.json()["detail"]
+
+
 def test_pipeline_save_requires_the_opened_revision(api_data):
     from mn_molecular_design_studio.pipeline_graph import new_graph
 

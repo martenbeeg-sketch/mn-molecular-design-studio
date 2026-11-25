@@ -74,6 +74,9 @@ def is_portable_path(value: object) -> bool:
 
 def is_operational_path_key(key: str) -> bool:
     lowered = key.lower()
+    if lowered == "source_job_reference":
+        # Docking pose selection resolves this catalog identity against the authorized Run output.
+        return False
     if lowered == "topology_relative_path":
         # An MD source selector is relative to its authorized source run.
         return False

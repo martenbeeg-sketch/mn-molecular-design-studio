@@ -6,7 +6,7 @@ from html import escape
 import streamlit as st
 
 from mn_molecular_design_studio.binder_pipeline import (
-    RFD4_MODULAR_ROUTES, RFD4_REFOLD_ENGINES, compatible_routes, new_binder_pipeline, supported_interface_constraints,
+    RFD4_MODULAR_ROUTES, RFD4_REFOLD_ENGINES, SEPARATE_REFOLD_ROUTES, compatible_routes, new_binder_pipeline, supported_interface_constraints,
 )
 from mn_molecular_design_studio.capability_pipeline import (
     DOCKING, MD_ENGINES, POSE_ANALYSES, SAVED_DESIGN_REFOLDERS, add_followup, build_capability_graph, followup_choices, source_choices,
@@ -92,6 +92,7 @@ _matrix = st.components.v2.component(
             overflow: auto;
             border: 1px solid var(--st-border-color, #ddd);
             border-radius: .5rem;
+            scroll-padding-inline-start: 9rem;
         }
         table { border-spacing: 0; width: 100%; font-size: .875rem; }
         th, td {
@@ -102,8 +103,12 @@ _matrix = st.components.v2.component(
         thead th { min-width: 8rem; }
         th:first-child {
             position: sticky;
-            left: 0;
+            inset-inline-start: 0;
+            width: 9rem;
             min-width: 9rem;
+            max-width: 9rem;
+            box-sizing: border-box;
+            overflow-wrap: anywhere;
             background: var(--st-background-color, white);
         }
         tbody tr:last-child > * { border-bottom: 0; }
@@ -128,6 +133,10 @@ _matrix = st.components.v2.component(
                 matrix.innerHTML = data;
                 matrix.markup = data;
             }
+            matrix.onfocusin = (event) => {
+                const button = event.target.closest('button');
+                if (button) button.scrollIntoView({block: 'nearest', inline: 'nearest'});
+            };
             matrix.onclick = (event) => {
                 const button = event.target.closest('button');
                 if (button) setTriggerValue('choose', [button.dataset.engine, button.dataset.output]);
@@ -159,6 +168,8 @@ def _matrix_markup(by_engine, columns, access, *, action_column=False, primary_a
 
 
 def _binder_options(key, routes, *, label="Workflow variant"):
+    from mn_molecular_design_studio.scientific_tasks import needs_initial_sequence_design
+
     route = (st.selectbox(label, routes, format_func=lambda item: item.variant, key=key + "-variant")
              if len(routes) > 1 else routes[0])
     st.caption(route.summary)
@@ -177,11 +188,15 @@ def _binder_options(key, routes, *, label="Workflow variant"):
         options["soluble_mpnn"] = st.checkbox(
             "Add SolubleMPNN sequence redesign", key=key + "-soluble", help="Keep the original designs and protect their interface in redesign variants."
         )
-    if route.id == "rfd4-external":
+    if route.id in SEPARATE_REFOLD_ROUTES:
+        if needs_initial_sequence_design(route.method):
+            st.caption("ProteinMPNN supplies sequences for backbone-only candidates before refolding.")
+        refolders = list(RFD4_REFOLD_ENGINES)
         options["refold_engine"] = st.selectbox(
-            "Refolding engine", list(RFD4_REFOLD_ENGINES), format_func=RFD4_REFOLD_ENGINES.get, key=key + "-refold"
+            "Refolding engine", refolders, format_func=RFD4_REFOLD_ENGINES.get,
+            index=refolders.index("af2") if route.id == "rfdiffusion-beta-pairing" else 0, key=key + "-refold"
         )
-    if route.id in {"rfd4-internal", "rfd4-external"}:
+    if route.id in SEPARATE_REFOLD_ROUTES | {"rfd4-internal"}:
         options["interface_analysis"] = st.checkbox("Add ipSAE & Structure Analysis", key=key + "-analysis")
     return {"route_id": route.id, "target_input": route.target_input, "binder_format": route.format, **options}
 
@@ -468,7 +483,7 @@ def _operation_setup(kind, key, open_pipeline, *, prediction=False, predict_affi
     if design_task == "new_fold" and kind != "rfd4":
         goals = {"backbones": "Generate backbones", "sequences": "Generate backbones and design sequences",
                  "structures": "Generate, design sequences, and predict structures"}
-        goal = st.selectbox("Workflow goal", list(goals), format_func=goals.get, key=key + "-goal")
+        goal = st.selectbox("Workflow goal", list(goals), index=1, format_func=goals.get, key=key + "-goal")
         if goal != "backbones":
             choices = followup_choices(graph, ("ligandmpnn", "esm_if1"))
             sequence = st.selectbox("Sequence design engine", choices,

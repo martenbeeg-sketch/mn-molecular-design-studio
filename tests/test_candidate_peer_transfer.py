@@ -283,6 +283,8 @@ def test_peer_prediction_does_not_require_or_transfer_upstream_models(tmp_path, 
     provenance = {'checkpoint_provenance': {'path': str(weights), 'sha256': bundles.digest_file(weights)},
                   'candidate_execution': {'effective_request': {'candidates_jsonl': str(old_collection)}},
                   'chaperone_handoffs': [{'handler_metrics': {'studio': {'ckpt_path': '/worker/old/checkpoint'}}}],
+                  'effective_settings': {'checkpoint': '/reference/mol1/checkpoint/mol-1-base.pt',
+                                         'need_atom_confidence': True},
                   'scientific_contract': {'source_structure': '/worker/old/staged.cif', 'schema_version': 1},
                   'candidate_set': {'native_measurements': {'ckpt_path': '/worker/old/checkpoint'},
                                     'source_provenance': {'uri': 'cluster://old-node/design/run/result.json'}}}
@@ -300,6 +302,7 @@ def test_peer_prediction_does_not_require_or_transfer_upstream_models(tmp_path, 
     row = json.loads(Path(restored['parameters']['candidates_jsonl']).read_text())
     for key in ('checkpoint_provenance', 'candidate_execution'):
         assert json.loads(row['raw_metadata'][key]['record']) == provenance[key]
+    assert row['raw_metadata']['effective_settings'] == provenance['effective_settings']
     assert row['raw_metadata']['candidate_set'] == provenance['candidate_set']
     assert row['raw_metadata']['chaperone_handoffs'] == provenance['chaperone_handoffs']
     assert row['raw_metadata']['scientific_contract'] == provenance['scientific_contract']
@@ -344,8 +347,10 @@ def test_poll_collects_the_exact_structure_from_the_authorized_source_job(tmp_pa
     collection = 'artifacts/normalized_candidates/candidates.jsonl'
     source_ref = 'refolding-validation/source'
     structure = 'artifacts/output.cif'
+    pae = 'artifacts/prediction_evidence/model/1/model_pae.json'
     row = {'candidate_id': 'native-id', 'complex_pdb': f'runs:///{source_ref}/{structure}',
            'raw_metadata': {'source_run_dir': f'runs:///{source_ref}',
+                            'prediction_pae_measurement': {'source': pae},
                             'input_provenance': f'runs:///{source_ref}/execution_inputs.json'}}
     for name, value in {'metadata.json': {'status': 'completed'}, 'input.json': {},
                         'result.json': {'success': True}, collection: row}.items():
@@ -373,14 +378,14 @@ def test_poll_collects_the_exact_structure_from_the_authorized_source_job(tmp_pa
 
     def artifact(state, job_id, relative, _user, destination, **_kwargs):
         if job_id == 'source-job':
-            assert relative == structure and destination == directory / 'source'
-            transfers.append(job_id)
-            if len(transfers) == 1:
+            assert relative in {structure, pae} and destination == directory / 'source'
+            transfers.append(relative)
+            if transfers.count(relative) == 1:
                 return None
             path = destination / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('data_exact_source\n')
-            state['transfers'] = {relative: {'bytes': path.stat().st_size}}
+            state.setdefault('transfers', {})[relative] = {'bytes': path.stat().st_size}
             return path
         return directory / relative
 
@@ -395,6 +400,7 @@ def test_poll_collects_the_exact_structure_from_the_authorized_source_job(tmp_pa
     fetched = json.loads(Path(output['candidates_jsonl']).read_text())
     assert fetched['candidate_id'] == 'native-id'
     assert Path(fetched['complex_pdb']).read_text() == 'data_exact_source\n'
+    assert Path(fetched['raw_metadata']['prediction_pae_measurement']['source']).read_text() == 'data_exact_source\n'
     from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
 
     normalized = read_candidates(Path(output['candidates_jsonl']))[0]
@@ -405,4 +411,4 @@ def test_poll_collects_the_exact_structure_from_the_authorized_source_job(tmp_pa
     replay = tmp_path / 'replay.jsonl'
     replay.write_text(json.dumps(normalized) + '\n')
     assert read_candidates(replay)[0]['raw_metadata']['candidate_execution'] == normalized['raw_metadata']['candidate_execution']
-    assert batch['output_transfer_bytes'] == len(b'data_exact_source\n')
+    assert batch['output_transfer_bytes'] == 2 * len(b'data_exact_source\n')

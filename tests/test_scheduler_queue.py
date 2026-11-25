@@ -1,6 +1,6 @@
 import json
 
-from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import queued_worker_runs
+from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import _docker_cpu_quota_supported, queued_worker_runs
 
 
 def _write_run(root, name, metadata):
@@ -23,3 +23,11 @@ def test_local_scheduler_ignores_distributed_proxy_runs(tmp_path):
     assert queued_worker_runs(tmp_path) == [local_run]
     assert cluster_proxy not in queued_worker_runs(tmp_path)
     assert central_scheduler_run not in queued_worker_runs(tmp_path)
+
+
+def test_cgroup_v2_root_can_support_quotas_without_a_cpu_max_file(tmp_path):
+    controllers = tmp_path / "cgroup.controllers"
+    controllers.write_text("cpuset cpu io memory\n")
+    assert _docker_cpu_quota_supported(tmp_path)
+    controllers.write_text("cpuset io memory\n")
+    assert not _docker_cpu_quota_supported(tmp_path)

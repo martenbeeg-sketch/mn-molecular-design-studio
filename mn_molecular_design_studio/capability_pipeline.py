@@ -172,7 +172,7 @@ def add_followup(graph, kind, *, handoff=False, target_id=None):
     graph, added = add_block(graph, kind, source=edge["source"], target_port=_port(source, kind))
     if kind == "ligandmpnn":
         params = next(node["data"]["params"] for node in graph["nodes"] if node["id"] == added)
-        params.update(sequence_stage="initial", fix_interface_residues=False)
+        params.update(sequence_stage="initial", fix_interface_residues=False, backend="shared_ligandmpnn")
     if target_id:
         graph = connect_blocks(graph, target_id, "out", added, "target")
     if handoff:

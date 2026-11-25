@@ -7224,7 +7224,7 @@ def _render_job_details() -> None:
         "No project",
     )
     is_pipeline = str(job.get("tool")) == "visual_pipeline"
-    output_summary = ("Final candidates" if is_pipeline else "Candidates", str(details.get("candidate_count", 0)))
+    output_summary = ("Result records" if is_pipeline else "Candidates", str(details.get("candidate_count", 0)))
     job_metrics = result.get("metrics") or {}
     linked_analysis_count = (job_metrics.get("surface_analysis_count") or 0) + (job_metrics.get("md_analysis_count") or 0)
     if raw_title == "surface_analysis":

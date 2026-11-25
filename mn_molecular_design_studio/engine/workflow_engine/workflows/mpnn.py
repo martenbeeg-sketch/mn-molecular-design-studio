@@ -15,6 +15,39 @@ from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths impor
 STAGES = ["generation.backbone", "generation.backbone_sequence", "sequence_design", "complex_refolding"]
 
 
+def _stage_generator_backbone(candidate, destination):
+    """Convert generator placeholders only in the sequence designer's copy."""
+    placeholders = {"pxdesign_generator": "XPB", "boltzgen_generator": "UNK"}
+    placeholder = placeholders.get(candidate.get("source_tool"))
+    if candidate.get("stage") != "generation.backbone" or not placeholder:
+        return
+    from Bio.PDB import MMCIFIO
+    from mn_molecular_design_studio.design_validation import read_structure
+
+    source = Path(candidate.get("complex_pdb") or candidate.get("binder_pdb") or "")
+    structure = read_structure(source)
+    binders = set(candidate.get("binder_chains") or [])
+    converted = []
+    for chain in next(structure.get_models()):
+        if chain.id not in binders:
+            continue
+        for residue in chain:
+            if residue.resname.upper() == placeholder and all(atom in residue for atom in ("N", "CA", "C")):
+                residue.resname = "GLY"
+                for atom in list(residue):
+                    if atom.name not in {"N", "CA", "C", "O", "OXT"}:
+                        residue.detach_child(atom.id)
+                converted.append(f"{chain.id}{residue.id[1]}{residue.id[2].strip()}")
+    if converted:
+        writer = MMCIFIO()
+        writer.set_structure(structure)
+        writer.save(str(destination))
+        candidate["complex_pdb"] = str(destination)
+        candidate.setdefault("raw_metadata", {})["sequence_design_backbone_staging"] = {
+            "original_structure": str(source), "placeholder": placeholder, "residues": converted,
+        }
+
+
 def inherited_fixed_residues(candidate, structure, binders):
     """Map inherited constraints by explicit chain order and residue position.
 
@@ -380,12 +413,13 @@ def run_mpnn_sequence_design(
     source = job.run_dir / "artifacts/mpnn_source"
     source.mkdir(parents=True, exist_ok=True)
     # Save only the selected candidates; original jobs and structures remain immutable.
-    for row in rows:
+    for index, row in enumerate(rows):
         for key in ("target_pdb", "complex_pdb", "binder_pdb"):
             if row.get(key):
                 path = resolve_stored_path(row[key], run_dir=Path(source_run_dir) if source_run_dir else None, must_exist=True)
                 if path:
                     row[key] = str(path)
+        _stage_generator_backbone(row, source / f"generator-backbone-{index:05d}.cif")
     candidate_file = source / "candidates.jsonl"
     can_foundry = model_type in {"protein_mpnn", "ligand_mpnn"} and not pack_side_chains
     all_cif = all(native._is_cif_path(Path(r.get("complex_pdb") or r.get("binder_pdb") or "")) for r in rows)

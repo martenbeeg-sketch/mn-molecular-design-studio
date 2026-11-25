@@ -13,6 +13,28 @@ from mn_molecular_design_studio.engine.workflow_engine.workflows import bindcraf
 from mn_molecular_design_studio.job_catalog import _job_payload
 
 
+def test_boltzgen_generator_routes_unknown_residues_to_sequence_design(tmp_path, design_source_factory):
+    from Bio.PDB import MMCIFIO
+    from mn_molecular_design_studio.design_validation import read_structure
+
+    source, _ = design_source_factory()
+    structure_path = tmp_path / "artifacts/raw/boltzgen/run-generation-only/intermediate_designs/design.cif"
+    structure_path.parent.mkdir(parents=True)
+    target = source / "designed.cif"
+    structure = read_structure(target)
+    next(structure[0]["B"].get_residues()).resname = "UNK"
+    writer = MMCIFIO()
+    writer.set_structure(structure)
+    writer.save(str(structure_path))
+
+    [candidate] = design._normalize_boltzgen_generation_candidates(
+        tmp_path, {"target_chains": ["A"], "generator_only_tile": True}, target, write_output=False,
+    )
+    assert candidate["binder_chains"] == ["B"]
+    assert candidate["stage"] == "generation.backbone"
+    assert candidate["binder_sequence"] is None
+
+
 def test_bindcraft2_settings_keep_job_name_modality_hotspots_and_lengths():
     settings = bindcraft2.build_bindcraft2_settings(
         target_chains=["A"],

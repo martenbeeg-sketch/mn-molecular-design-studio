@@ -2248,6 +2248,21 @@ def _prepare_ipsae_optional_cif_fields(path: Path) -> dict:
     return evidence
 
 
+def _stage_ipsae_pae(path: Path, destination: Path, structure: Path) -> bool:
+    """Stage a saved PAE matrix in the layout expected by the scorer."""
+    if path.suffix.lower() == ".json" and structure.suffix.lower() in {".cif", ".mmcif"}:
+        payload = read_json(path)
+        if (isinstance(payload, dict) and payload.get("source") == "Mol-1 token_pair_pae"
+                and "predicted_aligned_error" in payload):
+            # ipSAE selects its CIF JSON reader by filename. That reader
+            # requires the matrix under 'pae', even for non-AF3 predictors.
+            payload["pae"] = payload.pop("predicted_aligned_error")
+            write_json(destination, payload)
+            return True
+    shutil.copy2(path, destination)
+    return False
+
+
 def _run_ipsae(
     source_run_dir: Path,
     run_dir: Path,
@@ -2303,9 +2318,10 @@ def _run_ipsae(
         candidate.setdefault("raw_metadata", {})["ipsae_structure_preparation"] = _prepare_ipsae_optional_cif_fields(staged_measurement_structure)
         staged_measurement_structures[safe_id] = staged_measurement_structure
         staged_pae = None
+        mol1_pae = False
         if pae_path and pae_path.exists():
             staged_pae = staged_dir / pae_path.name
-            shutil.copy2(pae_path, staged_pae)
+            mol1_pae = _stage_ipsae_pae(pae_path, staged_pae, staged_measurement_structure)
         else:
             evidence = _rfd4_pae_paths(source_run_dir, candidate)
             if evidence:
@@ -2342,7 +2358,7 @@ def _run_ipsae(
             staged_design_complex = staged_dir / f"design_complex{design_complex.suffix.lower()}"
             shutil.copy2(design_complex, staged_design_complex)
         hotspots = _candidate_hotspots(candidate)
-        engine, pae_format = _ipsae_engine(candidate, staged_pae)
+        engine, pae_format = ("mol1", "af3_json") if mol1_pae else _ipsae_engine(candidate, staged_pae)
         command = [
             "python3",
             str(IPSAE_RUNNER),

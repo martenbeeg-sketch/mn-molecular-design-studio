@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=mn-opendde-opt:1.1.1-cu128-batch3
+FROM ${BASE_IMAGE}
+
+# The cuEquivariance startup probes import pynvml through NVIDIA's bindings.
+RUN printf '%s\n' 'nvidia-ml-py==12.570.86 --hash=sha256:58907de35a845abd13dcb227f18298f3b5dd94a72d04c9e594e77711e95c0b51' \
+    | python -m pip install --no-cache-dir --no-deps --require-hashes -r /dev/stdin \
+    && python -c 'import pynvml'

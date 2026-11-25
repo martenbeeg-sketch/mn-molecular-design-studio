@@ -495,11 +495,17 @@ def apply_docker_cpu_limits_to_steps(run_dir: Path, steps: list[dict]) -> list[d
     return prepared
 
 
-def _docker_cpu_quota_supported() -> bool:
+def _docker_cpu_quota_supported(cgroup_root: Path = Path("/sys/fs/cgroup")) -> bool:
     """Check whether the host exposes the CFS quota controls used by Docker --cpus."""
-    cgroup_root = Path("/sys/fs/cgroup")
     if (cgroup_root / "cpu.max").is_file():
         return True
+    # On cgroup v2 the root can advertise the CPU controller without having
+    # a quota file itself. Docker applies the quota to a descendant cgroup.
+    try:
+        if "cpu" in (cgroup_root / "cgroup.controllers").read_text().split():
+            return True
+    except OSError:
+        pass
     return any(
         candidate.is_file()
         for candidate in (

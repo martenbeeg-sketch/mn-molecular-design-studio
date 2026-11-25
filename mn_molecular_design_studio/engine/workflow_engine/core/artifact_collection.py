@@ -26,6 +26,11 @@ _CONTAINER_PREFIXES = ("/work", "/workspace", "/boltz-context")
 _SCIENTIFIC_PATH_FIELDS = ("target_pdb", "complex_pdb", "binder_pdb")
 
 
+def _worker_input_reference(value: str) -> bool:
+    parsed = urlsplit(value)
+    return parsed.scheme == "app" and parsed.path.startswith("/cluster/accepted-inputs/")
+
+
 def _is_container_path(value: str) -> bool:
     return any(value == prefix or value.startswith(prefix.rstrip("/") + "/") for prefix in _CONTAINER_PREFIXES)
 
@@ -173,14 +178,15 @@ def materialize_candidate_paths(run_dir: Path, candidate: dict[str, Any]) -> dic
             continue
         original = value.strip()
         parsed = urlsplit(original)
+        staged = _worker_input_reference(original)
         is_container_path = _is_container_path(original)
         if is_container_path:
             original_paths.setdefault(field, original)
-        elif is_portable_path(original):
+        elif is_portable_path(original) and not staged:
             # Existing runs:/// and cluster:// references remain portable
             # references owned by the source job; do not duplicate them.
             continue
-        elif parsed.scheme:
+        elif parsed.scheme and not staged:
             message = f"{field} uses an unsupported artifact URI: {original}"
             if message not in materialization_errors:
                 materialization_errors.append(message)
@@ -197,7 +203,7 @@ def materialize_candidate_paths(run_dir: Path, candidate: dict[str, Any]) -> dic
                 "absolute_container_symlink_targets": symlink_container_targets,
             }
         if source is None:
-            if is_container_path or Path(original).is_absolute():
+            if is_container_path or staged or Path(original).is_absolute():
                 message = f"{field} output is inaccessible after execution: {original}"
                 if message not in materialization_errors:
                     materialization_errors.append(message)
@@ -213,13 +219,17 @@ def materialize_candidate_paths(run_dir: Path, candidate: dict[str, Any]) -> dic
             continue
 
         managed_reference = portable_path(source)
-        if is_portable_path(managed_reference):
+        # Files unpacked for a worker are private to that workstation and
+        # can be cleaned separately from the job that returned the candidate.
+        if is_portable_path(managed_reference) and not _worker_input_reference(managed_reference):
             row[field] = managed_reference
             raw_metadata.setdefault("materialized_source_paths", {})[field] = original
             continue
 
         digest = _file_digest(source)
         extension = source.suffix.lower() or ".dat"
+        if extension == ".gz" and len(source.suffixes) >= 2:
+            extension = "".join(source.suffixes[-2:]).lower()
         destination = run_dir / "artifacts" / "materialized_candidates" / field / f"{digest}{extension}"
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not destination.is_file():

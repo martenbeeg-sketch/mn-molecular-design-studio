@@ -324,7 +324,7 @@ def _validate_user_path_values(value: Any, user: dict[str, Any], request_dir: Pa
 
 
 def _guard_source_job(payload: dict[str, Any], user: dict[str, Any], *, project_id: str,
-                      allow_complex_results: bool = False) -> None:
+                      use_recorded_task_group: bool = False) -> None:
     parameters = payload.get("parameters")
     if isinstance(parameters, list):
         from mn_molecular_design_studio.batching import parameter_items
@@ -351,7 +351,7 @@ def _guard_source_job(payload: dict[str, Any], user: dict[str, Any], *, project_
             run_dir = resolve_stored_path(source.get("source_run_dir"), must_exist=True)
             if not run_dir or not run_dir.is_dir():
                 raise HTTPException(status_code=422, detail="A selected design campaign is unavailable.")
-            task_group = run_dir.parent.name if allow_complex_results else "design"
+            task_group = run_dir.parent.name if use_recorded_task_group else "design"
             row = _resolve_api_job(f"{task_group}/{run_dir.name}", user)
             if Path(row["run_dir"]).resolve() != run_dir.resolve():
                 raise HTTPException(status_code=422, detail="Select a managed design campaign.")
@@ -1070,7 +1070,8 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
             kind=node['data']['kind']
             complex_results = kind == "project_design_source" and params.get("source_scope") == "complex_results"
             _guard_source_job({"parameters": {"validation_sources": [{"source_run_dir": params["source_run_dir"]}]}},
-                              user, project_id=project_id, allow_complex_results=complex_results)
+                              user, project_id=project_id,
+                              use_recorded_task_group=kind == "molecule_source" or complex_results)
             loader=(source_molecule_selection if kind == 'molecule_source' else source_project_designs if kind == 'project_design_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs)
             extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
             if complex_results:

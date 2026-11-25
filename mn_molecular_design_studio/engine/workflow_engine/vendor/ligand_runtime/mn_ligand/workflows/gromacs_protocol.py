@@ -34,6 +34,7 @@ def render_gromacs_mdp(
     *,
     density_sample_interval_ps: float = 4.0,
     random_seed: int = -1,
+    trajectory_interval_steps: int | None = None,
 ) -> str:
     kind = str(stage["kind"])
     timestep_fs = float(stage.get("timestep_fs") or 1.0)
@@ -78,7 +79,7 @@ def render_gromacs_mdp(
         "nstxout-compressed": (
             max(1, int(round(density_sample_interval_ps / dt_ps)))
             if kind == "density_stabilization_npt"
-            else max(1, int(round(10.0 / dt_ps)))
+            else trajectory_interval_steps or max(1, int(round(10.0 / dt_ps)))
             if kind != "minimization"
             else 0
         ),

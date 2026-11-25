@@ -55,11 +55,16 @@ def test_analysis_tools_have_batch_api_schemas_and_pipeline_adapters(tool, tmp_p
     assert validated["valid"] is True
 
 
-def test_collection_is_one_container_and_keeps_failed_rows(tmp_path, monkeypatch, design_source_factory):
+@pytest.mark.parametrize("selected_chains", [None, ["B"]])
+def test_collection_is_one_container_and_keeps_failed_rows(tmp_path, monkeypatch, design_source_factory,
+                                                           selected_chains):
     source, first = design_source_factory()
     candidate_path = source / "artifacts/normalized_candidates/candidates.jsonl"
+    protein_chains = [{"id": "B", "sequence": "ACDEF"}]
+    if selected_chains:
+        protein_chains.insert(0, {"id": "A", "sequence": "MKKKK"})
     first = {**first, "binder_sequence": None, "binder_chains": [], "raw_metadata": {**first["raw_metadata"],
-        "protein_chains": [{"id": "A", "sequence": "MKKKK"}, {"id": "B", "sequence": "ACDEF"}]}}
+        "protein_chains": protein_chains}}
     second = {**first, "candidate_id": "second", "binder_sequence": "ACDX"}
     candidate_path.write_text(json.dumps(first) + "\n" + json.dumps(second) + "\n")
     run = tmp_path / "analysis/job"
@@ -79,7 +84,7 @@ def test_collection_is_one_container_and_keeps_failed_rows(tmp_path, monkeypatch
             {"id": "item_000001", "status": "failed", "metrics": {}, "error": "unknown residues"}]}))
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(quality.subprocess, "run", fake)
-    assert quality.run_sequence_qc(source, candidate_path, binder_chains=["B"]) == run
+    assert quality.run_sequence_qc(source, candidate_path, binder_chains=selected_chains) == run
     assert len(commands) == 1
     assert "--network" in commands[0]
     assert "sha256:test" in commands[0]  # Run the inspected immutable image, even if its tag moves.
@@ -461,7 +466,7 @@ def test_ligand_workflow_adapters_accept_context_selection_and_reject_interface_
     assert captured == {"tool": tool, "kwargs": {
         "settings": {}, "cpu_cores": 4, "candidate_ids": ["candidate-1"],
         "selected_structure_path": path, "selected_model_id": "model-2", "ligand_selection": selection,
-        **({"source_job_reference": None, "source_workstation_id": None, "source_workstation": None} if tool == "plip" else {}),
+        "source_job_reference": None, "source_workstation_id": None, "source_workstation": None,
     }}
     with pytest.raises(ValueError, match="does not accept protein interface chain groups"):
         runner(tmp_path, tmp_path / "candidates.jsonl", binder_chains=["A"])

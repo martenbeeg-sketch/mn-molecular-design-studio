@@ -244,8 +244,10 @@ def initialize(parent, node, source, params, key, settings, *, make_source, make
         effective = copy.deepcopy(params)
         if generation and not native_invocation:
             effective[count_field] = count
-            # Never repeat the same trajectory seed on separate shards.
-            effective['seed'] = (seed + offset) % 2147483646 or 1
+            # Offset explicitly supported seeds. Some generator adapters
+            # manage randomness themselves and do not accept a seed field.
+            if 'seed' in effective:
+                effective['seed'] = (seed + offset) % 2147483646 or 1
             if 'batch_size' in effective:
                 effective['batch_size'] = min(int(effective['batch_size']), count)
         elif not native_invocation:
@@ -725,6 +727,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
 
 def cancel(parent, state):
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
+    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
     metadata = read_json(Path(parent) / 'metadata.json')
     for node in state.get('nodes', {}).values():
         for group in node.get('incremental_groups', {}).values():
@@ -739,9 +742,12 @@ def cancel(parent, state):
                     project_id=metadata.get('studio_project_id') or marker.get('project_id'),
                     allow_development=bool(metadata.get('studio_development_mode')))
                 batch['status'] = 'cancelled'
-            if batch.get('job_run_dir') and batch['status'] not in TERMINAL:
-                stop_job(Path(batch['job_run_dir']), reason='Parent pipeline was cancelled')
-                batch['status'] = 'cancelled'
+            local_run = batch.get('job_run_dir')
+            if local_run and not str(local_run).startswith('cluster://') and batch['status'] not in TERMINAL:
+                child = resolve_stored_path(local_run, run_dir=Path(parent))
+                if child is not None:
+                    stop_job(child, reason='Parent pipeline was cancelled')
+                    batch['status'] = 'cancelled'
 
 
 def incremental_cpu_kind(kind):

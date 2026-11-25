@@ -119,6 +119,10 @@ def test_non_admin_path_guard_distinguishes_inline_yaml_and_real_paths(monkeypat
             "target_pdb_text": "HEADER /inline/target.pdb\nEND\n",
             "bias_by_res_json": "{}",
             "engine_overrides_json": '{"screen_steps":1,"save_design_trajectory":true}',
+            "selected_docking_poses": [{
+                "source_job_reference": "workstation:ligand-docking/sample-run",
+                "pose_id": "dockpose-example",
+            }],
         },
         user,
         tmp_path,

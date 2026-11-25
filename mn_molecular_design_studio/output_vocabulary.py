@@ -734,6 +734,14 @@ def candidate_evidence(candidate):
     return records
 
 
+def format_candidate_parents(parents):
+    """Display candidate IDs and structured references from older selections."""
+    return ", ".join(
+        str(parent.get("molecule_id") or parent) if isinstance(parent, dict) else str(parent)
+        for parent in parents or []
+    )
+
+
 def evidence_rows(candidates):
     """Long-form Results projection; sources, units and protocols stay explicit."""
     rows = []
@@ -750,7 +758,7 @@ def evidence_rows(candidates):
                              "effective_settings": (item.get("raw_metadata") or {}).get("effective_settings", {}),
                              "same_sequence": record["same_sequence"], "measurement_status": record["status"], "error": record["error"],
                              "field": field, "value": value, "unit": provenance.get("unit", "native"),
-                             "direction": provenance.get("direction", ""), "parents": ", ".join(record["parents"]),
+                             "direction": provenance.get("direction", ""), "parents": format_candidate_parents(record["parents"]),
                              "selector": f"evidence/{record['stage']}/{record['source_tool']}/{record['candidate_id']}/{field}"})
     return rows
 

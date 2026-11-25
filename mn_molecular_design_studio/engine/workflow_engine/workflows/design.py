@@ -656,6 +656,13 @@ def _normalize_boltzgen_generation_candidates(
         )
         sequences = _sequences_by_chain(structure_path)
         binder_sequence = "".join(sequences.get(chain, "") for chain in binder_chains) or None
+        needs_sequence_design = False
+        if params.get("generator_only_tile"):
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.refolding import _cif_sequences_by_chain as coordinate_sequences
+            full_sequences = coordinate_sequences(structure_path)
+            needs_sequence_design = not binder_sequence or any(
+                not full_sequences.get(chain) or "X" in full_sequences[chain] for chain in binder_chains
+            )
         metadata_path = metadata_paths.get(structure_path.stem)
         mimosa_metrics, mimosa_diagnostics = _mimosa_generation_metadata(metadata_path)
         backbone_integrity = _mimosa_backbone_integrity(structure_path, binder_chains) if params.get("mimosa_enabled") else {}
@@ -669,11 +676,11 @@ def _normalize_boltzgen_generation_candidates(
         candidate = {
             "candidate_id": f"boltzgen_{index:05d}",
             "source_tool": source_tool,
-            "stage": STAGE_GENERATION_BACKBONE_SEQUENCE,
+            "stage": STAGE_GENERATION_BACKBONE if needs_sequence_design else STAGE_GENERATION_BACKBONE_SEQUENCE,
             "target_pdb": _rel_path(run_dir, target_artifact) if target_artifact else None,
             "complex_pdb": _rel_path(run_dir, structure_path),
             "binder_pdb": None,
-            "binder_sequence": binder_sequence,
+            "binder_sequence": None if needs_sequence_design else binder_sequence,
             "target_chains": target_chains,
             "binder_chains": binder_chains,
             "hotspots": [token for token in params.get("hotspots", "").split(",") if token],

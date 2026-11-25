@@ -20,6 +20,7 @@ from uuid import uuid4
 from mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler import (
     APP_ID,
     BACKEND,
+    PIPELINE_CONTROLLER_WORKFLOW_ID,
     SERVICE_DIR_NAME,
     WORKFLOW_ID,
     scheduler_client_module,
@@ -99,8 +100,7 @@ def _process_alive(pid: object) -> bool:
     return True
 
 
-def _acquire_service_lock() -> bool:
-    service_dir = _service_dir()
+def _acquire_service_lock(service_dir: Path) -> bool:
     service_dir.mkdir(parents=True, exist_ok=True)
     lock_dir = service_dir / "service.lock"
     owner_path = lock_dir / "owner.json"
@@ -287,7 +287,8 @@ def _run_claimed_job(client, job: dict[str, Any], worker_id: str) -> None:
                     "--run-dir",
                     str(run_dir),
                 ],
-                cwd=str(Path(__file__).resolve().parents[2]),
+                # Modules must resolve from this checkout before an installed editable package.
+                cwd=str(Path(__file__).resolve().parents[4]),
                 stdout=stdout,
                 stderr=stderr,
                 env=env,
@@ -463,7 +464,7 @@ def _run_claimed_job(client, job: dict[str, Any], worker_id: str) -> None:
     )
 
 
-def _worker_loop(worker_index: int, stop: threading.Event) -> None:
+def _worker_loop(worker_index: int, stop: threading.Event, workflow: str = WORKFLOW_ID) -> None:
     results_root = _refresh_workspace_paths()
     client = _client()
     worker_id = f"{socket.gethostname()}-{os.getpid()}-{worker_index}-{uuid4().hex[:8]}"
@@ -472,7 +473,7 @@ def _worker_loop(worker_index: int, stop: threading.Event) -> None:
         client.register_worker(
             app_id=APP_ID,
             worker_id=worker_id,
-            workflows=[WORKFLOW_ID],
+            workflows=[workflow],
             pid=os.getpid(),
             hostname=socket.gethostname(),
             labels={"app_home": str(app_home()), "results_root": str(root), "worker": "molecular-design-studio"},
@@ -532,13 +533,15 @@ def configured_worker_count() -> int:
     return max(1, min(worker_count, 32))
 
 
-def run_service() -> int:
+def run_service(*, controllers: bool = False) -> int:
     if scheduler_mode() != "central":
         return 0
     results_root = _refresh_workspace_paths()
     service_dir = _service_dir()
+    if controllers:
+        service_dir = service_dir / "controllers"
     service_dir.mkdir(parents=True, exist_ok=True)
-    if not _acquire_service_lock():
+    if not _acquire_service_lock(service_dir):
         return 0
     print(
         f"Molecular Design Studio scheduler bridge started: app_home={app_home()} results_root={results_root}",
@@ -553,12 +556,14 @@ def run_service() -> int:
     for signum in (signal.SIGTERM, signal.SIGINT):
         previous_handlers[signum] = signal.signal(signum, request_stop)
     try:
-        # Pipeline coordinator jobs wait for GPU-backed child workflows. Keep
-        # enough bridge workers available for those children while several
-        # coordinators are active; the scheduler still enforces CPU/GPU leases.
         worker_count = configured_worker_count()
+        workflow = PIPELINE_CONTROLLER_WORKFLOW_ID if controllers else WORKFLOW_ID
+        # Controllers can block while their child jobs execute. They have their
+        # own workers so they cannot occupy the workers that run those children.
+        if controllers:
+            worker_count = min(2, worker_count)
         threads = [
-            threading.Thread(target=_worker_loop, args=(index + 1, stop), name=f"mds-scheduler-{index + 1}")
+            threading.Thread(target=_worker_loop, args=(index + 1, stop, workflow), name=f"mds-scheduler-{index + 1}")
             for index in range(worker_count)
         ]
         for thread in threads:
@@ -577,9 +582,10 @@ def run_service() -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Molecular Design Studio workers for MN Compute Scheduler.")
     parser.add_argument("--service", action="store_true", required=True)
+    parser.add_argument("--controllers", action="store_true")
     args = parser.parse_args()
     if args.service:
-        raise SystemExit(run_service())
+        raise SystemExit(run_service(controllers=args.controllers))
 
 
 if __name__ == "__main__":

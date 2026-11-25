@@ -11,7 +11,7 @@ from mn_molecular_design_studio.result_details_ui import result_field_label, res
 
 def candidate_state_rows(candidates):
     from mn_molecular_design_studio.binder_result_evidence import binder_decisions
-    from mn_molecular_design_studio.output_vocabulary import candidate_evidence
+    from mn_molecular_design_studio.output_vocabulary import candidate_evidence, format_candidate_parents
     from mn_molecular_design_studio.workflow_modes import native_ranking
     rows = []
     for candidate in candidates:
@@ -46,7 +46,7 @@ def candidate_state_rows(candidates):
                      "Rank within protocol": selection.get("rank"), "Cause": current["error"],
                      "Selection reasons": "; ".join(selection.get("reasons") or []),
                      "Sequence": candidate.get("binder_sequence"), "Structure": candidate.get("complex_pdb"),
-                     "Parents": ", ".join(candidate.get("parents") or [])})
+                     "Parents": format_candidate_parents(candidate.get("parents"))})
         from mn_molecular_design_studio.candidate_sets import _campaign_acceptance
         campaign = _campaign_acceptance(candidate)
         if campaign:

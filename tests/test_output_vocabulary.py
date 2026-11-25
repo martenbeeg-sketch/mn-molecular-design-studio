@@ -11,6 +11,28 @@ from mn_molecular_design_studio.molecular_database import MolecularDatabase
 from mn_molecular_design_studio import molecule_imports
 
 
+def test_results_accept_the_legacy_database_selection_parent_reference():
+    from mn_molecular_design_studio.output_vocabulary import evidence_rows
+    from mn_molecular_design_studio.result_presentation import candidate_state_rows
+
+    selection = {
+        "candidate_id": "mol-1",
+        "stage": "generation.backbone_sequence",
+        "source_tool": "database_selection",
+        "binder_sequence": "GAGA",
+        "parents": [{"molecule_id": "mol-1"}],
+        "metrics": {"library_selection": True},
+    }
+    analysis = {
+        **selection, "candidate_id": "mol-1_qc", "stage": "analysis", "source_tool": "sequence_qc",
+        "parents": ["mol-1"], "metrics": {"qc_sequence_length": 4},
+        "raw_metadata": {"source_candidate": selection},
+    }
+    assert candidate_state_rows([selection])[0]["Parents"] == "mol-1"
+    assert {row["parents"] for row in evidence_rows([analysis])} == {"mol-1"}
+    assert selection["parents"] == [{"molecule_id": "mol-1"}]
+
+
 @pytest.mark.parametrize("tool", ["pxdesign_generator", "genie3_generator", "rfdiffusion_generator", "rfdiffusion_classic", "rfdiffusion_beta_pairing", "rfdiffusion3_foundry", "protpardelle_generator", "protpardelle_1c", "boltzgen", "boltzgen_generator", "BindCraft2", "bindcraft2_generator", "proteina_complexa", "rfantibody", "rfpeptides", "esmfold2_binder_design"])
 def test_generators_share_only_explicitly_equivalent_geometry(tool):
     native = {"binder_ca_radius_of_gyration": 12.5, "radius_of_gyration": 99,

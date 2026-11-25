@@ -118,7 +118,10 @@ def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn
                     viewport=dict(x=0, y=0, zoom=.65))
     initial_count = {sequence_count_field(sequence_designer): 1}
     redesign_count = {sequence_count_field(redesign_engine): 1}
-    add(sequence_designer, "sequence-preparation", 1040, 170, sequence_stage="initial", **initial_count)
+    preparation = add(sequence_designer, "sequence-preparation", 1040, 170, sequence_stage="initial", **initial_count)
+    if sequence_designer == "ligandmpnn":
+        preparation["label"] = "ProteinMPNN · sequence design for backbones"
+        preparation["params"]["backend"] = "shared_ligandmpnn"
     add(redesign_engine, "optional-redesign", 1380, 170, sequence_stage="soluble_optimization",
         optimization_enabled=False, **redesign_count)
     if mode == 'modular_design' and redesign_engine == 'ligandmpnn':
