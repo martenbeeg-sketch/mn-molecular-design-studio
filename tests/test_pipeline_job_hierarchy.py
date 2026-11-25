@@ -65,6 +65,41 @@ def test_grouping_does_not_cross_projects_owners_or_ambiguous_legacy_parents():
     assert all(len(group) == 1 for group in ui._visual_pipeline_groups([root, duplicate, legacy])[0].values())
 
 
+def test_graph_batch_receipts_group_retries_and_pending_jobs_in_results(isolated, monkeypatch):
+    organizer = config.identity()
+    root = dict(cluster_job_id="pipeline", node_id=organizer, run_id="run", task_group="campaign",
+                tool="visual_pipeline", campaign_name="Pipeline run", status="completed",
+                owner_id="scientist", project_id="p", has_candidate_collection=True)
+    batch = dict(cluster_job_id="batch", node_id="worker", task_group="refolding", run_id="prediction",
+                 tool="boltz2", campaign_name="Refold batch", status="completed", owner_id="scientist", project_id="p")
+    retry = dict(batch, cluster_job_id="retry", run_id="first-attempt", status="failed")
+    queued = dict(batch, cluster_job_id="queued", task_group=None, run_id=None, status="queued")
+    independent = dict(batch, cluster_job_id="standalone", run_id="other", campaign_name="Standalone refold")
+    run_dir = isolated / "runs/campaign/run"
+    run_dir.mkdir(parents=True)
+    config.atomic_json(run_dir / "graph_execution.json", {"nodes": {"refold": {"batches": [
+        {"cluster_job_id": "batch", "attempts": [{"cluster_job_id": "retry"}, {"cluster_job_id": "batch"}]},
+        {"cluster_job_id": "queued"},
+    ]}}})
+    rows = [batch, retry, queued, independent, root]
+    monkeypatch.setattr(ui, "catalog", lambda *a, **kw: ({"items": rows, "total": len(rows)}, False))
+    monkeypatch.setattr("mn_molecular_design_studio.workspace.load_organization",
+                        lambda: {"projects": [{"id": "p", "name": "Project"}]})
+
+    app = AppTest.from_string('from mn_molecular_design_studio.cluster.ui import render_runs\n'
+        'render_runs({"id":"scientist"}, "token", lambda **kw: {"items":[], "total":0})').run()
+    assert not app.exception
+    assert set(app.dataframe[0].value["Job"]) == {"Pipeline run", "Standalone refold"}
+    pipeline = app.dataframe[0].value.set_index("Job").loc["Pipeline run"]
+    assert pipeline["Steps"] == "2/3 finished"
+    assert pipeline["Results"] == "Final results"
+
+    app.session_state["cluster-results-pipeline-details-request"] = "pipeline"
+    app.run()
+    assert not app.exception
+    assert len(app.dataframe[-1].value) == 3
+
+
 def test_job_list_shows_campaign_then_iterations_then_opt_in_batches(isolated, monkeypatch):
     rows = campaign_rows()
     monkeypatch.setattr(ui, "catalog", lambda *a, **kw: ({"items": rows, "total": len(rows)}, False))

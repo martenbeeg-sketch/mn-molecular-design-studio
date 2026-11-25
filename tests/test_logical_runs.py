@@ -66,6 +66,22 @@ def test_graph_steps_are_named_outputs_and_the_combined_result_is_not_duplicated
     assert len(run["outputs"][1]["sources"]) == 2
 
 
+def test_remote_graph_receipts_are_scoped_to_the_run_owner_and_project(isolated):
+    root = dict(row("pipeline"), task_group="campaign", tool="visual_pipeline",
+                node_id="organizer", pipeline_batch_jobs={"submitted-id": "refold"})
+    child = row("batch", node_id="worker", cluster_job_id="submitted-id")
+    run = runs.group_runs([child, root])[0]
+    assert run["root"]["run_id"] == "pipeline"
+    assert run["job_count"] == 2
+    assert [item["run_id"] for item in run["outputs"][0]["sources"]] == ["pipeline"]
+    assert [item["run_id"] for item in run["outputs"][1]["sources"]] == ["batch"]
+    for other in (dict(child, owner_id="other"), dict(child, project_id="other"),
+                  dict(child, cluster_job_id="unrelated")):
+        assert len(runs.group_runs([other, root])) == 2
+    duplicate = dict(root, run_id="different-launch")
+    assert len(runs.group_runs([child, root, duplicate])) == 3
+
+
 def test_cancelled_unaccepted_batch_is_execution_history_without_a_data_source():
     completed = row("finished", campaign_group_id="run-group")
     unaccepted = dict(cluster_job_id="not-started", campaign_group_id="run-group", tool="generator",

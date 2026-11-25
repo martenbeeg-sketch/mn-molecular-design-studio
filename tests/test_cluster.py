@@ -836,6 +836,29 @@ def test_agent_catalog_uses_cluster_submission_id_after_scheduler_rewrites_metad
     assert item["status"] == "completed"
 
 
+def test_agent_publishes_graph_batch_receipts_when_execution_changes(monkeypatch, tmp_path):
+    from mn_molecular_design_studio import job_catalog
+
+    run = tmp_path / "campaign" / "run"
+    run.mkdir(parents=True)
+    foreign_artifact = config.artifact_uri(str(uuid.uuid4()), "design", "foreign", "model.cif")
+    (run / "result.json").write_text(json.dumps({"outputs": {"structure": foreign_artifact}}))
+    monkeypatch.setattr(job_catalog, "search_jobs", lambda **kwargs: {
+        "items": [dict(task_group="campaign", run_id="run", run_dir=str(run), tool="visual_pipeline", status="running")],
+        "total": 1,
+    })
+    monkeypatch.setattr(job_catalog, "job_artifacts", lambda *args: [])
+    agent = Agent()
+    first = agent.catalog()[0]
+    agent._published["campaign/run"] = tuple(first["_signature"])
+    assert agent.catalog() == []
+
+    path = run / "graph_execution.json"
+    config.atomic_json(path, {"nodes": {"refold": {"batches": [{"cluster_job_id": "job-id"}]}}})
+    updated = agent.catalog()[0]
+    assert updated["pipeline_batch_jobs"] == {"job-id": "refold"}
+
+
 @pytest.mark.parametrize("auth_mode,expected_development", [("production", False), ("development", True)])
 def test_submission_context_writes_both_cluster_job_id_fields(monkeypatch, tmp_path, auth_mode, expected_development):
     from mn_molecular_design_studio.cluster import context

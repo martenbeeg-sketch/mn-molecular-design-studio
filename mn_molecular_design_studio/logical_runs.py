@@ -62,6 +62,62 @@ def status(rows):
     return "failed" if any(s in {"failed", "lost"} for s in states) else "cancelled"
 
 
+def is_visual_pipeline(row):
+    return any(str(row.get(key) or "").casefold() == "visual_pipeline" for key in ("tool", "job_type"))
+
+
+def graph_execution_stamp(run_dir):
+    try:
+        stat = (run_dir / "graph_execution.json").stat()
+    except OSError:
+        return 0, 0
+    return stat.st_mtime_ns, stat.st_size
+
+
+@lru_cache(maxsize=128)
+def graph_batch_jobs(run_dir, mtime_ns, size):
+    """Project only dispatched jobs, including earlier attempts of a batch."""
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json_raw
+
+    execution = read_json_raw(run_dir / "graph_execution.json")
+    jobs = {}
+    for stage_id, step in (execution.get("nodes") or {}).items():
+        for batch in step.get("batches", []):
+            for receipt in (batch, *batch.get("attempts", [])):
+                job_id = receipt.get("cluster_job_id")
+                if isinstance(job_id, str) and job_id:
+                    jobs[job_id] = stage_id
+    return jobs
+
+
+def _graph_batch_parents(rows):
+    from mn_molecular_design_studio.cluster import config
+    from mn_molecular_design_studio.runtime import runs_root
+
+    local_node = config.identity()
+    links = {}
+    for row in rows:
+        if not is_visual_pipeline(row):
+            continue
+        batch_jobs = row.get("pipeline_batch_jobs") or {}
+        if row.get("node_id") == local_node:
+            group, run_id = row.get("task_group") or "", row["run_id"]
+            if group == "campaign" and Path(run_id).name == run_id and run_id not in {".", ".."}:
+                directory = runs_root() / group / run_id
+                stamp = graph_execution_stamp(directory)
+                if stamp != (0, 0):
+                    batch_jobs = graph_batch_jobs(directory, *stamp)
+        if not isinstance(batch_jobs, dict):
+            continue
+        for job_id, stage_id in batch_jobs.items():
+            key = (str(row.get("project_id") or ""), str(row.get("owner_id") or ""), job_id)
+            if key in links:
+                links[key] = None  # More than one controller claims this job.
+            else:
+                links[key] = (row, stage_id)
+    return links
+
+
 def group_runs(rows):
     """Resolve parents before filtering or pagination; never cross access scopes.
 
@@ -80,6 +136,7 @@ def group_runs(rows):
     unique = {reference(row): row for row in normalized}
     rows = list(unique.values())
     scope = lambda r: (str(r.get("project_id") or ""), str(r.get("owner_id") or ""))
+    graph_parents = _graph_batch_parents(rows) if any(is_visual_pipeline(row) for row in rows) else {}
     aliases = {}
     for row in rows:
         for identifier in {row["run_id"], row.get("distributed_campaign_id")} - {None, ""}:
@@ -97,6 +154,17 @@ def group_runs(rows):
             candidates = [r for r in candidates if r.get("node_id") == row.get("node_id")]
         if len(candidates) == 1:
             parents[reference(row)] = candidates[0]
+
+    for row in rows:
+        if is_visual_pipeline(row):
+            continue
+        row_ref = reference(row)
+        link = graph_parents.get((*scope(row), row.get("cluster_job_id")))
+        if link and row_ref not in parents and row_ref != reference(link[0]):
+            parent, stage_id = link
+            parents[row_ref] = parent
+            if not row.get("graph_node_id"):
+                row["graph_node_id"] = stage_id
 
     def root(row):
         seen = set()

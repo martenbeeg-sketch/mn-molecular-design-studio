@@ -322,7 +322,8 @@ class Agent:
 
     def catalog(self):
         from mn_molecular_design_studio import job_catalog
-        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, read_json_raw
+        from mn_molecular_design_studio.logical_runs import graph_batch_jobs, graph_execution_stamp, is_visual_pipeline
         result, offset = [], 0
         self._known_references = set()
         while True:
@@ -335,14 +336,17 @@ class Agent:
                     row.get("result_mtime_ns"),
                 )
                 progress_mtime = job_progress.bindcraft2_progress_mtime_ns(run)
-                signature = (*artifact_signature, progress_mtime)
+                execution_stamp = graph_execution_stamp(run) if is_visual_pipeline(row) else (0, 0)
+                signature = (*artifact_signature, progress_mtime, *execution_stamp)
                 reference = row["task_group"] + "/" + row["run_id"]
                 self._known_references.add(reference)
                 if self._published.get(reference) == signature:
                     continue
                 metadata = read_json(run / "metadata.json")
                 marker = read_json(run / "molecular_design_studio.json")
-                result_data = read_json(run / "result.json")
+                # Catalog summaries can contain provenance pointing to a peer.
+                # Resolving those paths here can block publication of the whole catalog.
+                result_data = read_json_raw(run / "result.json")
                 metrics = result_data.get("metrics", {})
                 acceptance_policy = metadata.get("distributed_acceptance_policy")
                 output_policy = metadata.get("distributed_output_policy")
@@ -374,6 +378,8 @@ class Agent:
                             location=str(run), last_reported_at=time.time(), _signature=list(signature))
                 if compact_candidates is not None:
                     item["candidate_summary"] = compact_candidates
+                if execution_stamp != (0, 0):
+                    item["pipeline_batch_jobs"] = graph_batch_jobs(run, *execution_stamp)
                 item["worker_metadata"] = {
                     "resource_allocation": metadata.get("resource_allocation") or {},
                     "scheduler_worker_id": metadata.get("scheduler_worker_id") or metadata.get("worker_id"),
