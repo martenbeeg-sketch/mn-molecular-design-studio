@@ -243,6 +243,32 @@ def _render_step_execution(node, graph, key):
             index=list(destinations).index(selected_placement) if selected_placement in destinations else 0,
             key=key + "-execution-placement",
         )
+        allocations = policy.pop("workstation_batches", {})
+        from mn_molecular_design_studio.workflow_modes import capability
+
+        if distribute and policy["placement"] == "auto" and capability(kind).get("generator_only"):
+            fixed_batches = st.checkbox(
+                "Set batch counts by workstation", value=bool(allocations), key=key + "-execution-fixed-batches",
+                help="Each workstation gets its assigned number of batches. GPU auto selects an available GPU for each batch.",
+            )
+            if fixed_batches:
+                selected = st.multiselect(
+                    "Workstations", [item["id"] for item in nodes],
+                    default=[item["id"] for item in nodes if item["id"] in allocations],
+                    format_func=destinations.get, key=key + "-execution-fixed-workstations",
+                )
+                if selected:
+                    policy["workstation_batches"] = {
+                        workstation: int(st.number_input(
+                            f"Batches on {destinations[workstation].split(' · ')[0]}",
+                            min_value=1, max_value=10000, value=allocations.get(workstation, 1),
+                            key=key + "-execution-fixed-count-" + workstation,
+                        )) for workstation in selected
+                    }
+                    batch_count = sum(policy["workstation_batches"].values())
+                    st.caption(f"{batch_count:,} batches · {batch_count * policy['batch_size']:,} designs. Match the design count above.")
+                else:
+                    execution_ready = False
         gpu_selector = st.text_input(
             "GPU selector", value=policy.get("gpu_device", ""), key=key + "-execution-gpu",
             help="Use auto, all, or device indices such as 0 or 0,1. The existing scheduler checks reservations.",

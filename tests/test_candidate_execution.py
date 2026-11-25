@@ -71,6 +71,37 @@ def test_policy_is_opt_in_and_validated():
             ce.policy(change)
 
 
+def test_automatic_workstation_batches_freeze_and_dispatch_equal_shards(tmp_path, monkeypatch):
+    from collections import Counter
+    from mn_molecular_design_studio.cluster import candidate_batches, config
+
+    workers = [f"00000000-0000-0000-0000-{i:012d}" for i in range(1, 4)]
+    settings = ce.policy(dict(mode="sharded", placement="auto", batch_size=50, max_in_flight=6,
+                              workstation_batches=dict.fromkeys(workers, 2)))
+    monkeypatch.setattr(config, "enabled", lambda: True)
+    monkeypatch.setattr(ce, "runs_with_submission_key", lambda *a: [])
+    monkeypatch.setattr(gp, "node_request", lambda kind, params, source, name:
+                        dict(workflow="mock", parameters=params))
+    jobs = []
+
+    def submit(request, manifest, key, dispatch, **kwargs):
+        frozen = json.loads(Path(manifest).read_text())
+        assert frozen["workstation"] == dispatch["placement"]
+        assert request["resources"]["gpu_device"] == "auto"
+        jobs.append((dispatch["placement"], request["parameters"]["num_designs"], request["parameters"]["seed"]))
+        return {"cluster_job_id": str(len(jobs))}
+
+    monkeypatch.setattr(candidate_batches, "submit", submit)
+    node = dict(id="generator", data=dict(kind="rfd4", label="Generator"))
+    state = {}
+    ce.tick(tmp_path, node, state, {}, {"num_designs": 300, "seed": 42}, "a" * 64, settings,
+            graph=gp, owner_id="user", project_id="project", gpu_device="auto", persist=lambda: None)
+    assert Counter((worker, count) for worker, count, _ in jobs) == Counter({(worker, 50): 2 for worker in workers})
+    assert len({seed for _, _, seed in jobs}) == 6
+    with pytest.raises(ValueError, match="requested design count"):
+        ce.workstation_batch_plan(settings, 299)
+
+
 def test_dispatch_time_limit_policy_validates_and_preserves_legacy_defaults():
     assert 'max_runtime_seconds' not in ce.policy()
     assert ce.policy({'mode': 'sharded', 'max_runtime_seconds': 60})['max_runtime_seconds'] == 60

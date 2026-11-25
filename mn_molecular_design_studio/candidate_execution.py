@@ -6,6 +6,7 @@ Saved graphs without an execution policy retain their native collection behavior
 from __future__ import annotations
 
 import copy
+import uuid
 import hashlib
 import json
 import math
@@ -32,7 +33,7 @@ def policy(value=None):
     defaults = dict(mode='native', placement='local', batch_size=4, max_in_flight=2,
                     retries=1, failure_policy='all', min_vram_gb=8., ram_gb=0.,
                     cpu_cores=4, stall_timeout_seconds=1800, incremental_cpu=False)
-    optional = {'gpu_device', 'max_runtime_seconds', 'deadline_at'}
+    optional = {'gpu_device', 'max_runtime_seconds', 'deadline_at', 'workstation_batches'}
     if set(value) - defaults.keys() - optional:
         raise ValueError('Unsupported candidate execution settings: ' + ', '.join(sorted(set(value) - defaults.keys() - optional)))
     result = defaults | value
@@ -53,7 +54,6 @@ def policy(value=None):
         raise ValueError('Choose native/sharded execution and all/partial failure policy.')
     if type(result['incremental_cpu']) is not bool:
         raise ValueError('incremental_cpu must be true or false.')
-    import uuid
     if result['placement'] not in {'auto', 'local'}:
         uuid.UUID(str(result['placement']))
     for key, low, high in [('batch_size', 1, 10000), ('max_in_flight', 1, 32), ('retries', 0, 5),
@@ -63,7 +63,27 @@ def policy(value=None):
     for key in ('min_vram_gb', 'ram_gb'):
         if isinstance(result[key], bool) or not isinstance(result[key], (int, float)) or not math.isfinite(result[key]) or result[key] < 0:
             raise ValueError(f'{key} must be finite and nonnegative.')
+    allocations = result.get('workstation_batches')
+    if allocations is not None:
+        if (result['mode'] != 'sharded' or result['placement'] != 'auto'
+                or not isinstance(allocations, dict) or not allocations
+                or any(type(count) is not int or not 1 <= count <= 10000 for count in allocations.values())):
+            raise ValueError('Workstation batch counts require automatic placement, partitioning and positive batch counts.')
+        for workstation in allocations:
+            if not isinstance(workstation, str) or str(uuid.UUID(workstation)) != workstation:
+                raise ValueError('Workstation batch counts require valid workstation IDs.')
     return result
+
+
+def workstation_batch_plan(settings, count):
+    allocations = settings.get('workstation_batches')
+    if not allocations:
+        return []
+    batch_size = settings['batch_size']
+    if count != batch_size * sum(allocations.values()):
+        raise ValueError('Workstation batch counts × candidates per batch must equal the requested design count.')
+    return [workstation for index in range(max(allocations.values()))
+            for workstation, batches in sorted(allocations.items()) if index < batches]
 
 
 def supports(kind, source):
@@ -181,6 +201,7 @@ def initialize(parent, node, source, params, key, settings, *, make_source, make
         raise ValueError('Candidate collection must declare its count before sharding.')
     if total <= 0:
         return []
+    placements = iter(workstation_batch_plan(settings, total))
     directory = Path(parent) / 'candidate_batches' / node['id'] / key
     directory.mkdir(parents=True, exist_ok=True)
     batches = []
@@ -217,6 +238,8 @@ def initialize(parent, node, source, params, key, settings, *, make_source, make
         manifest = dict(schema_version=1, pipeline=str(parent), node=node['id'], batch_id=batch_id,
                         scientific_key=key, offset=offset, input_candidate_ids=ids,
                         unit_count=count, request=request, input_hashes=data_hashes(request), policy=settings)
+        if workstation := next(placements, None):
+            manifest['workstation'] = workstation
         if native_invocation:
             manifest['unit_kind'] = 'native_invocation'
         if request['workflow'] == 'refolding.optimized_prediction':
@@ -615,7 +638,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                                 and 'prepared_envelope' not in batch)
                 if config.enabled() and not local_source:
                     request['resources']['gpu_device'] = selected_gpu
-                    dispatch_settings = {**settings, 'placement': source_node or settings['placement']}
+                    dispatch_settings = {**settings, 'placement': source_node or manifest.get('workstation') or settings['placement']}
                     result = candidate_batches.submit(request, batch['manifest'], submission_key, dispatch_settings,
                         owner_id=owner_id, project_id=project_id, state=batch,
                         allow_development=allow_development)
@@ -625,7 +648,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                     batch.update(status='queued', cluster_job_id=result['cluster_job_id'])
                     persist()
                     continue
-                if not local_source and settings['placement'] != 'auto':
+                if not local_source and (settings['placement'] != 'auto' or manifest.get('workstation')):
                     raise ValueError('Configure trusted peers before selecting a remote workstation.')
             if matches:
                 child = matches[0]

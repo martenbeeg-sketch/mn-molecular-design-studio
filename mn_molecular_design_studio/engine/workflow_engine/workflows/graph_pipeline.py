@@ -1871,6 +1871,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             if source is not None:
                                 handoff_sources[node_id] = source
                     native_invocation = (graph.get('workflow_mode') and settings['placement'] != 'local'
+                        and not settings.get('workstation_batches')
                         and NODE_CATALOG[kind]['category'] in {'Design engine', 'Design pipeline'}
                         and not (shared_campaign and shared_campaign.get('objective_type') in {'accepted', 'time'}
                                  and node_id in shared_campaign.get('generator_nodes', []))

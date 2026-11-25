@@ -2398,7 +2398,7 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
         output_formats[node_id] = output_formats[incoming[node_id][0]] if kind == "filter" and incoming[node_id] else spec["formats"]
     for node_id, node in nodes.items():
         kind = node["data"]["kind"]
-        from mn_molecular_design_studio.candidate_execution import policy, supports
+        from mn_molecular_design_studio.candidate_execution import policy, supports, workstation_batch_plan
         execution = policy(node["data"].get("execution", graph.get("candidate_execution")))
         if (execution["mode"] == "sharded" and "execution" in node["data"]
                 and not supports(kind, {"candidates_jsonl": "preflight"}) and kind not in KINDS
@@ -2406,6 +2406,17 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
             raise ValueError(f"{node['data']['label']} has no collection-sharding adapter; use native execution.")
         if node["data"].get("enabled") is False:
             continue
+        if execution.get("workstation_batches"):
+            from mn_molecular_design_studio.workflow_modes import capability
+
+            route = capability(kind)
+            params = node["data"]["params"]
+            if not route.get("generator_only") or params.get("distributed_campaign") or graph.get("shared_campaign", {}).get("enabled"):
+                raise PipelineInputError(node_id, "Set workstation batch counts on a partitionable generator step without a separate campaign objective.")
+            try:
+                workstation_batch_plan(execution, params[route.get("design_count_field") or "num_designs"])
+            except ValueError as exc:
+                raise PipelineInputError(node_id, str(exc)) from exc
         for input_port in NODE_CATALOG[kind]["inputs"]:
             if kind not in SCREENING_STAGES and not allow_incomplete and not input_port.get("optional") and not any(edge.get("targetHandle", "in") == input_port.get("id", "in") for edge in incoming_edges[node_id]):
                 raise ValueError(f"Connect {input_port.get('label', 'an input')} to {node['data']['label']}.")
@@ -2916,7 +2927,7 @@ def _portable_template_graph(graph):
     for settings in (graph.get("candidate_execution"), graph.get("shared_campaign"),
                      *(node["data"].get("execution") for node in graph["nodes"])):
         if settings is not None:
-            for key in ("deadline_at", "gpu_device", "workstation_selection"):
+            for key in ("deadline_at", "gpu_device", "workstation_selection", "workstation_batches"):
                 settings.pop(key, None)
             if "placement" in settings and settings["placement"] not in ("auto", "local"):
                 settings["placement"] = "auto"
