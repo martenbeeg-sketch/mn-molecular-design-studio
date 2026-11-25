@@ -431,12 +431,20 @@ class Store:
         return {"items": [{k: v for k, v in item.items() if k not in {"artifacts", "request_summary"}} for item in items], "total": total}
 
     def submit(self, request, requirements, user, *, origin_node, placement="auto", affinity_node=None, idempotency_key=None):
-        if placement not in {"auto", "local"} and placement not in {n["id"] for n in self.nodes()}:
+        pool = requirements.get("allowed_workstations")
+        registered = {n["id"] for n in self.nodes()} if pool is not None or placement not in {"auto", "local"} else set()
+        if placement not in {"auto", "local"} and placement not in registered:
             raise ValueError("Select a registered workstation.")
         if placement == "local":
             placement = origin_node
         if affinity_node and placement != "auto" and placement != affinity_node:
             raise ValueError("This job must run on the workstation that owns its input data.")
+        if pool is not None:
+            if not isinstance(pool, list) or not pool or any(not isinstance(node, str) or node not in registered for node in pool):
+                raise ValueError("Select a pool of registered workstations.")
+            target = affinity_node or (placement if placement != "auto" else None)
+            if target and target not in pool:
+                raise ValueError("This job requires a workstation outside the selected pool.")
         key = str(idempotency_key or uuid.uuid4())
         fingerprint = hashlib.sha256(json.dumps([request, requirements, origin_node, placement, affinity_node], sort_keys=True, allow_nan=False).encode()).hexdigest()
         with self.connect() as db:
@@ -676,6 +684,8 @@ class Store:
                 wait_reason = "Waiting for a compatible workstation."
                 for node in nodes:
                     if target and node["id"] != target:
+                        continue
+                    if needs.get("allowed_workstations") and node["id"] not in needs["allowed_workstations"]:
                         continue
                     if node["availability"] != "online":
                         wait_reason = f"Waiting for selected workstation {node['name']} to come online."

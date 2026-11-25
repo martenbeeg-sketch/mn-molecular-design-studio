@@ -949,7 +949,7 @@ def _show_pipeline_resources(prefix, owner_id, project_id, submit_api):
     if not st.session_state.get(prefix + "-resources-open"):
         return
 
-    @st.dialog("Pipeline resources", width="large")
+    @st.dialog("Pipeline settings", width="large")
     def dialog():
         from mn_molecular_design_studio import candidate_execution
         from mn_molecular_design_studio.cluster import config as cluster_config
@@ -966,7 +966,7 @@ def _show_pipeline_resources(prefix, owner_id, project_id, submit_api):
         except (OSError, ValueError, KeyError, TypeError):
             nodes = []
 
-        st.caption("These are pipeline-wide scheduler defaults. Open a canvas step's Configure dialog to override resources for that step.")
+        st.caption("Set batching and workstations once for compatible steps. A step can override these settings in its Configure dialog.")
         sharded = st.checkbox(
             "Distribute compatible candidate batches",
             value=settings["mode"] == "sharded", key=resource_key + "-resources-sharded",
@@ -997,6 +997,8 @@ def _show_pipeline_resources(prefix, owner_id, project_id, submit_api):
         ))
 
         resources_ready = True
+        saved_pool = settings.pop("workstation_pool", [])
+        saved_batches = settings.pop("workstation_batches", {})
         if sharded:
             settings["mode"] = "sharded"
             columns = st.columns(4)
@@ -1012,6 +1014,28 @@ def _show_pipeline_resources(prefix, owner_id, project_id, submit_api):
             settings["retries"] = int(columns[3].number_input(
                 "Retries per failed batch", min_value=0, max_value=5, value=settings["retries"], key=resource_key + "-resources-retries",
             ))
+            if settings["placement"] == "auto":
+                registered = [item["id"] for item in nodes]
+                selected_pool = st.multiselect(
+                    "Allowed workstations", list(dict.fromkeys([*registered, *saved_pool, *saved_batches])),
+                    default=saved_pool or list(saved_batches),
+                    format_func=lambda node_id: choices.get(node_id, node_id),
+                    key=resource_key + "-resources-pool",
+                    help="Leave empty to use any compatible workstation. Later batches are assigned as GPUs become available.",
+                )
+                if selected_pool:
+                    settings["workstation_pool"] = selected_pool
+                    if st.checkbox("Set initial generator batches per workstation", value=bool(saved_batches),
+                                   key=resource_key + "-resources-fixed-batches"):
+                        settings["workstation_batches"] = {
+                            node_id: int(st.number_input(
+                                f"Initial batches on {choices.get(node_id, node_id).split(' · ')[0]}",
+                                min_value=1, max_value=10000, value=saved_batches.get(node_id, 1),
+                                key=resource_key + "-resources-fixed-count-" + node_id,
+                            )) for node_id in selected_pool
+                        }
+                        total = sum(settings["workstation_batches"].values()) * settings["batch_size"]
+                        st.caption(f"Set the generator's design count to {total:,}. Downstream steps use their actual input count.")
             settings["incremental_cpu"] = st.checkbox(
                 "Process completed batches while prediction continues (CPU)", value=settings["incremental_cpu"], key=resource_key + "-resources-incremental",
             )
@@ -1046,7 +1070,7 @@ def _show_pipeline_resources(prefix, owner_id, project_id, submit_api):
         if cancel_col.button("Cancel", key=resource_key + "-resources-cancel", use_container_width=True):
             st.session_state[prefix + "-resources-open"] = False
             st.rerun()
-        if apply_col.button("Apply resource defaults", key=resource_key + "-resources-apply", type="primary", disabled=not resources_ready, use_container_width=True):
+        if apply_col.button("Apply pipeline settings", key=resource_key + "-resources-apply", type="primary", disabled=not resources_ready, use_container_width=True):
             try:
                 graph["candidate_execution"] = candidate_execution.policy(settings)
                 normalized = clean_graph(graph)
@@ -1055,7 +1079,7 @@ def _show_pipeline_resources(prefix, owner_id, project_id, submit_api):
                 st.session_state[state_key] = normalized
                 st.session_state[prefix + "-resources-open"] = False
                 if not project_id:
-                    st.info("Select a project to save these resource defaults.")
+                    st.info("Select a project to save these pipeline settings.")
                 st.rerun()
             except (ValueError, OSError, TypeError, KeyError) as exc:
                 st.error(str(exc))
@@ -1635,7 +1659,7 @@ def _render_pipeline_run_setup(prefix, project_id, graph, submit_api, execution_
                                 key=prefix + "-run-reuse-" + graph["id"],
                                 help="Clear this option to compute every step fresh.")
             st.session_state[prefix + "-reuse"] = reuse
-            st.button("Workstation settings", key=prefix + "-run-resources", on_click=st.session_state.update,
+            st.button("Pipeline settings", key=prefix + "-run-resources", on_click=st.session_state.update,
                       args=({prefix + "-resources-open": True},))
         if not project_id:
             st.info("Choose a project to submit this run.")

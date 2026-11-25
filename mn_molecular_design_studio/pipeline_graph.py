@@ -49,7 +49,8 @@ STEPS = field("timesteps", "Diffusion steps", 50, minimum=1, maximum=1000)
 SEED = field("seed", "Random seed", 0, minimum=0, maximum=2147483647)
 SEQUENCES = field("sequences", "Sequences per backbone", 1, minimum=1, maximum=1000)
 MSA = field("use_target_msa", "Use cached target MSA; fetch if missing", True, kind="boolean")
-TEMPLATE = field("use_target_template", "Use target structure as template", True, kind="boolean")
+TEMPLATE = field("use_target_template", "Use target structure as template", True, kind="boolean", section="basic",
+                 help="Use the connected target's coordinates for the target chains. The binder is refolded from its sequence. Turn this off for an untemplated refold.")
 
 NODE_CATALOG = {
     "peptide_trap": _spec("peptide_trap", "Peptide Trap", "Design engine", "Retarget published β-strand clefts by sequence matching, threading and Rosetta interface redesign.", accepts=["target"], output="sequence", workflow="design.peptide_trap", fields=[
@@ -170,7 +171,7 @@ NODE_CATALOG = {
         field("samples", "Samples per candidate", 1, minimum=1, maximum=5, section="basic"),
         field("num_recycles", "Recycles", 10, minimum=1, maximum=100),
         field("target_use_msa", "Use cached target MSA; fetch if missing", True, kind="boolean"),
-        field("use_target_template", "Use target structure as template", True, kind="boolean"),
+        TEMPLATE,
         field("accept_alphafold3_terms", "Accept official AlphaFold3 weight terms", False, kind="boolean",
               help="Required only when the official AlphaFold3 weights are selected. Review those terms before enabling them."),
     ], color="#477e9b", formats=("cif",)),
@@ -687,10 +688,8 @@ def _prediction_profile_fields(engine: str, profile: dict[str, Any]) -> list[dic
         fields.append(field('target_use_msa', 'Use cached target MSA; fetch if missing', msa_default,
                             kind='boolean', section='basic',
                             help='Uses the target chain MSA. Newly designed binder chains stay single-sequence.'))
-    if profile.get('supports_templates'):
-        fields.append(field('use_target_template', 'Use target structure as template', True,
-                            kind='boolean', section='basic',
-                            help='Uses the PDB supplied on the connected Target node as a template.'))
+    if profile.get('supports_templates') and not profile.get('requires_target_template'):
+        fields.append(TEMPLATE)
     if profile.get('requires_target_template'):
         fields.extend([
             field('target_pdb', 'Target PDB path', '', kind='text', section='basic',
@@ -1679,6 +1678,10 @@ def clean_graph(graph: dict) -> dict:
         if kind == 'boltz2':
             from mn_molecular_design_studio.prediction_configuration import boltz_settings
             params = boltz_settings(params, saved_graph=True)
+        if kind == "prediction_boltzgen_fold":
+            # This runner always supplies target coordinates. Older canvases
+            # showed a switch that could not disable that required input.
+            params.pop("use_target_template", None)
         # Some older active-learning drafts already carry the current template
         # version but still have a pre-worker CPU field.
         if kind == "active_docking" and graph.get("template_id") == "unidock_active_learning":
@@ -2396,10 +2399,17 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
                                  else "candidates" if kind == "filter" and inherited_types
                                  else spec["outputs"][0]["type"] if spec["outputs"] else "results")
         output_formats[node_id] = output_formats[incoming[node_id][0]] if kind == "filter" and incoming[node_id] else spec["formats"]
+    from mn_molecular_design_studio.candidate_execution import node_policy, supports, workstation_batch_plan
+    executions = {node_id: node_policy(graph, node["data"]) for node_id, node in nodes.items()}
+    if require_inputs and graph.get("candidate_execution", {}).get("workstation_batches"):
+        inheriting = [node_id for node_id, node in nodes.items()
+                      if node["data"].get("enabled", True) and not node["data"].get("execution")
+                      and executions[node_id].get("workstation_batches")]
+        if len(inheriting) != 1:
+            raise ValueError("Initial workstation batch counts in Pipeline settings need exactly one enabled generator using those settings.")
     for node_id, node in nodes.items():
         kind = node["data"]["kind"]
-        from mn_molecular_design_studio.candidate_execution import policy, supports, workstation_batch_plan
-        execution = policy(node["data"].get("execution", graph.get("candidate_execution")))
+        execution = executions[node_id]
         if (execution["mode"] == "sharded" and "execution" in node["data"]
                 and not supports(kind, {"candidates_jsonl": "preflight"}) and kind not in KINDS
                 and kind not in {"target", "binder_context", "results"}):
@@ -2927,7 +2937,7 @@ def _portable_template_graph(graph):
     for settings in (graph.get("candidate_execution"), graph.get("shared_campaign"),
                      *(node["data"].get("execution") for node in graph["nodes"])):
         if settings is not None:
-            for key in ("deadline_at", "gpu_device", "workstation_selection", "workstation_batches"):
+            for key in ("deadline_at", "gpu_device", "workstation_selection", "workstation_batches", "workstation_pool"):
                 settings.pop(key, None)
             if "placement" in settings and settings["placement"] not in ("auto", "local"):
                 settings["placement"] = "auto"

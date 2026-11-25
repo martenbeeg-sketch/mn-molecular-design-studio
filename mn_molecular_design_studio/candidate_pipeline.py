@@ -360,7 +360,7 @@ def execution_plan(graph, candidate_counts=None):
     unknown. Preview counts never change saved scientific or scheduler settings.
     """
     from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, OPTIMIZED_PREDICTION_NODE_ENGINES
-    from mn_molecular_design_studio.candidate_execution import policy, supports, dispatch_limits
+    from mn_molecular_design_studio.candidate_execution import node_policy, supports, dispatch_limits
     from mn_molecular_design_studio.native_execution import prediction_contract, request_contract, prediction_engine
     from mn_molecular_design_studio.engine.workflow_engine.workflows.execution_planning import describe_native_invocation
     from mn_molecular_design_studio.batching import batch_plan
@@ -369,7 +369,7 @@ def execution_plan(graph, candidate_counts=None):
         data = node["data"]
         kind, params = data["kind"], data.get("params", {})
         spec = NODE_CATALOG[kind]
-        settings = policy(data.get("execution", graph.get("candidate_execution")))
+        settings = node_policy(graph, data)
         sharded = settings["mode"] == "sharded" and supports(kind, {"candidates_jsonl": "plan"})
         count = counts.get(node["id"])
         if count is not None and (type(count) is not int or count < 0):
@@ -389,6 +389,10 @@ def execution_plan(graph, candidate_counts=None):
             native_invocations=None, docker_processes=None, gpu_allocation_events=None,
             gpu_slots=None, prediction_outputs=None, model_initializations=None,
             note="Input counts unknown until upstream outputs and sequence routing resolve.")
+        if sharded and settings.get("workstation_pool"):
+            row["workstation_pool"] = settings["workstation_pool"]
+        if sharded and settings.get("workstation_batches"):
+            row["initial_workstation_batches"] = settings["workstation_batches"]
         if inactive:
             row.update(native_invocations=0, docker_processes=0, gpu_allocation_events=0, gpu_slots=0,
                        prediction_outputs=0, model_initializations=0, note="No new scientific execution.")

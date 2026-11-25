@@ -171,16 +171,18 @@ def _render_step_execution(node, graph, key):
     if not eligible:
         return updates, True
 
-    inherited = candidate_execution.policy(data.get("execution") or graph.get("candidate_execution"))
+    inherited = candidate_execution.node_policy(graph, data)
     execution_ready = True
     with st.expander("Execution & resources", expanded=False):
         override = st.checkbox(
             "Override pipeline resource defaults", value=bool(data.get("execution")),
             key=key + "-execution-override",
-            help="When off, this step inherits the shared Resources settings from the canvas toolbar.",
+            help="When off, this step inherits Pipeline settings.",
         )
         if not override:
             updates["execution"] = None
+            if inherited["mode"] == "sharded" and candidate_execution.supports(kind, {"candidates_jsonl": "preview"}):
+                st.caption(f"Inherited · {inherited['batch_size']} candidates per batch · {inherited['max_in_flight']} batches in flight.")
             return updates, True
 
         policy = dict(inherited)
@@ -243,6 +245,8 @@ def _render_step_execution(node, graph, key):
             index=list(destinations).index(selected_placement) if selected_placement in destinations else 0,
             key=key + "-execution-placement",
         )
+        if not distribute or policy["placement"] != "auto":
+            policy.pop("workstation_pool", None)
         allocations = policy.pop("workstation_batches", {})
         from mn_molecular_design_studio.workflow_modes import capability
 
@@ -253,7 +257,8 @@ def _render_step_execution(node, graph, key):
             )
             if fixed_batches:
                 selected = st.multiselect(
-                    "Workstations", [item["id"] for item in nodes],
+                    "Workstations", [item["id"] for item in nodes
+                                     if not policy.get("workstation_pool") or item["id"] in policy["workstation_pool"]],
                     default=[item["id"] for item in nodes if item["id"] in allocations],
                     format_func=destinations.get, key=key + "-execution-fixed-workstations",
                 )
@@ -1282,6 +1287,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
             st.caption("Pass, fail, and unresolved decisions remain recorded for Results. Missing measurements are not treated as passing; native acceptance and manual selection remain separate decisions.")
         elif kind == "shared_filter":
             _render_connection_card(node, graph)
+            st.caption("Accept or reject candidates using measurements from connected steps. BinderScope is a separate analysis.")
             columns = st.columns(2)
             for index, name in enumerate(("binder_format", "target_type", "policy_profile")):
                 field_spec = next(field for field in spec["fields"] if field["name"] == name)
@@ -1353,7 +1359,11 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
                 )
                 if values.get("rules"):
                     if effective_policy:
-                        st.caption(f"{len(effective_policy['mandatory_filters'])} custom rejection gate(s) configured. Missing required measurements are rejected, not treated as passing.")
+                        st.dataframe([{
+                            "Measurement": METRICS.get(rule.get("metric_id"), {}).get("label", rule["field"]),
+                            "Pass criterion": f"{rule['operator']} {rule['value']:g}",
+                        } for rule in effective_policy["mandatory_filters"]], hide_index=True, use_container_width=True)
+                        st.caption("Each required measurement must meet its threshold.")
                     elif preview_error:
                         st.warning(preview_error)
                 else:
@@ -1424,6 +1434,18 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
             optional = [f for f in spec["fields"] if f not in primary]
             _, upstream = _connected_inputs(graph, node["id"])
             connected_target = next((n["data"]["params"] for n in upstream if n["data"]["kind"] == "target"), {})
+            if any(field["name"] == "use_target_template" for field in primary):
+                if connected_target.get("target_input") == "idr" or connected_target.get("target_type") == "fasta_idr":
+                    primary = [field for field in primary if field["name"] != "use_target_template"]
+                    st.caption("The connected target is a sequence. Refolding will use sequence input.")
+                elif kind == "prediction_localfold":
+                    from mn_molecular_design_studio import localfold
+                    from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
+
+                    model = st.session_state.get(key + "-model", values.get("model", "alphafold3"))
+                    if not localfold.profile_for(ENGINE_PROFILES["localfold"], model)["supports_templates"]:
+                        primary = [field for field in primary if field["name"] != "use_target_template"]
+                        st.caption("The selected LocalFold model uses sequence input.")
             if kind == "rfd4" and values["task"] == "cyclic_peptide_binder":
                 primary = [field for field in primary if field["name"] not in {"input_mode", "length_min", "length_max"}]
                 optional = [field for field in optional if field["name"] not in {"target_structure", "condition_spec", "input_files"}]

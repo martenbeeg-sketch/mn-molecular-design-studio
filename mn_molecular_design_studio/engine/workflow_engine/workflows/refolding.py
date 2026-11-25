@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import csv
+import copy
 import json
 import math
 import shutil
@@ -501,6 +502,7 @@ def _write_rf3_json_inputs(
     benchmark_run_csv: Path | None,
     use_target_msa: bool,
     use_target_template: bool = False,
+    target_template: dict | None = None,
 ) -> tuple[dict[str, Path], dict[str, int]]:
     benchmark_msa_records = _load_run_csv_msa_records(benchmark_run_csv)
     rf3_inputs: dict[str, Path] = {}
@@ -523,6 +525,16 @@ def _write_rf3_json_inputs(
     msa_dir.mkdir(parents=True, exist_ok=True)
     template_dir.mkdir(parents=True, exist_ok=True)
     manifest_records: list[dict[str, Any]] = []
+    reference_chains = {}
+    if use_target_template and target_template:
+        from mn_molecular_design_studio import design_validation
+        from mn_molecular_design_studio.structure_templates import connected_reference_templates, match_reference_templates
+
+        reference_chains = connected_reference_templates(target_template)
+        reference_path = resolve_stored_path(target_template["target_pdb"], must_exist=True)
+        reference_structure = design_validation.read_structure(reference_path)
+        reference_model = next(reference_structure.get_models())
+        cached_reference_chains = {}
 
     def stage_target_template_chain(staged_path: Path, safe_id: str, chain: str) -> Path | None:
         if staged_path.suffix.lower() not in {".pdb", ".ent"}:
@@ -571,11 +583,38 @@ def _write_rf3_json_inputs(
         msa_paths: dict[str, str] = {}
         template_selection: list[str] = []
         target_template_paths: dict[str, Path] = {}
+        matches = {}
         if use_target_template:
+            matches = {
+                row["query_chain_id"]: row["template_chain_id"]
+                for row in match_reference_templates(
+                    reference_chains, {chain: sequences.get(chain, "") for chain in target_chains},
+                    {chain: chain for chain in target_chains},
+                )
+            } if reference_chains and not ligand_target else {}
             for chain in target_chains:
                 if ligand_target and chain not in sequences:
                     continue
-                template_path = stage_target_template_chain(staged_path, safe_id, chain)
+                if chain in matches:
+                    from Bio.PDB import PDBIO
+
+                    reference_chain = matches[chain]
+                    mapping = (reference_chain, chain)
+                    if mapping not in cached_reference_chains:
+                        selected = copy.deepcopy(reference_model[reference_chain])
+                        selected.detach_parent()
+                        selected.id = chain
+                        for residue in list(selected):
+                            if residue.id[0] != " ":
+                                selected.detach_child(residue.id)
+                        template_path = template_dir / f"reference_{len(cached_reference_chains)}.pdb"
+                        writer = PDBIO()
+                        writer.set_structure(selected)
+                        writer.save(str(template_path))
+                        cached_reference_chains[mapping] = template_path
+                    template_path = cached_reference_chains[mapping]
+                else:
+                    template_path = stage_target_template_chain(staged_path, safe_id, chain)
                 if template_path is None:
                     metrics["rf3_target_template_missing_count"] += 1
                     continue
@@ -611,6 +650,9 @@ def _write_rf3_json_inputs(
             if template_path is not None:
                 manifest_row["template_status"] = "attached"
                 manifest_row["template_path"] = str(template_path)
+                if chain in matches:
+                    manifest_row["connected_target_reference"] = reference_chains[matches[chain]][1]["connected_target_reference"]
+                    manifest_row["reference_chain"] = matches[chain]
             if use_target_msa and chain in target_set:
                 reference_msa = cofolding_msa.find_reference(sequence)
                 if reference_msa is not None:
@@ -5655,6 +5697,7 @@ def run_rf3_complex_refolding(
     benchmark_run_csv: Path | None = None,
     internal_parent_run_dir: Path | None = None,
     gpu_device: object = "0",
+    target_template: dict | None = None,
 ) -> Path:
     if n_recycles < RF3_MIN_RECYCLES:
         raise ValueError(f"RosettaFold3 candidate refolding requires at least {RF3_MIN_RECYCLES} recycles.")
@@ -5708,6 +5751,7 @@ def run_rf3_complex_refolding(
         benchmark_run_csv=benchmark_run_csv,
         use_target_msa=use_target_msa,
         use_target_template=use_target_template,
+        target_template=target_template,
     )
     output_root = raw_root / "output"
     steps: list[dict[str, Any]] = []

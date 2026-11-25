@@ -212,14 +212,25 @@ def _generation_target(params, source=None):
     return target
 
 
+def _sequence_only_target(target: dict) -> bool:
+    from mn_molecular_design_studio.target_identity import is_sequence_carrier_reference
+
+    return (target.get("target_type") in {"fasta_idr", "idr", "sequence"} or bool(target.get("target_fasta"))
+            or is_sequence_carrier_reference(target.get("target_pdb") or ""))
+
+
 def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list[dict]:
     """Convert connected candidate complexes into shared prediction tasks."""
     import io
     from Bio.PDB import MMCIFIO, PDBIO, Select
     from mn_molecular_design_studio import design_validation
+    from mn_molecular_design_studio.structure_templates import connected_reference_templates, match_reference_templates
     from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
 
     profile = ENGINE_PROFILES[engine]
+    if engine == "localfold":
+        from mn_molecular_design_studio import localfold
+        profile = localfold.profile_for(profile, str(params.get("model", "alphafold3")))
     direct_input = source.get("molecule_task")
     predict_affinity = engine == "boltz2" and params.get("predict_affinity", False)
     if predict_affinity and (not isinstance(direct_input, dict) or direct_input.get("task_type") != "protein_ligand"):
@@ -230,6 +241,8 @@ def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list
         target_sequences = str(task_input.get("target_protein_sequences") or "")
         partner_sequences = str(task_input.get("partner_protein_sequences") or "")
         target_pdb = str(task_input.get("target_pdb") or "").strip()
+        if _sequence_only_target(task_input):
+            target_pdb = ""
         target_chain = str(task_input.get("target_chain_id") or "A").strip()
         if profile.get("input_kind") == "boltzgen":
             if not target_pdb or not partner_sequences:
@@ -382,16 +395,32 @@ def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list
     run_dir = _path(source["run_dir"])
     tasks = []
     chain_ids = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    target = source.get("target") or {}
+    sequence_only = _sequence_only_target(target)
+    requires_structure = profile["api_engine"] == "boltzgen_fold_opt_msa"
+    use_template = not sequence_only and profile.get("supports_templates") and (
+        requires_structure or params.get("use_target_template", True))
+    templates = connected_reference_templates(target) if use_template else {}
+    if requires_structure and sequence_only:
+        raise ValueError("BoltzGen Fold requires target coordinates and cannot use a sequence-only target.")
     for candidate in rows:
         candidate_id = str(candidate.get("candidate_id") or "")
         if not candidate_id:
             raise ValueError(f"{profile['label']} cannot map a candidate without an ID back to its input.")
         library = candidate.get("raw_metadata") or {}
-        if library.get("studio_molecule_id") and library.get("components"):
+        if library.get("studio_molecule_id") and library.get("components") and not requires_structure:
             from mn_molecular_design_studio.scientific_contracts import component_prediction_task
             task = component_prediction_task(
                 candidate, run_dir, target_use_msa=bool(params.get("target_use_msa", True)),
             )
+            if templates:
+                contract = task["scientific_contract"]
+                chain_map = contract["chain_map"]
+                target_ids = set(contract["target_protein_ids"])
+                task["structure_templates"] = match_reference_templates(templates, {
+                    row["chain"]: row["sequence"] for row in contract["components"]
+                    if chain_map[row["chain"]] in target_ids
+                }, chain_map)
             tasks.append(task)
             continue
         info = design_validation.candidate_description(run_dir, candidate)
@@ -407,13 +436,21 @@ def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list
         if len(ordered) > len(chain_ids):
             raise ValueError(f"Candidate {candidate_id} exceeds {profile['label']}'s protein-chain limit.")
         chain_map = {chain: chain_ids[index] for index, chain in enumerate(ordered)}
-        if profile["api_engine"] == "boltzgen_fold_opt_msa":
+        if requires_structure:
             if len(target_chains) != 1:
                 raise ValueError("BoltzGen Fold needs exactly one target chain; select a single target chain before connecting this node.")
             target_chain = target_chains[0]
+            if templates:
+                matched = match_reference_templates(
+                    templates, {target_chain: design_validation.sequence(info["chains"][target_chain])}, chain_map,
+                )[0]
+                target_chain = matched["template_chain_id"]
+                structure_path = _path(target["target_pdb"])
+            else:
+                structure_path = info["structure_path"]
             if len(target_chain) != 1 or target_chain.upper() == "Z":
                 raise ValueError("BoltzGen Fold requires a one-character target chain ID other than Z.")
-            structure = design_validation.read_structure(info["structure_path"])
+            structure = design_validation.read_structure(structure_path)
             class TargetChain(Select):
                 def accept_chain(self, candidate_chain):
                     return candidate_chain.id == target_chain
@@ -442,7 +479,11 @@ def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list
             "source_candidate_id": candidate_id,
             "source_run_dir": str(run_dir),
         }
-        if params.get("use_target_template", True) and profile.get("supports_templates"):
+        if templates:
+            task["structure_templates"] = match_reference_templates(templates, {
+                chain: design_validation.sequence(info["chains"][chain]) for chain in target_chains
+            }, chain_map)
+        elif use_template:
             structure = design_validation.read_structure(info["structure_path"])
             templates = []
             for chain in target_chains:
@@ -870,6 +911,12 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
             p = {k: v for k, v in p.items() if k in allowed}
         elif kind in {"rf3", "boltz2", "af2", "protenix"}:
             p["require_monomer_success"] = False
+            if kind == "rf3":
+                target = source.get("target") or {}
+                if _sequence_only_target(target):
+                    p["use_target_template"] = False
+                elif p.get("use_target_template") and target.get("target_pdb") and target.get("pipeline_task") not in {"ligand_binder", "motif_ligand"}:
+                    p["target_template"] = {key: target.get(key) for key in ("target_pdb", "target_chains")}
             if kind == "af2":
                 from mn_molecular_design_studio.prediction_configuration import af2_mode
                 p["af2_validation_mode"], p["use_initial_guess"] = af2_mode(
@@ -1517,7 +1564,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 node, parents = nodes[node_id], plan["incoming"][node_id]
                 current = node_states.setdefault(node_id, {"status": "pending"})
                 from mn_molecular_design_studio import candidate_execution
-                settings = candidate_execution.policy(node["data"].get("execution", graph.get("candidate_execution")))
+                settings = candidate_execution.node_policy(graph, node["data"])
                 if current.get("status") in {"failed", "blocked"}:
                     continue
                 if (shared_ledger and shared_campaign.get('objective_type') == 'generated'
@@ -1871,7 +1918,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             if source is not None:
                                 handoff_sources[node_id] = source
                     native_invocation = (graph.get('workflow_mode') and settings['placement'] != 'local'
-                        and not settings.get('workstation_batches')
+                        and not (settings['mode'] == 'sharded' and candidate_execution.supports(kind, source))
                         and NODE_CATALOG[kind]['category'] in {'Design engine', 'Design pipeline'}
                         and not (shared_campaign and shared_campaign.get('objective_type') in {'accepted', 'time'}
                                  and node_id in shared_campaign.get('generator_nodes', []))

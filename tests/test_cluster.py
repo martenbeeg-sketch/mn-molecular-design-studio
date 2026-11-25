@@ -415,6 +415,19 @@ def test_explicit_workstation_selection_is_rechecked_before_dispatch(cluster):
     assert result["job"]["node_id"] == nodes[1]["node_id"]
 
 
+def test_automatic_dispatch_stays_inside_selected_workstation_pool(cluster):
+    store, nodes, user, needs, _, request, _ = cluster
+    origin = nodes[0]["node_id"]
+    selected = nodes[2]["node_id"]
+    requirements = dict(needs, allowed_workstations=[selected])
+    result = store.submit(request, requirements, user, origin_node=origin)
+    assert result["job"]["status"] == "dispatching"
+    assert store.claim(origin) is None
+    assert store.claim(selected)["node_id"] == selected
+    with pytest.raises(ValueError, match="outside the selected pool"):
+        store.submit(request, requirements, user, origin_node=origin, placement=origin)
+
+
 def test_explicit_origin_selection_survives_stale_package_revision(cluster):
     store, nodes, user, needs, snapshot, request, _ = cluster
     current = copy.deepcopy(snapshot)

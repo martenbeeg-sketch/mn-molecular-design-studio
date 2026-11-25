@@ -2836,6 +2836,7 @@ def run_optimized_prediction(
     try:
         manifest_items = []
         input_mappings = []
+        staged_templates = {}
         runner_yamls = {}
         chai_template_hits = []
         for task in normalized_tasks:
@@ -2877,6 +2878,8 @@ def run_optimized_prediction(
                     allow_msa_server=allow_colabfold_msa(engine, selected_options),
                     structure_uploads=task["structure_templates"], binder_use_msa=task["binder_use_msa"],
                 )
+            if input_details.get("connected_target_templates"):
+                staged_templates[task["id"]] = input_details["connected_target_templates"]
             manifest_items.append({
                 "id": task["id"],
                 "input": f"/work/{input_path.relative_to(job.run_dir).as_posix()}",
@@ -3235,6 +3238,7 @@ def run_optimized_prediction(
                         "checkpoint_provenance": checkpoint_provenance,
                         "engine_version": profile.get("code_version"),
                         "conditioning_mode": "target_template" if (task.get("structure_templates") or task.get("boltz_templates") or task.get("target_pdb_text")) else "sequence_only",
+                        **({"connected_target_templates": staged_templates[task["id"]]} if task["id"] in staged_templates else {}),
                         "effective_settings": {"samples_per_item": int(samples), "seed": int(seed), **options} if profile["api_engine"] in {"boltz2", "mol1", "localfold"} else {},
                         "execution_manifest": str(manifest_path) if profile["api_engine"] in {"boltz2", "mol1", "localfold"} else None,
                         "native_execution": batch_result.get("execution", {}),

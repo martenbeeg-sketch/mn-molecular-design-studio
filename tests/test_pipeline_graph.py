@@ -970,6 +970,12 @@ def test_adapters_disable_hidden_downstream_pipelines_and_bind_existing_signatur
     for kind,spec in graph.NODE_CATALOG.items():
         if not spec["workflow"]:continue
         p={f["name"]:f["default"] for f in spec["fields"]}
+        source_for_step = source
+        if "use_target_template" in p:
+            # The target fixture here serves generators and is unrelated to the refolding candidates.
+            p["use_target_template"] = False
+        elif spec.get("requires_target_structure") and spec.get("engine_profile") == "boltzgen_fold":
+            source_for_step = {**source, "target": {}}
         if "workflow_parameters" in p:
             from mn_molecular_design_studio.pipeline_tile_workflows import parameters_for
             p["workflow_parameters"] = {name: "test-input" for name, required in parameters_for(spec["workflow"]) if required}
@@ -978,7 +984,9 @@ def test_adapters_disable_hidden_downstream_pipelines_and_bind_existing_signatur
                                                 target_pdb=source["target"]["target_pdb"])
             elif spec["workflow"] == "design.bindcraft":
                 p["workflow_parameters"]["target_pdb"] = source["target"]["target_pdb"]
-        request=runner.node_request(kind,p,source,"test")
+            elif spec["workflow"] in {"structure.tmol", "simulation.bioemu2"}:
+                p["workflow_parameters"]["structure_paths"] = [source["target"]["target_pdb"]]
+        request=runner.node_request(kind,p,source_for_step,"test")
         inspect.signature(_get_function(WORKFLOWS[request["workflow"]])).bind(**request["parameters"])
         if kind in {"rfdiffusion","genie3","pxdesign","protpardelle"}:
             assert request["workflow"]=="design."+kind+"_generate"

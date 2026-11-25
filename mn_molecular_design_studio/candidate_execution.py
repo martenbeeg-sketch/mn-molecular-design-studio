@@ -33,7 +33,7 @@ def policy(value=None):
     defaults = dict(mode='native', placement='local', batch_size=4, max_in_flight=2,
                     retries=1, failure_policy='all', min_vram_gb=8., ram_gb=0.,
                     cpu_cores=4, stall_timeout_seconds=1800, incremental_cpu=False)
-    optional = {'gpu_device', 'max_runtime_seconds', 'deadline_at', 'workstation_batches'}
+    optional = {'gpu_device', 'max_runtime_seconds', 'deadline_at', 'workstation_batches', 'workstation_pool'}
     if set(value) - defaults.keys() - optional:
         raise ValueError('Unsupported candidate execution settings: ' + ', '.join(sorted(set(value) - defaults.keys() - optional)))
     result = defaults | value
@@ -63,6 +63,14 @@ def policy(value=None):
     for key in ('min_vram_gb', 'ram_gb'):
         if isinstance(result[key], bool) or not isinstance(result[key], (int, float)) or not math.isfinite(result[key]) or result[key] < 0:
             raise ValueError(f'{key} must be finite and nonnegative.')
+    pool = result.get('workstation_pool')
+    if pool is not None:
+        if (result['mode'] != 'sharded' or result['placement'] != 'auto'
+                or not isinstance(pool, list) or not pool or any(
+                    not isinstance(node, str) or str(uuid.UUID(node)) != node for node in pool)
+                or len(set(pool)) != len(pool)):
+            raise ValueError('A workstation pool needs automatic placement, candidate batches and unique workstation IDs.')
+        result['workstation_pool'] = sorted(pool)
     allocations = result.get('workstation_batches')
     if allocations is not None:
         if (result['mode'] != 'sharded' or result['placement'] != 'auto'
@@ -72,7 +80,21 @@ def policy(value=None):
         for workstation in allocations:
             if not isinstance(workstation, str) or str(uuid.UUID(workstation)) != workstation:
                 raise ValueError('Workstation batch counts require valid workstation IDs.')
+        if pool is not None and not set(allocations).issubset(pool):
+            raise ValueError('Initial batch allocations must use workstations in the selected pool.')
     return result
+
+
+def node_policy(graph, data):
+    """Resolve shared settings, keeping the generator's fixed quotas out of downstream stages."""
+    if data.get('execution') is not None:
+        return policy(data['execution'])
+    settings = policy(graph.get('candidate_execution'))
+    if settings.get('workstation_batches'):
+        from mn_molecular_design_studio.workflow_modes import capability
+        if not capability(data['kind']).get('generator_only'):
+            settings.pop('workstation_batches')
+    return settings
 
 
 def workstation_batch_plan(settings, count):
@@ -651,7 +673,8 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                     batch.update(status='queued', cluster_job_id=result['cluster_job_id'])
                     persist()
                     continue
-                if not local_source and (settings['placement'] != 'auto' or manifest.get('workstation')):
+                if not local_source and (settings['placement'] != 'auto' or manifest.get('workstation')
+                                         or settings.get('workstation_pool')):
                     raise ValueError('Configure trusted peers before selecting a remote workstation.')
             if matches:
                 child = matches[0]
@@ -764,7 +787,9 @@ def tick_incremental(parent, node, current, upstream_state, upstream_output, set
         local_node = copy.deepcopy(node); local_node['id'] = f'{node["id"]}_{batch_id}'
         key = digest([kind, params, group['upstream_manifest'], current['incremental_runtime']])
         result = tick(parent, local_node, state, group['source'], params, key,
-            settings | {'max_in_flight': 1, 'placement': 'local'}, graph=graph,
+            {key: val for key, val in settings.items() if key != 'workstation_pool'} | {
+                'max_in_flight': 1, 'placement': 'local',
+            }, graph=graph,
             owner_id=owner_id, project_id=project_id, gpu_device='none', persist=persist)
         if result:
             group['output'], group['status'] = result

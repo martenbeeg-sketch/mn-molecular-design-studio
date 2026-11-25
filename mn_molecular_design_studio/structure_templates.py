@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -18,6 +20,52 @@ TEMPLATE_ENGINES = {
 }
 
 
+def connected_reference_templates(target: dict) -> dict:
+    """Index the connected reference chains for a single request."""
+    if not target.get("target_pdb"):
+        return {}
+    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+
+    path = resolve_stored_path(target["target_pdb"], must_exist=True)
+    if not path or not path.is_file():
+        raise ValueError("The connected target reference file is unavailable.")
+    if path.stat().st_size > 20 * 1024 * 1024:
+        raise ValueError("Structure templates must be smaller than 20 MB.")
+    structure = read_structure(path)
+    reference = {"name": path.name, "template_path": str(path),
+                 "connected_target_reference": {"reference_name": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}}
+    proteins = protein_chains(structure)
+    selected = target.get("target_chains") or list(proteins)
+    if isinstance(selected, str):
+        selected = [chain for chain in re.split(r"[,;\s]+", selected) if chain]
+    if not selected:
+        raise ValueError(f"Cannot use {path.name} as a template: no target protein chains were selected or found.")
+    templates = {}
+    for chain in selected:
+        if chain not in proteins:
+            raise ValueError(f"Cannot use {path.name} as a template: target protein chain {chain!r} is missing.")
+        templates[chain] = (sequence(proteins[chain]), reference)
+    return templates
+
+
+def match_reference_templates(templates: dict, targets: dict, chain_map: dict) -> list[dict]:
+    """Match recorded target roles to the reference even when query chains are renamed."""
+    uploads = []
+    remaining = dict(templates)
+    for source_chain, sequence in targets.items():
+        if source_chain in remaining and remaining[source_chain][0] == sequence:
+            reference_chain = source_chain
+        else:
+            matches = [chain for chain, (reference_seq, _) in remaining.items() if reference_seq == sequence]
+            if len(matches) != 1:
+                raise ValueError(f"Could not uniquely match target chain {source_chain!r} to the connected target template by sequence.")
+            reference_chain = matches[0]
+        _, reference = remaining.pop(reference_chain)
+        query_chain = chain_map[source_chain]
+        uploads.append({**reference, "query_chain_id": query_chain, "template_chain_id": reference_chain})
+    return uploads
+
+
 def validate_uploads(uploads: object, *, supported: bool) -> list[dict]:
     if not uploads:
         return []
@@ -31,6 +79,17 @@ def validate_uploads(uploads: object, *, supported: bool) -> list[dict]:
             raise ValueError("Each template needs a file name and structure text.")
         name = Path(str(row.get("name") or "").replace("\\", "/")).name
         text = str(row.get("text") or "")
+        reference = row.get("connected_target_reference")
+        if reference:
+            from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+            path = resolve_stored_path(row.get("template_path"), must_exist=True)
+            if (not isinstance(reference, dict) or not path or not path.is_file() or not row.get("query_chain_id")
+                    or not row.get("template_chain_id") or path.suffix.lower() not in {".pdb", ".ent", ".cif", ".mmcif"}):
+                raise ValueError("The connected target template and its chain mapping must be available.")
+            if path.stat().st_size > 20 * 1024 * 1024:
+                raise ValueError("Structure templates must be smaller than 20 MB.")
+            result.append({**row, "name": path.name, "template_path": str(path)})
+            continue
         if Path(name).suffix.lower() not in {".pdb", ".ent", ".cif", ".mmcif"} or not text.strip():
             raise ValueError("Upload a non-empty PDB or mmCIF template.")
         if len(text.encode("utf-8")) > 20 * 1024 * 1024:
@@ -46,10 +105,18 @@ def stage_templates(run_dir: Path, path: Path, *, item_id: str, profile: dict,
     root = run_dir / "artifacts/raw/optimized_prediction/templates" / item_id
     root.mkdir(parents=True, exist_ok=True)
     matched = {}
+    references = []
     for index, upload in enumerate(uploads):
-        original = root / f"upload_{index}{Path(upload['name']).suffix}"
-        original.write_text(upload["text"], encoding="utf-8")
-        chains = protein_chains(read_structure(original))
+        reference = upload.get("connected_target_reference")
+        if reference:
+            original = Path(upload["template_path"])
+            if hashlib.sha256(original.read_bytes()).hexdigest() != reference.get("sha256"):
+                raise ValueError("The connected target template changed after this refold was prepared.")
+        else:
+            original = root / f"upload_{index}{Path(upload['name']).suffix}"
+            original.write_text(upload["text"], encoding="utf-8")
+        structure = read_structure(original)
+        chains = protein_chains(structure)
         if not chains:
             raise ValueError(f"Template {upload['name']} has no protein coordinates.")
         for protein in proteins:
@@ -67,9 +134,9 @@ def stage_templates(run_dir: Path, path: Path, *, item_id: str, profile: dict,
             if best is None:
                 continue
             _, chain, residues, pairs = best
-            structure = Structure.Structure("template")
-            model = Model.Model(0); structure.add(model)
-            copied = copy.deepcopy(next(c for c in next(read_structure(original).get_models()) if c.id == chain))
+            matched_structure = Structure.Structure("template")
+            model = Model.Model(0); matched_structure.add(model)
+            copied = copy.deepcopy(next(structure.get_models())[chain])
             copied.detach_parent(); copied.id = "A"
             protein_residues = set(protein_chains_from_residues(copied))
             for residue in list(copied):
@@ -77,7 +144,7 @@ def stage_templates(run_dir: Path, path: Path, *, item_id: str, profile: dict,
                     copied.detach_child(residue.id)
             model.add(copied)
             pdb = root / f"chain_{protein['id']}_{index}.pdb"
-            writer = PDBIO(); writer.set_structure(structure); writer.save(str(pdb))
+            writer = PDBIO(); writer.set_structure(matched_structure); writer.save(str(pdb))
             from mn_molecular_design_studio.engine.workflow_engine.workflows.refolding import _pdb_chain_to_protenix_template_json
             json_path = pdb.with_suffix(".json")
             _pdb_chain_to_protenix_template_json(pdb_path=pdb, chain="A", query_sequence=protein["sequence"],
@@ -96,12 +163,20 @@ def stage_templates(run_dir: Path, path: Path, *, item_id: str, profile: dict,
             )
             cif = pdb.with_suffix(".cif"); cif.write_text(template["mmcif"])
             matched.setdefault(protein["id"], []).append({"template": template, "cif": cif, "pdb": pdb})
+            if reference:
+                references.append({**reference,
+                                   "reference_chain": chain, "query_chain": protein["id"]})
+        if reference and not any(
+                row["query_chain"] == upload["query_chain_id"] for row in references):
+            raise ValueError(f"The connected target template could not be staged for chain {upload['query_chain_id']}.")
     if not matched:
         raise ValueError("No uploaded template could be aligned to an input protein chain (minimum 50% identity and three residues).")
     native = lambda value: "/work/" + value.relative_to(run_dir).as_posix()
     kind = profile["input_kind"]
     payload = json.loads(path.read_text()) if path.suffix == ".json" else yaml.safe_load(path.read_text()) if kind == "boltz_yaml" else None
     details = {"template_count": sum(len(rows) for rows in matched.values()), "template_protein_chains": list(matched)}
+    if references:
+        details["connected_target_templates"] = references
     if kind == "boltz_yaml":
         for chain_id, entries in matched.items():
             for entry in entries:

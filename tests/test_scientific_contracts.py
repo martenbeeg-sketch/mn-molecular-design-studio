@@ -1,6 +1,7 @@
 """Scientific identity contracts, independent of predictor numerical results."""
 import copy
 import json
+from pathlib import Path
 
 import pytest
 
@@ -34,6 +35,69 @@ def test_rfd4_component_roles_and_sequences_survive_normalization(design_source_
     assert task["molecule_chain_options"]["B"]["use_msa"] is False
     assert task["source_candidate_id"] == "passing-design"
     assert task["scientific_contract"]["chain_map"] == {"A": "A", "B": "B"}
+
+
+@pytest.mark.parametrize("engine", ["boltz2", "alphafold3", "rf3_foundry"])
+def test_connected_target_template_can_be_switched_on_and_off(engine, design_source_factory, tmp_path):
+    from Bio.PDB import MMCIFIO, PDBIO
+    from mn_molecular_design_studio import design_validation, structure_templates
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
+
+    source = component_source(design_source_factory)
+    candidate = json.loads(Path(source["candidates_jsonl"]).read_text())
+    structure = design_validation.read_structure(Path(source["run_dir"]) / candidate["complex_pdb"])
+    staged = tmp_path / "candidate.pdb"
+    pdb_writer = PDBIO()
+    pdb_writer.set_structure(structure)
+    pdb_writer.save(str(staged))
+    model = next(structure.get_models())
+    model["A"].id = "T"
+    reference = tmp_path / "reference.cif"
+    writer = MMCIFIO()
+    writer.set_structure(structure)
+    writer.save(str(reference))
+    source["target"] = {"target_pdb": str(reference), "target_chains": ["T"], "target_type": "structured"}
+    if engine == "rf3_foundry":
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.refolding import _write_rf3_json_inputs
+
+        input_dir = tmp_path / "artifacts/raw/rf3/inputs"
+        outputs, _ = _write_rf3_json_inputs(
+            source_run_dir=Path(source["run_dir"]), source_candidates=[candidate],
+            staged={candidate["candidate_id"]: staged},
+            input_dir=input_dir, benchmark_run_csv=None, use_target_msa=False,
+            use_target_template=True, target_template=source["target"],
+        )
+        native_template = next((input_dir / "templates").glob("reference_*.pdb"))
+        assert set(design_validation.protein_chains(design_validation.read_structure(native_template))) == {"A"}
+        assert native_template.name in next(iter(outputs.values())).read_text()
+        return
+
+    enabled = graph._optimized_prediction_tasks(engine, source, {"use_target_template": True})
+    disabled = graph._optimized_prediction_tasks(engine, source, {"use_target_template": False})
+    assert not disabled[0].get("structure_templates")
+    task = _prepare_prediction(engine, tasks=enabled, accept_alphafold3_terms=True,
+                               resolve_random_seed=False).normalized_tasks[0]
+    template = task["structure_templates"][0]
+    assert template["template_chain_id"] == "T"
+    assert template["query_chain_id"] == "A"
+    path = tmp_path / ("input.yaml" if engine == "boltz2" else "input.json")
+    path.write_text(json.dumps({"sequences": [
+        {"protein": {"id": row["id"], "sequence": row["sequence"]}} for row in task["proteins"]
+    ]}))
+    details = structure_templates.stage_templates(
+        tmp_path, path, item_id="test", profile=ENGINE_PROFILES[engine],
+        proteins=task["proteins"], uploads=task["structure_templates"],
+    )
+    assert details["template_protein_chains"] == ["A"]
+    assert details["connected_target_templates"][0]["reference_chain"] == "T"
+    if engine == "boltz2":
+        import yaml
+        assert [item["chain_id"] for item in yaml.safe_load(path.read_text())["templates"]] == [["A"]]
+    else:
+        assert [row["protein"]["id"] for row in json.loads(path.read_text())["sequences"]
+                if row["protein"].get("templates")] == ["A"]
+    source["target"]["target_type"] = "fasta_idr"
+    assert not graph._optimized_prediction_tasks(engine, source, {"use_target_template": True})[0].get("structure_templates")
 
 
 def test_rfd4_declared_sequence_cannot_disagree_with_structure(design_source_factory):

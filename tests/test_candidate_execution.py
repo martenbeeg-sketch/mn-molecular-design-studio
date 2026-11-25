@@ -103,6 +103,21 @@ def test_automatic_workstation_batches_freeze_and_dispatch_equal_shards(tmp_path
         ce.workstation_batch_plan(settings, 299)
 
 
+def test_shared_pipeline_batch_settings_inherit_pool_without_generation_quotas():
+    workers = [f"00000000-0000-0000-0000-{i:012d}" for i in range(1, 4)]
+    graph = {"candidate_execution": {
+        "mode": "sharded", "placement": "auto", "batch_size": 50, "max_in_flight": 6,
+        "workstation_pool": workers, "workstation_batches": dict.fromkeys(workers, 2),
+    }}
+    generator = ce.node_policy(graph, {"kind": "rfd4"})
+    assert len(ce.workstation_batch_plan(generator, 300)) == 6
+    refolder = ce.node_policy(graph, {"kind": "boltz2"})
+    assert refolder["workstation_pool"] == workers
+    assert refolder["batch_size"] == 50
+    assert ce.workstation_batch_plan(refolder, 173) == []
+    assert ce.node_policy(graph, {"kind": "boltz2", "execution": {"mode": "native"}})["placement"] == "local"
+
+
 def test_dispatch_time_limit_policy_validates_and_preserves_legacy_defaults():
     assert 'max_runtime_seconds' not in ce.policy()
     assert ce.policy({'mode': 'sharded', 'max_runtime_seconds': 60})['max_runtime_seconds'] == 60

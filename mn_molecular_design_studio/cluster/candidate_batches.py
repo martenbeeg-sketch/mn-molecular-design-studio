@@ -186,6 +186,8 @@ def submit(request, manifest, submission_key, settings, *, owner_id, project_id,
         needs['gpu_runtime_profiles'] = profiles(request_images(request))
         requested_placement = str(settings.get('placement') or 'auto')
         placement = requested_placement
+        if settings.get('workstation_pool'):
+            needs['allowed_workstations'] = settings['workstation_pool']
         if requested_placement == 'eligible':
             selection = select_eligible_peer(
                 needs,

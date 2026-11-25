@@ -457,7 +457,7 @@ function Editor({args}){
         <button onClick={toggleFullscreen} title={fullscreen?'Exit fullscreen':'Enter fullscreen'}>{fullscreen?'Exit fullscreen':'⛶ Fullscreen'}</button>
         {!args.shared_template && <>
           <button title="Configure campaign objective and stopping limits" onClick={()=>emit('campaign')}>Campaign</button>
-          <button title="Configure workstation, GPU and batching defaults" onClick={()=>emit('resources')}>Resources</button>
+          <button title="Configure workstation, GPU and batching defaults" onClick={()=>emit('resources')}>Pipeline settings</button>
           <button onClick={()=>emit('save')}>Save</button>
           <button onClick={()=>emit('save_as')}>Save as…</button>
           {args.can_edit_templates && <button disabled={!nodes.length} onClick={()=>emit('save_template')}>Save as shared template</button>}
