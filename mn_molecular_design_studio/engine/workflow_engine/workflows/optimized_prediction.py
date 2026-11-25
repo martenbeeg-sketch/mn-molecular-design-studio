@@ -1200,6 +1200,7 @@ def _attach_reference_boltz_msas(
     *,
     item_id: str,
     use_msa: bool,
+    query_only_chains: set[str] | None = None,
 ) -> dict[str, Any]:
     """Attach reference A3Ms, leaving cache misses for Boltz's ColabFold fallback."""
     if not use_msa:
@@ -1221,8 +1222,16 @@ def _attach_reference_boltz_msas(
         row.get("protein") for row in payload["sequences"]
         if isinstance(row, dict) and isinstance(row.get("protein"), dict)
     ]
+    query_only_chains = query_only_chains or set()
+
+    def chain_ids(protein):
+        value = protein.get("id")
+        return [str(identifier) for identifier in value] if isinstance(value, list) else [str(value or "?")]
+
     msa_by_sequence: dict[str, str] = {}
     for protein in protein_rows:
+        if query_only_chains.issuperset(chain_ids(protein)):
+            continue
         sequence = "".join(str(protein.get("sequence") or "").split()).upper()
         current_msa = str(protein.get("msa") or "").strip()
         if not sequence or not current_msa or current_msa.lower() in {"empty", "none"}:
@@ -1235,13 +1244,14 @@ def _attach_reference_boltz_msas(
             )
         msa_by_sequence[sequence] = current_msa
 
-    for index, row in enumerate(payload["sequences"], start=1):
-        protein = row.get("protein") if isinstance(row, dict) else None
-        if not isinstance(protein, dict):
+    for protein in protein_rows:
+        ids = chain_ids(protein)
+        if query_only_chains.issuperset(ids):
+            if protein.get("msa") != "empty":
+                protein["msa"] = "empty"
+                changed = True
             continue
-        protein_ids = protein.get("id")
-        chain_ids = [str(value) for value in protein_ids] if isinstance(protein_ids, list) else [str(protein_ids or "?")]
-        chain_label = ",".join(chain_ids)
+        chain_label = ",".join(ids)
         current_msa = str(protein.get("msa") or "").strip()
         if current_msa and current_msa.lower() not in {"empty", "none"}:
             continue  # Keep an explicitly uploaded or YAML-provided A3M.
@@ -1264,7 +1274,7 @@ def _attach_reference_boltz_msas(
             if "msa" in protein:
                 protein.pop("msa", None)
                 changed = True
-            missing.extend(chain_ids)
+            missing.extend(ids)
             continue
         msa_dir.mkdir(parents=True, exist_ok=True)
         sequence_key = hashlib.sha256(sequence.encode("utf-8")).hexdigest()[:16]
@@ -1590,6 +1600,8 @@ def _stage_native_input_without_msa(
         _write_json(path, {"name": job_name, "components": components})
         return path, {}
     if kind == "boltz_yaml":
+        chain_options = molecule_chain_options or {}
+        query_only_chains = {chain_id for chain_id, option in chain_options.items() if option.get("use_msa") is False}
         if boltz_yaml_text.strip():
             path, details = _stage_uploaded_boltz_yaml(
                 run_dir, item_id=item_id, yaml_text=boltz_yaml_text, auxiliary_files=boltz_yaml_files,
@@ -1601,14 +1613,13 @@ def _stage_native_input_without_msa(
                 custom_msas=boltz_custom_msas, affinity_binder=affinity_binder,
             )
             reference_msas = _attach_reference_boltz_msas(
-                run_dir, path, item_id=item_id, use_msa=use_msa,
+                run_dir, path, item_id=item_id, use_msa=use_msa, query_only_chains=query_only_chains,
             )
             return path, {
                 **details, **extras, **reference_msas,
                 "force": bool(details.get("force") or extras.get("force")),
             }
         path = input_dir / f"{item_id}.yaml"
-        chain_options = molecule_chain_options or {}
         sequences = []
         for chain in proteins:
             protein = {"id": chain["id"], "sequence": chain["sequence"]}
@@ -1641,7 +1652,7 @@ def _stage_native_input_without_msa(
             affinity_binder=affinity_binder,
         )
         reference_msas = _attach_reference_boltz_msas(
-            run_dir, path, item_id=item_id, use_msa=use_msa,
+            run_dir, path, item_id=item_id, use_msa=use_msa, query_only_chains=query_only_chains,
         )
         return path, {**extras, **reference_msas}
     if kind == "openfold3_ob0_json":

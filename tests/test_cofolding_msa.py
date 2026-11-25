@@ -123,6 +123,33 @@ def native_args(engine):
                 binder_sequence='', num_recycles=3)
 
 
+def test_boltz_batch_skips_reference_lookup_for_single_sequence_chains(tmp_path, reference, monkeypatch):
+    target_msa = cache(reference)
+    other = "VVVVVVVVV"
+    calls = []
+
+    def reference_lookup(sequence, _root):
+        calls.append(sequence)
+        assert sequence == SEQUENCE
+        return target_msa, "shared_msa_cache"
+
+    monkeypatch.setattr(workflow, "_find_reference_boltz_msa", reference_lookup)
+    monkeypatch.setattr(msa, "fetch_colabfold", forbid_fetch)
+    run = tmp_path / "batch"
+    for item in ("one", "two"):
+        args = native_args("boltz2") | dict(
+            item_id=item, proteins=[{"id": "A", "sequence": SEQUENCE}, {"id": "B", "sequence": other}],
+            molecule_chain_options={"B": {"use_msa": False}},
+        )
+        path, details = workflow._stage_native_input(run, prepare_msas=True, **args)
+        assert details["query_only_chains"] == ["B"]
+        inputs = yaml.safe_load(path.read_text())["sequences"]
+        binder_path = inputs[1]["protein"]["msa"].removeprefix("/work/")
+        assert msa.records((run / binder_path).read_text()) == [(">query", other)]
+        assert details["reference_msa_missing_chains"] == []
+    assert calls == [SEQUENCE, SEQUENCE]
+
+
 @pytest.mark.parametrize('engine', [key for key in workflow.ENGINE_PROFILES if key != 'boltzgen_fold'])
 def test_every_native_adapter_consumes_job_local_alignment_when_capable(tmp_path, reference, monkeypatch, engine):
     cache(reference)
