@@ -137,6 +137,31 @@ ROUTES = (
 )
 
 
+def supported_interface_constraints(route):
+    """Return the annotations the registered structured route can apply."""
+    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
+    from mn_molecular_design_studio.pipeline_tile_workflows import TILES, parameters_for
+
+    if route.target_input not in STRUCTURE_TARGET_INPUTS:
+        return ()
+    if route.method == "rfd4":
+        return () if route.id == "rfd4-cyclic" else ("hotspots",)
+
+    spec = NODE_CATALOG[route.method]
+    tile = TILES.get(route.method)
+    hotspots = spec.get("hotspot_support") == "native" or (
+        tile is not None and "hotspots" in dict(parameters_for(tile.workflow))
+    )
+    coldspots = spec.get("coldspot_support") in {"native", "mapped"}
+    return tuple(key for key, enabled in (("hotspots", hotspots), ("coldspots", coldspots)) if enabled)
+
+
+def effective_interface_constraints(annotation, inherited):
+    """Resolve branch overrides using the persisted inheritance rule."""
+    return {key: annotation.get(key, "") or ("" if annotation.get("clear_unselected") else inherited.get(key, ""))
+            for key in ("hotspots", "coldspots")}
+
+
 def catalogue():
     routes = []
     for route in ROUTES:
@@ -149,6 +174,9 @@ def catalogue():
                 item["options"]["interface_analysis"] = False
             if route.id == "rfd4-external":
                 item["options"]["refold_engine"] = {"default": "boltz2", "choices": RFD4_REFOLD_ENGINES.copy()}
+        if supported := supported_interface_constraints(route):
+            item["interface_constraints_supported"] = list(supported)
+            item.setdefault("options", {})["interface_constraints"] = False
         routes.append(item)
     return {"template_id": "design_binder", "target_inputs": TARGET_INPUTS.copy(), "binder_formats": FORMATS.copy(),
             "routes": routes}
@@ -197,7 +225,7 @@ def stage_idr_target(sequence, owner_id, *, hotspots=""):
 
 
 def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, graph=None, target_node_id=None,
-                        refold_engine=None, soluble_mpnn=False, interface_analysis=False):
+                        refold_engine=None, soluble_mpnn=False, interface_analysis=False, interface_constraints=False):
     """Build a new draft or graft an independent branch onto one existing target."""
     from mn_molecular_design_studio.pipeline_graph import SCHEMA, validate_graph
     from mn_molecular_design_studio.scientific_tasks import _node, new_task_graph
@@ -221,6 +249,10 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
         raise ValueError("Optional sequence redesign is available in the modular RFD4 presets.")
     if interface_analysis and route.id not in {"rfd4-internal", "rfd4-external"}:
         raise ValueError("The optional interface analysis requires an RFD4 preset with refolding.")
+    if type(interface_constraints) is not bool:
+        raise ValueError("Interface constraints must be true or false.")
+    if interface_constraints and not supported_interface_constraints(route):
+        raise ValueError("This route uses its own target annotations.")
     configuration = {"methods": [route.method]}
     if binder_format == "vhh" and route.method in {"bindcraft2_generator", "boltzgen_generator", "esm_binder"}:
         configuration["binder_format"] = binder_format
@@ -294,6 +326,8 @@ def new_binder_pipeline(route_id, *, target_input, binder_format, inputs=None, g
             _node("shared_filter", "acceptance", {"binder_format": binder_format,
                 "target_type": "fasta_idr" if target_input == "idr" else "structured"}, "Validation & acceptance"),
         ])
+    if interface_constraints:
+        steps.insert(1, _node("binder_context", "interface"))
     steps.append(_node("results", "results"))
     result = copy.deepcopy(graph) if graph else {**recipe, "nodes": [], "edges": []}
     if not result["nodes"]:

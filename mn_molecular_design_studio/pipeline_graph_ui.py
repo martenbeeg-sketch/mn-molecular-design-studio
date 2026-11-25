@@ -85,6 +85,27 @@ def _target_ancestor(graph, node_id):
     return None
 
 
+def _inherited_interface_constraints(graph, node_id):
+    from mn_molecular_design_studio.binder_pipeline import effective_interface_constraints
+
+    nodes = {node["id"]: node["data"] for node in graph.get("nodes", [])}
+    upstream = {edge["target"]: edge["source"] for edge in graph.get("edges", [])
+                if nodes.get(edge["source"], {}).get("kind") in {"target", "binder_context"}}
+    previous = []
+    seen = {node_id}
+    while (source_id := upstream.get(node_id)) and source_id not in seen:
+        seen.add(source_id)
+        source = nodes[source_id]
+        previous.append(source["params"])
+        if source["kind"] == "target":
+            break
+        node_id = source_id
+    inherited = {}
+    for annotations in reversed(previous):
+        inherited = effective_interface_constraints(annotations, inherited)
+    return inherited
+
+
 def _active_library_options():
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
     result = []
@@ -475,13 +496,11 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
             contexts[node_id] = chosen
             params.update(chosen)
     elif selected["data"]["kind"] == "binder_context":
-        context_name = selected["data"].get("label", "Binder Design Context")
-        context_subject = context_name.removesuffix(" Context")
         target_node = _target_ancestor(graph or {}, node_id)
         target_params = target_node["data"]["params"] if target_node else {}
         path = resolve_stored_path(target_params.get("target_pdb"), must_exist=True) if target_params.get("target_pdb") else None
         if not path:
-            st.info("Connect this context to a Target Structure node and load its structure first.")
+            st.info("Load a structure in the connected Target Structure step.")
             return contexts
         source = TargetSource(path=path, name=path.stem, owner_id=owner_id)
         chain_key = f"{key}-chains-" + _hash(str(source.path))
@@ -492,16 +511,14 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
         widget_keys = _target_widget_keys(key, source.path)
         st.session_state.setdefault(widget_keys["hotspots"], params.get("hotspots", ""))
         st.session_state.setdefault(widget_keys["coldspots"], params.get("coldspots", ""))
-        target = render_target_editor(source, key_prefix=key, label=f"{context_subject} target", show_structure_tools=False, allow_trimming=False,
-                                      chain_selection_label="Target chains (set in Target Structure)", chain_selection_disabled=True,
-                                      residue_selection_title="Hotspot override",
-                                      residue_selection_caption="Choose residues the binder should contact. Leave empty to inherit hotspots from Target Structure.",
-                                      residue_selection_input_label="Hotspot override", rerun_scope="fragment")
-        if target.source_path:
-            with st.expander("Coldspot residues (optional)", expanded=bool(params.get("coldspots"))):
-                st.caption("Choose residues the binder should avoid. Leave empty to inherit coldspots from Target Structure. Support depends on the connected generator.")
-                render_target_coldspots(target, key_prefix=key, show_structure_tools=False, rerun_scope="fragment")
-        if target.ready and target.valid_trim_ranges:
+        inherited = {} if params.get("clear_unselected") else _inherited_interface_constraints(graph or {}, node_id)
+        target = render_target_editor(
+            source, key_prefix=key, label="Interface constraints", show_structure_tools=False, allow_trimming=False,
+            chain_selection_label="Target chains", chain_selection_disabled=True, residue_selection_title="Hotspot residues",
+            residue_selection_caption="Choose residues the binder should contact.",
+            residue_selection_input_label="Chosen hotspot residues", rerun_scope="fragment", inherited_interface=inherited,
+        )
+        if target.ready and not target.interface_conflict:
             contexts[node_id] = {"hotspots": target.hotspots, "coldspots": target.coldspots}
             params.update(contexts[node_id])
     else:
@@ -717,13 +734,7 @@ def _activate_graph(prefix, graph, revision=None):
     _close_node_editor(prefix)
 
 
-def open_binder_preset(preset, *, prefix=None):
-    from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline
-
-    _open_capability_graph(new_binder_pipeline(**preset), prefix)
-
-
-def _open_capability_graph(graph, prefix):
+def open_capability_graph(graph, prefix=None):
     if prefix is None:
         st.session_state.pop(_TEMPLATE_VIEW_PREFIX + "-open", None)
         st.session_state["pipeline-pending-draft"] = {"project_id": None, "graph": graph}
@@ -1376,7 +1387,7 @@ def _render_pipeline_library(prefix, owner_id, project_id, definitions, archived
             from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
 
             render_capabilities(prefix + "-design-capabilities",
-                                lambda graph: _open_capability_graph(graph, prefix),
+                                lambda graph: open_capability_graph(graph, prefix),
                                 database_user=database_user, project_id=project_id)
             return
         if section == "Runs":

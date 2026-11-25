@@ -123,6 +123,58 @@ def test_rfd4_modular_presets_connect_only_the_requested_stages(refolder):
         new_binder_pipeline("rfd4-generator", **arguments, refold_engine=refolder)
 
 
+@pytest.mark.parametrize("route", ROUTES, ids=lambda route: route.id)
+def test_interface_constraints_are_inserted_only_for_supported_routes(route):
+    from mn_molecular_design_studio.binder_pipeline import supported_interface_constraints
+
+    arguments = {"target_input": route.target_input, "binder_format": route.format, "interface_constraints": True}
+    if not supported_interface_constraints(route):
+        with pytest.raises(ValueError, match="target annotations"):
+            new_binder_pipeline(route.id, **arguments)
+        return
+    draft = new_binder_pipeline(route.id, **arguments)
+    target, annotation, engine = draft["nodes"][:3]
+    assert [node["data"]["kind"] for node in (target, annotation, engine)] == ["target", "binder_context", route.method]
+    assert annotation["data"]["label"] == "Interface Constraints"
+    assert [(edge["source"], edge["target"]) for edge in draft["edges"][:2]] == [
+        (target["id"], annotation["id"]), (annotation["id"], engine["id"]),
+    ]
+
+
+def test_interface_editor_shows_effective_constraints_in_one_view_and_reports_overlap(monkeypatch, tmp_path):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import target_editor
+
+    pdb = tmp_path / "target.pdb"
+    pdb.write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  CA  GLY A   2       3.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    calls = []
+
+    def viewer(structures, **kwargs):
+        calls.append((structures[0].highlighted_selections, kwargs["selection_mode"]))
+
+    monkeypatch.setattr(target_editor, "molstar_custom_component", viewer)
+    app = AppTest.from_string(f"""
+from pathlib import Path
+from mn_molecular_design_studio.target_editor import TargetSource, render_target_editor
+render_target_editor(TargetSource(path=Path({str(pdb)!r})), key_prefix="constraints",
+                     allow_trimming=False, inherited_interface={{"hotspots": "A1", "coldspots": "A2"}})
+""").run()
+    assert not app.exception
+    assert calls == [([], True)]
+    app.radio(key="constraints-annotation-view").set_value("both").run()
+    assert calls[-1] == (["A1", "A2"], False)
+    coldspots = next(field for field in app.text_input if field.label == "Chosen coldspot residues")
+    coldspots.set_value("A1").run()
+    assert "Residues in both lists: A1" in app.error[0].value
+    assert calls[-1] == (["A1"], False)
+    app.radio(key="constraints-annotation-view").set_value("coldspots").run()
+    assert calls[-1] == (["A1"], True)
+
+
 @pytest.mark.parametrize("prefix", [None, "project-editor"])
 def test_capability_cell_opens_rfd4_preset_controls(monkeypatch, prefix):
     from streamlit.testing.v1 import AppTest
@@ -137,14 +189,14 @@ def test_capability_cell_opens_rfd4_preset_controls(monkeypatch, prefix):
     app = AppTest.from_string("""
 import streamlit as st
 from mn_molecular_design_studio.design_capabilities_ui import render_design_tasks
-from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_graph
+from mn_molecular_design_studio.pipeline_graph_ui import open_capability_graph
 prefix = st.session_state["test-prefix"]
 pending = st.session_state.get("pipeline-pending-draft", {})
 graph = st.session_state.get(f"{prefix}-graph") or pending.get("graph")
 if graph:
     st.json([node["data"]["kind"] for node in graph["nodes"]])
 else:
-    render_design_tasks("cap", lambda draft: _open_capability_graph(draft, prefix))
+    render_design_tasks("cap", lambda draft: open_capability_graph(draft, prefix))
 """)
     app.session_state["cap-target"] = "multidomain"
     app.session_state["test-prefix"] = prefix
@@ -155,10 +207,12 @@ else:
     external = next(route for route in compatible_routes("multidomain", "miniprotein") if route.id == "rfd4-external")
     selector.set_value(external).run()
     app.selectbox(key=key + "-refold").set_value("rf3").run()
+    app.checkbox(key=key + "-constraints").check().run()
+    assert any("Coldspots are unavailable" in caption.value for caption in app.caption)
     app.checkbox(key=key + "-analysis").check().run()
     app.button(key=key + "-create-pipeline").click().run()
     assert not app.exception
-    assert json.loads(app.json[0].value) == ["target", "rfd4", "rf3", "ipsae", "candidate_merge", "shared_filter", "results"]
+    assert json.loads(app.json[0].value) == ["target", "binder_context", "rfd4", "rf3", "ipsae", "candidate_merge", "shared_filter", "results"]
     if prefix is None:
         assert app.session_state["page"] == "Pipelines"
         assert app.session_state["pipeline-pending-draft"]["project_id"] is None

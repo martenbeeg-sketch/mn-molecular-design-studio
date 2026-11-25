@@ -456,10 +456,11 @@ def test_binder_picker_catalog_and_draft_use_the_same_routes(api_data):
     multidomain = client.post("/api/v1/pipelines/drafts", json=request)
     assert multidomain.status_code == 200, multidomain.text
     assert multidomain.json()["graph"]["nodes"][0]["data"]["params"]["target_input"] == "multidomain"
-    request["configuration"].update(route="rfd4-external", refold_engine="rf3", interface_analysis=True)
+    request["configuration"].update(route="rfd4-external", refold_engine="rf3", interface_analysis=True,
+                                    interface_constraints=True)
     modular = client.post("/api/v1/pipelines/drafts", json=request)
     assert modular.status_code == 200, modular.text
-    assert [node["data"]["kind"] for node in modular.json()["graph"]["nodes"]][1:4] == ["rfd4", "rf3", "ipsae"]
+    assert [node["data"]["kind"] for node in modular.json()["graph"]["nodes"]][1:5] == ["binder_context", "rfd4", "rf3", "ipsae"]
     request["configuration"]["refold_engine"] = "wrong-engine"
     assert client.post("/api/v1/pipelines/drafts", json=request).status_code == 422
 

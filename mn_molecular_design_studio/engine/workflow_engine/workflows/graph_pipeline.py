@@ -2006,13 +2006,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if kind == "binder_context":
                         target = copy.deepcopy(source.get("target") or {})
                         if not target.get("target_pdb") or not target.get("target_chains"):
-                            raise ValueError("Binder Design Context needs a connected Target Structure with selected chains.")
-                        if params.get("clear_unselected"):
-                            target["hotspots"] = params.get("hotspots", "")
-                            target["coldspots"] = params.get("coldspots", "")
-                        else:
-                            target["hotspots"] = params.get("hotspots") or target.get("hotspots", "")
-                            target["coldspots"] = params.get("coldspots") or target.get("coldspots", "")
+                            raise ValueError("Interface Constraints needs a connected Target Structure with selected chains.")
+                        from mn_molecular_design_studio.binder_pipeline import effective_interface_constraints
+
+                        target.update(effective_interface_constraints(params, target))
                         complete(node_id, {"target": target}, key);progressed=True;continue
                     if kind in {"design_source","generation_source","backbone_source","molecule_source","project_design_source"}:
                         loader=(source_molecule_selection if kind == 'molecule_source' else source_project_designs if kind == 'project_design_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs)

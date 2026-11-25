@@ -123,7 +123,7 @@ def install(app, current_user, *, validate_paths, resolve_job):
                 raise HTTPException(422, "A binder starter uses a target structure or sequence.")
             config = payload.configuration or {"route": "rfd4-internal", "target_input": "structure", "binder_format": "miniprotein"}
             required = {"route", "target_input", "binder_format"}
-            optional = {"refold_engine", "soluble_mpnn", "interface_analysis"}
+            optional = {"refold_engine", "soluble_mpnn", "interface_analysis", "interface_constraints"}
             if not required <= config.keys() or set(config) - required - optional:
                 raise HTTPException(422, "Choose route, target_input and binder_format from the binder builder catalog.")
             route = config["route"]

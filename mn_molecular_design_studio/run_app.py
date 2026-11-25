@@ -477,9 +477,9 @@ def _render_tool_catalog() -> None:
     with st.expander("Design capabilities"):
         if st.toggle("Show capability matrix", key="show-design-capability-matrix"):
             from mn_molecular_design_studio.design_capabilities_ui import render_design_tasks
-            from mn_molecular_design_studio.pipeline_graph_ui import open_binder_preset
+            from mn_molecular_design_studio.pipeline_graph_ui import open_capability_graph
 
-            render_design_tasks("all-tools-capabilities", open_binder_preset)
+            render_design_tasks("all-tools-capabilities", open_capability_graph)
     st.markdown(
         """
         <style>

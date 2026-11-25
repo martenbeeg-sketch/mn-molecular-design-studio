@@ -38,9 +38,9 @@ def test_prediction_capabilities_show_main_engines_and_open_connected_drafts(mon
     app = AppTest.from_string("""
 import streamlit as st
 from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
-from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_graph
+from mn_molecular_design_studio.pipeline_graph_ui import open_capability_graph
 if 'cap-graph' not in st.session_state:
-    render_capabilities('cap', lambda draft: _open_capability_graph(draft, 'cap'))
+    render_capabilities('cap', lambda draft: open_capability_graph(draft, 'cap'))
 """)
     app.session_state["cap-capability"] = "Docking & affinity" if affinity else "Structure prediction & cofolding"
     app.run()
@@ -83,9 +83,9 @@ def test_small_molecule_modes_open_the_matching_pipeline_draft(monkeypatch, engi
     app = AppTest.from_string("""
 import streamlit as st
 from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
-from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_graph
+from mn_molecular_design_studio.pipeline_graph_ui import open_capability_graph
 if 'cap-graph' not in st.session_state:
-    render_capabilities('cap', lambda draft: _open_capability_graph(draft, 'cap'))
+    render_capabilities('cap', lambda draft: open_capability_graph(draft, 'cap'))
 """)
     app.session_state["cap-capability"] = "Small-molecule design"
     app.run()
@@ -156,9 +156,9 @@ def test_bioemu2_mode_cells_open_mode_specific_drafts(monkeypatch, mode, project
     app = AppTest.from_string("""
 import streamlit as st
 from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
-from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_graph
+from mn_molecular_design_studio.pipeline_graph_ui import open_capability_graph
 if 'cap-graph' not in st.session_state:
-    render_capabilities('cap', lambda draft: _open_capability_graph(draft, 'cap'))
+    render_capabilities('cap', lambda draft: open_capability_graph(draft, 'cap'))
 """)
     app.session_state["cap-capability"] = "Conformational sampling"
     app.run()
@@ -182,9 +182,9 @@ def test_md_setup_builds_the_selected_dependencies(monkeypatch, analysis):
     app = AppTest.from_string("""
 import streamlit as st
 from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
-from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_graph
+from mn_molecular_design_studio.pipeline_graph_ui import open_capability_graph
 if "cap-graph" not in st.session_state:
-    render_capabilities("cap", lambda draft: _open_capability_graph(draft, "cap"))
+    render_capabilities("cap", lambda draft: open_capability_graph(draft, "cap"))
 """)
     app.session_state["cap-capability"] = "Molecular dynamics"
     app.run()
@@ -247,9 +247,9 @@ def test_saved_database_selection_is_frozen_only_when_creating_the_draft(monkeyp
     app = AppTest.from_string("""
 import streamlit as st
 from mn_molecular_design_studio.design_capabilities_ui import render_capabilities
-from mn_molecular_design_studio.pipeline_graph_ui import _open_capability_graph
+from mn_molecular_design_studio.pipeline_graph_ui import open_capability_graph
 if "cap-graph" not in st.session_state:
-    render_capabilities("cap", lambda draft: _open_capability_graph(draft, "cap"),
+    render_capabilities("cap", lambda draft: open_capability_graph(draft, "cap"),
                         database_user={"id": "owner"}, project_id="project")
 """)
     app.session_state["cap-capability"] = "Analysis & validation"

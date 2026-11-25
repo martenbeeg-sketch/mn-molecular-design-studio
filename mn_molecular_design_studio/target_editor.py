@@ -71,6 +71,7 @@ class TargetDesignInput:
     valid_trim_ranges: bool = True
     hotspot_state_key: str = ""
     coldspot_state_key: str = ""
+    interface_conflict: bool = False
 
     @property
     def ready(self) -> bool:
@@ -732,6 +733,7 @@ def render_target_editor(
     viewer_height: int = 640,
     rerun_scope: str | None = None,
     before_residue_selection: Callable[[TargetDesignInput], None] | None = None,
+    inherited_interface: dict | None = None,
 ) -> TargetDesignInput:
     """Render chain selection, terminal trimming, hotspots, and the target MolView."""
     target = TargetDesignInput(label=label, key_prefix=key_prefix, source_path=source.path)
@@ -871,6 +873,26 @@ def render_target_editor(
     if valid_ranges:
         st.caption("Valid target ranges: " + ", ".join(valid_ranges))
 
+    viewer_kind = "hotspots"
+    summary_highlights = None
+    if inherited_interface is not None:
+        from mn_molecular_design_studio.binder_pipeline import effective_interface_constraints
+
+        render_target_coldspots(target, key_prefix=key_prefix, rerun_scope=rerun_scope, show_viewer=False)
+        descriptions = effective_interface_constraints(
+            {"hotspots": target.hotspots, "coldspots": target.coldspots}, inherited_interface)
+        contact, avoid = (_hotspot_pairs(descriptions[kind]) & target.valid_residues for kind in ("hotspots", "coldspots"))
+        st.caption(f"Hotspots: {len(contact)} · Coldspots: {len(avoid)} on this branch")
+        if overlap := (contact & avoid):
+            target.interface_conflict = True
+            st.error(f"Residues in both lists: {_hotspot_text(overlap)}. Remove them from one list to apply.")
+        modes = {"hotspots": "Edit hotspots", "coldspots": "Edit coldspots", "both": "Show both"}
+        viewer_kind = st.radio("Residue selection", list(modes), format_func=modes.get, horizontal=True,
+                               key=key_prefix + "-annotation-view")
+        if viewer_kind == "both":
+            summary_highlights = contact | avoid
+            st.caption("Showing the combined selections. Choose an editing mode to change a list.")
+
     if is_mmcif:
         target.viewer_mode = "Whole complex"
         st.markdown("#### MolView")
@@ -886,8 +908,9 @@ def render_target_editor(
         )
     _render_residue_viewer(
         target,
-        kind="hotspots",
+        kind=viewer_kind,
         height=viewer_height,
+        summary_highlights=summary_highlights,
         show_structure_tools=show_structure_tools,
         rerun_scope=rerun_scope,
     )
@@ -903,6 +926,7 @@ def _render_residue_viewer(
     height: int,
     show_structure_tools: bool = True,
     rerun_scope: str | None = None,
+    summary_highlights: set[tuple[str, int]] | None = None,
 ) -> None:
     if target.source_path is None or not target.source_path.is_file():
         st.info("Load a target structure to select residues in MolView.")
@@ -921,10 +945,13 @@ def _render_residue_viewer(
     if kind == "hotspots":
         viewer_key = f"{target.key_prefix}-viewer-{digest}-selection-sync-v2"
         selection_key = target.hotspot_state_key
-    else:
+    elif kind == "coldspots":
         viewer_key = f"{target.key_prefix}-coldspot-viewer-{digest}-selection-sync-v1"
         selection_key = target.coldspot_state_key
-    revision_key = selection_key + "-revision"
+    else:
+        viewer_key = f"{target.key_prefix}-interface-viewer-{digest}"
+        selection_key = ""
+    highlights = (_hotspot_pairs(st.session_state.get(selection_key, "")) if selection_key else summary_highlights or set())
     value = molstar_custom_component(
         [
             StructureVisualization(
@@ -933,7 +960,7 @@ def _render_residue_viewer(
                 color_params={"value": "0xe7b8aa"},
                 representation_type="cartoon",
                 highlighted_selections=[
-                    f"{chain}{residue}" for chain, residue in sorted(_hotspot_pairs(st.session_state.get(selection_key, "")))
+                    f"{chain}{residue}" for chain, residue in sorted(highlights)
                 ],
             )
         ],
@@ -941,9 +968,11 @@ def _render_residue_viewer(
         height=height,
         show_controls=True,
         show_structure_tools=show_structure_tools,
-        selection_mode=True,
-        force_reload=st.session_state.get(revision_key, 0),
+        selection_mode=bool(selection_key),
+        force_reload=st.session_state.get(selection_key + "-revision", 0) if selection_key else 0,
     )
+    if not selection_key:
+        return
     signature = json.dumps(value, sort_keys=True, default=str)
     seen_key = viewer_key + "-last-selection"
     previous_signature = st.session_state.get(seen_key)
@@ -966,8 +995,9 @@ def render_target_coldspots(
     legacy_coldspots_key: str | None = None,
     show_structure_tools: bool = True,
     rerun_scope: str | None = None,
+    show_viewer: bool = True,
 ) -> str:
-    """Render a target's coldspot input and independent MolView selection."""
+    """Render the coldspot input, with its own viewer on standalone pages."""
     if target.source_path is None or not target.source_path.is_file():
         target.coldspots = ""
         return target.coldspots
@@ -990,7 +1020,7 @@ def render_target_coldspots(
 
     with st.container(border=True):
         st.markdown("#### Coldspot residues")
-        st.caption("Choose residues the binder should avoid. Selection here is separate from hotspots.")
+        st.caption("Choose residues the binder should avoid.")
         input_col, select_all_col, clear_col = st.columns([5, .85, .85], vertical_alignment="bottom")
         with select_all_col:
             if st.button("Select all", key=f"{coldspot_key}-select-all", use_container_width=True, disabled=not target.valid_residues):
@@ -1011,20 +1041,21 @@ def render_target_coldspots(
                 args=(revision_key,),
                 help=(
                     "Enter chain and residue numbers separated by commas."
-                    if target.source_path.suffix.lower() in {".cif", ".mmcif"}
-                    else "Enter chain and residue numbers separated by commas, or select them in the coldspot MolView."
+                    if show_viewer and target.source_path.suffix.lower() in {".cif", ".mmcif"}
+                    else "Enter chain and residue numbers separated by commas, or select them in the viewer."
                 ),
             ).strip()
-        if target.source_path.suffix.lower() in {".cif", ".mmcif"}:
-            st.caption("This viewer displays the full mmCIF structure; residue selections are restricted to the target chains above.")
-        else:
-            st.caption("This viewer uses the same target-only / whole-complex view setting as the hotspot viewer.")
-        _render_residue_viewer(
-            target,
-            kind="coldspots",
-            height=520,
-            show_structure_tools=show_structure_tools,
-            rerun_scope=rerun_scope,
-        )
+        if show_viewer:
+            if target.source_path.suffix.lower() in {".cif", ".mmcif"}:
+                st.caption("This viewer displays the full mmCIF structure; residue selections are restricted to the target chains above.")
+            else:
+                st.caption("This viewer uses the same target-only / whole-complex view setting as the hotspot viewer.")
+            _render_residue_viewer(
+                target,
+                kind="coldspots",
+                height=520,
+                show_structure_tools=show_structure_tools,
+                rerun_scope=rerun_scope,
+            )
     target.coldspots = st.session_state[coldspot_key]
     return target.coldspots

@@ -403,7 +403,7 @@ def _render_connection_card(node, graph):
                 b.write(f"{params.get('target_chains') or '—'} · {params.get('hotspots') or 'No hotspots'} · {params.get('coldspots') or 'No coldspots'}")
             elif source["data"]["kind"] == "binder_context":
                 empty_state = "No annotation" if params.get("clear_unselected") else "Inherited"
-                context_name = source["data"].get("label", "Binder Design Context").upper()
+                context_name = source["data"].get("label", "Interface Constraints").upper()
                 st.caption(context_name + " · " + f"{('Hotspots: ' + params['hotspots']) if params.get('hotspots') else 'Hotspots ' + empty_state} · {('Coldspots: ' + params['coldspots']) if params.get('coldspots') else 'Coldspots ' + empty_state}")
             else:
                 st.caption(source['data']['label']+" · " + str(len(params.get("selected_candidate_ids") or [])) + " selected")
@@ -769,17 +769,17 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
         coldspot_support = spec.get("coldspot_support")
         hotspot_support = spec.get("hotspot_support")
         if hotspot_support == "native":
-            st.caption("Connected Target or Binder Design Context hotspots are passed to this engine’s hotspot input.")
+            st.caption("Connected Target or Interface Constraints hotspots are passed to this engine’s hotspot input.")
         elif hotspot_support == "conditional":
             st.caption("Hotspots are used for the protein-binder task; ligand-design tasks use their ligand or motif constraints instead.")
         elif hotspot_support == "unsupported":
             st.caption("This step does not accept binder hotspots. Connected interface annotations are ignored here.")
         if coldspot_support == "native":
-            st.caption("Connected Target or Binder Design Context coldspots are passed to this engine’s native coldspot constraint.")
+            st.caption("Connected Target or Interface Constraints coldspots are passed to this engine’s native coldspot constraint.")
         elif coldspot_support == "mapped":
-            st.caption("Connected Target or Binder Design Context coldspots are passed as BoltzGen non-binding residues and mapped to its chain-local numbering.")
+            st.caption("Connected Target or Interface Constraints coldspots are passed as BoltzGen non-binding residues and mapped to its chain-local numbering.")
         elif coldspot_support == "unsupported":
-            st.caption("This engine does not accept coldspots. Connected Target or Binder Design Context coldspots are ignored for this step.")
+            st.caption("This engine does not accept coldspots. Connected Target or Interface Constraints coldspots are ignored for this step.")
         label = st.text_input("Step name", value=node["data"]["label"], key=key+"-label").strip() or spec["label"]
         ready = True
         if kind in TILES:
@@ -806,8 +806,9 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
                 "Clear inherited annotations when overrides are empty",
                 value=bool(values.get("clear_unselected", False)),
                 key=key + "-clear-unselected",
-                help="Use this when the branch should receive no hotspots or coldspots, even if the connected Target Structure has them set.",
+                help="A blank list inherits the corresponding Target list unless this option is enabled.",
             )
+            node["data"]["params"]["clear_unselected"] = values["clear_unselected"]
             with st.container(border=True):
                 contexts = render_input()
                 ready = node["id"] in contexts

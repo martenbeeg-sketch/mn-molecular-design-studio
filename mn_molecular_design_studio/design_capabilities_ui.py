@@ -6,7 +6,7 @@ from html import escape
 import streamlit as st
 
 from mn_molecular_design_studio.binder_pipeline import (
-    RFD4_MODULAR_ROUTES, RFD4_REFOLD_ENGINES, compatible_routes, new_binder_pipeline,
+    RFD4_MODULAR_ROUTES, RFD4_REFOLD_ENGINES, compatible_routes, new_binder_pipeline, supported_interface_constraints,
 )
 from mn_molecular_design_studio.capability_pipeline import (
     DOCKING, MD_ENGINES, POSE_ANALYSES, SAVED_DESIGN_REFOLDERS, add_followup, build_capability_graph, followup_choices, source_choices,
@@ -163,6 +163,16 @@ def _binder_options(key, routes, *, label="Workflow variant"):
              if len(routes) > 1 else routes[0])
     st.caption(route.summary)
     options = {}
+    supported = supported_interface_constraints(route)
+    if supported:
+        options["interface_constraints"] = st.checkbox("Add interface constraints", key=key + "-constraints")
+        if options["interface_constraints"]:
+            labels = {"hotspots": "hotspots (contact)", "coldspots": "coldspots (avoid)"}
+            st.caption(f"{route.engine} applies " + " and ".join(labels[kind] for kind in supported) + ".")
+            if "coldspots" not in supported:
+                st.caption("Coldspots are unavailable for this workflow.")
+    elif route.id == "rfd4-idr":
+        st.caption("Set sequence hotspot positions in the Target step.")
     if route.id in RFD4_MODULAR_ROUTES:
         options["soluble_mpnn"] = st.checkbox(
             "Add SolubleMPNN sequence redesign", key=key + "-soluble", help="Keep the original designs and protect their interface in redesign variants."
@@ -233,7 +243,8 @@ def render_design_tasks(key, open_pipeline):
                 setup_key = f"{key}-{target_input}-{engine}-{output}"
                 preset = _binder_options(setup_key, routes, label="Workflow goal")
                 graph = new_binder_pipeline(**preset)
-                optional = tuple(kind for flag, kind in (("soluble_mpnn", "ligandmpnn"), ("interface_analysis", "ipsae"))
+                optional = tuple(kind for flag, kind in (("interface_constraints", "binder_context"),
+                                                         ("soluble_mpnn", "ligandmpnn"), ("interface_analysis", "ipsae"))
                                  if preset.get(flag))
                 kinds = {node["data"]["kind"] for node in graph["nodes"]}
                 finish = (
