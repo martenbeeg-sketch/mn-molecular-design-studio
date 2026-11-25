@@ -281,11 +281,24 @@ def resolve_job(reference: str, *, include_hidden: bool = False) -> dict[str, An
                 return row
         matches = [row for row in _visible_jobs(include_hidden=include_hidden) if row["task_group"] == group and row["run_id"] == run_id]
     else:
-        matches = [
-            row
-            for row in _visible_jobs(include_hidden=include_hidden)
-            if row["run_id"].lower() == ref.lower() or row["job_code"].lower() == ref.lower()
-        ]
+        from mn_molecular_design_studio.job_catalog import _job_payload, job_paths_for_reference
+
+        root = jobs.runs_root().resolve()
+        matches = []
+        indexed_paths = job_paths_for_reference(ref) if len(ref) > 5 else ()
+        for path in indexed_paths:
+            if not path.resolve().is_relative_to(root) or not (path / "metadata.json").is_file():
+                continue
+            row = _job_payload(path)
+            if ref.casefold() in {row["run_id"].casefold(), row["job_code"].casefold()} and (
+                    include_hidden or not (row.get("hidden") or row.get("capacity_parent"))):
+                row.update(json.loads(row.pop("run_identity_json", "{}")))
+                matches.append(row)
+        if not matches:
+            # Short codes may collide with a job created since the last scan.
+            # Newly created full IDs may also precede the catalog update.
+            matches = [row for row in _visible_jobs(include_hidden=include_hidden)
+                       if ref.casefold() in {row["run_id"].casefold(), row["job_code"].casefold()}]
     if not matches:
         raise AutomationError(f"No job matches '{ref}'. Use a full run ID or a unique job code.")
     if len(matches) > 1:
@@ -328,7 +341,7 @@ def list_jobs(
     return rows[:limit]
 
 
-def inspect_job(reference: str, *, include_hidden: bool = False) -> dict[str, Any]:
+def inspect_job(reference: str, *, include_hidden: bool = False, include_candidates: bool = False) -> dict[str, Any]:
     row = resolve_job(reference, include_hidden=include_hidden)
     run_dir = Path(row["run_dir"])
     # Inspection returns catalog documents and may include artifact URIs owned
@@ -346,6 +359,7 @@ def inspect_job(reference: str, *, include_hidden: bool = False) -> dict[str, An
         "input": input_payload,
         "result": result,
         "candidate_count": len(candidates),
+        **({"candidates": candidates} if include_candidates else {}),
         "campaign_result_path": str(candidates_path) if candidates_path.exists() else None,
         "distributed_campaign_context": campaign_context_for_job(run_dir, metadata, input_payload),
     }
@@ -357,7 +371,7 @@ def job_results(
     include_candidates: bool = False,
     include_hidden: bool = False,
 ) -> dict[str, Any]:
-    details = inspect_job(reference, include_hidden=include_hidden)
+    details = inspect_job(reference, include_hidden=include_hidden, include_candidates=include_candidates)
     run_dir = Path(details["job"]["run_dir"])
     response: dict[str, Any] = {
         "job": details["job"],
@@ -366,7 +380,7 @@ def job_results(
         "campaign_result_path": details["campaign_result_path"],
     }
     if include_candidates:
-        response["candidates"] = read_candidates(run_dir)
+        response["candidates"] = details["candidates"]
     if (run_dir / "artifacts/active_learning/docking_scores.parquet").is_file():
         from mn_molecular_design_studio.bulk_screening_results import screening_results_payload
         response["screening_results"] = screening_results_payload(run_dir, preview_limit=100)

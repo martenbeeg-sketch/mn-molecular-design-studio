@@ -144,6 +144,8 @@ def _initialize(connection: sqlite3.Connection) -> None:
             ON jobs(storage_root_id, project_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS studio_jobs_owner_created
             ON jobs(storage_root_id, owner_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS studio_jobs_run_lookup
+            ON jobs(storage_root_id, run_id COLLATE NOCASE);
         CREATE TABLE IF NOT EXISTS job_artifacts (
             id INTEGER PRIMARY KEY,
             job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -939,6 +941,19 @@ def job_list_facets(
         "statuses": sorted({str(row["status"] or "unknown").title() for row in rows}),
         "tools": sorted({str(row["tool"] or row["job_type"] or "Unknown") for row in rows}),
     }
+
+
+def job_paths_for_reference(reference: str) -> list[Path]:
+    """Find exact local run IDs without hydrating the catalog."""
+    root = _results_root().resolve()
+    _reconcile_for_read(root)
+    with _connection() as connection:
+        rows = connection.execute(
+            "SELECT run_relative_path FROM jobs WHERE storage_root_id=? "
+            "AND run_id COLLATE NOCASE=?",
+            (_root_id(root), reference),
+        ).fetchall()
+    return [root / row["run_relative_path"] for row in rows]
 
 
 def get_job_access_record(task_group: str, run_id: str) -> dict[str, Any] | None:

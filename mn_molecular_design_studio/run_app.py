@@ -89,7 +89,6 @@ from mn_molecular_design_studio.engine.workflow_engine.services.local_automation
     AutomationError,
     cancel_job,
     inspect_job,
-    job_results,
     resolve_job,
     submit_design_campaign_request,
 )
@@ -393,7 +392,7 @@ def _require_current_user_job_access(job: dict) -> None:
         raise PermissionError("Job not found.")
 
 
-def _inspect_current_user_job(reference: str) -> dict:
+def _inspect_current_user_job(reference: str, *, include_candidates: bool = False) -> dict:
     try:
         row = resolve_job(reference)
     except AutomationError as exc:
@@ -401,7 +400,7 @@ def _inspect_current_user_job(reference: str) -> dict:
             raise AutomationError("No accessible job matches that reference.") from exc
         raise
     _require_current_user_job_access(row)
-    return inspect_job(reference)
+    return inspect_job(reference, include_candidates=include_candidates)
 
 
 def _cancel_current_user_job(reference: str, *, reason: str) -> dict:
@@ -467,7 +466,7 @@ if cluster_config.enabled():
     execution_selector(
         CURRENT_USER,
         str(st.session_state.get("studio-session-token") or "development-mode"),
-        refresh_nodes=st.session_state.get("page") not in {"Projects", "Database", "Data Browser", "My runs", "Complex Analysis"},
+        refresh_nodes=st.session_state.get("page") not in {"Projects", "Database", "Data Browser", "My runs", "Job details", "Complex Analysis"},
     )
 
 
@@ -7163,8 +7162,8 @@ def _render_job_details() -> None:
     if back_col.button("← Back to My results", key="job-details-back"):
         st.session_state["page"] = "My runs"
         st.rerun()
-    if refresh_col.button("Refresh", icon=":material/refresh:", key="job-details-refresh"):
-        st.rerun()
+    refresh_workers = refresh_col.button("Refresh", icon=":material/refresh:", key="job-details-refresh",
+                                         help="Refresh this run and check its linked workers.")
 
     if reference.startswith("cluster:"):
         from mn_molecular_design_studio.cluster.ui import render_job
@@ -7172,7 +7171,7 @@ def _render_job_details() -> None:
         return
 
     try:
-        details = _inspect_current_user_job(reference)
+        details = _inspect_current_user_job(reference, include_candidates=True)
     except (AutomationError, OSError, ValueError) as exc:
         st.error(f"Could not open this job: {exc}")
         return
@@ -7190,11 +7189,6 @@ def _render_job_details() -> None:
         render_local_results(run_dir, CURRENT_USER, result, name=str(job.get("campaign_name") or "Pipeline"),
                              status=str(job.get("status") or "unknown"))
         return
-    try:
-        result_payload = job_results(reference, include_candidates=True)
-    except (AutomationError, OSError, ValueError) as exc:
-        st.error(f"Could not open this job: {exc}")
-        return
     surface_titles = {"pesto": "PeSTo", "scannet": "ScanNet", "masif_seed": "MaSIF-seed", "surf2spot": "Surf2Spot", "surface_analysis": "Protein Surface Analysis"}
     raw_title = str(job.get("tool") or job.get("job_type") or run_id)
     title = str(job.get("campaign_name") or surface_titles.get(raw_title.casefold()) or raw_title)
@@ -7204,20 +7198,7 @@ def _render_job_details() -> None:
         st.info("Imported demo fixture · These results were copied from an existing ZIP and were not run by Molecular Design Studio.")
     submitted = _job_submitted_label(job.get("created_at"))
     st.caption(f"{submitted} · Run ID: `{run_id}`")
-    project_id = None
-    try:
-        catalog_matches = search_jobs(
-            query=run_id,
-            task_group=str(job.get("task_group") or "") or None,
-            limit=10,
-            include_hidden=True,
-        )["items"]
-        catalog_job = next((item for item in catalog_matches if str(item.get("run_id")) == run_id), None)
-        if catalog_job:
-            project_id = catalog_job.get("project_id")
-    except (OSError, sqlite3.Error, ValueError):
-        pass
-    project_id = project_id or job.get("project_id") or metadata.get("project_id")
+    project_id = job.get("project_id") or metadata.get("project_id")
     if not project_id:
         try:
             studio_marker = json.loads((Path(job["run_dir"]) / "molecular_design_studio.json").read_text(encoding="utf-8"))
@@ -7258,8 +7239,8 @@ def _render_job_details() -> None:
         f"{summary_items}</div>",
         unsafe_allow_html=True,
     )
-    from mn_molecular_design_studio.distributed_campaign_ui import campaign_context_for_job, render_campaign_context
-    campaign_context = campaign_context_for_job(run_dir, metadata, input_payload)
+    from mn_molecular_design_studio.distributed_campaign_ui import render_campaign_context
+    campaign_context = details.get("distributed_campaign_context")
     render_campaign_context(st, campaign_context)
     from mn_molecular_design_studio.distributed_campaign_controls_ui import render_campaign_lifecycle_controls
     render_campaign_lifecycle_controls(
@@ -7267,6 +7248,7 @@ def _render_job_details() -> None:
         context=campaign_context,
         cancel=lambda value: _cancel_current_user_job(value, reason="Campaign cancelled from Results"),
     )
+    saved_graph, execution = {}, {}
     if str(job.get("tool")) == "visual_pipeline":
         pipeline_run = Path(job["run_dir"])
         try:
@@ -7275,14 +7257,39 @@ def _render_job_details() -> None:
         except (OSError, ValueError):
             saved_graph, execution = {}, {}
         with st.expander("Pipeline steps & saved graph", expanded=True):
+            from mn_molecular_design_studio import logical_runs
+            from mn_molecular_design_studio.cluster import config, transport
+
             labels = {n["id"]: n["data"]["label"] for n in saved_graph.get("nodes", [])}
+            states = execution.get("nodes") or {}
+            cached_workers = st.session_state.get("job-linked-workers") or {}
+            linked = cached_workers.get("jobs", []) if cached_workers.get("reference") == reference else []
+            if refresh_workers and any(step.get("batches") for step in states.values()):
+                try:
+                    runs = logical_runs.catalog(CURRENT_USER, project_id=project_id,
+                        token=str(st.session_state.get("studio-session-token") or "development-mode"))
+                    current = next((run for run in runs if run["root"].get("run_id") == run_id
+                                    and run["root"].get("task_group") == job.get("task_group")
+                                    and run["root"].get("node_id") == config.identity()), None)
+                    if current:
+                        linked = current["jobs"]
+                        st.session_state["job-linked-workers"] = {"reference": reference, "jobs": linked}
+                except (OSError, ValueError, sqlite3.Error, transport.ClusterUnavailable):
+                    pass
             step_rows = []
-            for node_id, state in execution.get("nodes", {}).items():
+            for summary in logical_runs.pipeline_step_summary(execution, job, linked):
+                node_id = summary["id"]
+                state = states[node_id]
                 workers = state.get("worker_nodes") or []
                 computer_text = ", ".join(f"{item.get('name') or item.get('node_id')} · {item.get('status', 'queued')}" for item in workers)
-                step_rows.append({"Step": labels.get(node_id, node_id), "Status": state.get("status"),
+                batches = " · ".join(f"{count} {status.replace('_', ' ')}"
+                                     for status, count in sorted(summary["worker_batch_statuses"].items()))
+                if summary["worker_batches_last_recorded"]:
+                    batches += f" ({summary['worker_batches_last_recorded']} last recorded by controller)"
+                step_rows.append({"Step": labels.get(node_id, node_id), "Status": summary["status"].replace("_", " "),
                                   "Job": state.get("job_code", ""), "Computers": computer_text,
-                                  "Candidates": state.get("candidate_count"), "Detail": state.get("error", "")})
+                                  "Worker batches": batches, "Collected candidates": summary["collected_candidate_count"],
+                                  "Detail": state.get("error", "")})
             st.dataframe(step_rows, hide_index=True, use_container_width=True)
             for node_id, state in execution.get("nodes", {}).items():
                 workers = state.get("worker_nodes") or []
@@ -7290,7 +7297,7 @@ def _render_job_details() -> None:
                     step_label = labels.get(node_id, node_id)
                     if st.button(f"View computers · {step_label} ({len(workers)})", key=f"pipeline-computers-{run_id}-{node_id}"):
                         _show_pipeline_computer_details(step_label, workers)
-            st.caption("This graph is the saved run snapshot. Editing it as a draft keeps these results intact.")
+            st.caption("Refresh to check linked workers. Collected candidates are results received by the pipeline.")
             st.download_button("Download run graph", json.dumps(saved_graph, indent=2), file_name=f"pipeline-{run_id}.json", mime="application/json", key=f"pipeline-graph-download-{run_id}")
             if saved_graph and project_id and st.button("Edit graph as a draft", key=f"pipeline-graph-edit-{run_id}"):
                 st.session_state["pipeline-pending-draft"] = {"project_id": project_id,
@@ -7363,7 +7370,7 @@ def _render_job_details() -> None:
         (tool for tool in surface_tool_names if tool in workflow_identity),
         None,
     )
-    raw_result_candidates = result_payload.get("candidates")
+    raw_result_candidates = details.get("candidates")
     result_candidates = raw_result_candidates if isinstance(raw_result_candidates, list) else []
     input_params = input_payload.get("params") if isinstance(input_payload.get("params"), dict) else {}
     result_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
@@ -7376,15 +7383,11 @@ def _render_job_details() -> None:
     is_rfantibody = analysis_tool == "rfantibody" or "rfantibody" in workflow_identity
     is_rfpeptides = analysis_tool == "rfpeptides" or "rfpeptides" in workflow_identity
     has_dedicated_prediction_results = is_prediction or is_rfantibody or is_rfpeptides or is_rfdiffusion3 or is_rfd4_proteina
-    pipeline_execution = {}
-    surface_nodes = []
-    if str(job.get("tool")) == "visual_pipeline":
-        pipeline_execution = read_json(run_dir / "graph_execution.json")
-        surface_nodes = [
-            (node_id, state["output"]["analysis_run"])
-            for node_id, state in (pipeline_execution.get("nodes") or {}).items()
-            if isinstance(state.get("output"), dict) and isinstance(state["output"].get("analysis_run"), dict)
-        ]
+    surface_nodes = [
+        (node_id, state["output"]["analysis_run"])
+        for node_id, state in (execution.get("nodes") or {}).items()
+        if isinstance(state.get("output"), dict) and isinstance(state["output"].get("analysis_run"), dict)
+    ]
     has_dedicated_surface_results = surface_tool is not None or bool(surface_nodes and not result_candidates)
     is_ipsae = analysis_tool in {"ipsae", "analysis.ipsae"} or analysis_tool.endswith(".ipsae")
     if is_bindcraft2:
@@ -7428,21 +7431,87 @@ def _render_job_details() -> None:
 
     st.divider()
     results_tab, files_tab, settings_tab, logs_tab, citations_tab = st.tabs(
-        ["Results", "Files", "Job settings", "Logs", "Citations"]
+        ["Results", "Files", "Job settings", "Logs", "Citations"],
+        key=f"job-detail-tabs-{run_id}", on_change="rerun",
     )
+    if files_tab.open or logs_tab.open:
+        artifact_paths = _job_artifact_paths(details)
+
+    if files_tab.open:
+        with files_tab:
+            st.subheader("Job files")
+            if not artifact_paths:
+                st.info("No files are indexed for this job yet.")
+            else:
+                file_rows = [
+                    {
+                        "File": str(item.get("relative_path", path.name)),
+                        "Type": str(item.get("kind") or path.suffix.lstrip(".") or "file"),
+                        "Size": _format_bytes(int(item.get("size_bytes") or path.stat().st_size)),
+                        "Modified": str(item.get("modified_at") or "—"),
+                    }
+                    for item, path in artifact_paths
+                ]
+                st.dataframe(file_rows, hide_index=True, use_container_width=True)
+                file_index = st.selectbox(
+                    "Choose a file to download",
+                    range(len(artifact_paths)),
+                    format_func=lambda index: str(artifact_paths[index][0].get("relative_path", artifact_paths[index][1].name)),
+                    key=f"job-file-{run_id}",
+                )
+                _, path = artifact_paths[file_index]
+                st.download_button(
+                    f"Download {path.name}",
+                    data=path.read_bytes,
+                    file_name=path.name,
+                    mime="application/octet-stream",
+                    key=f"job-artifact-download-{run_id}",
+                )
+
+    if settings_tab.open:
+        with settings_tab:
+            st.subheader("Inputs and recorded settings")
+            st.json({"input": input_payload, "metadata": metadata})
+
+    if logs_tab.open:
+        with logs_tab:
+            logs = [(item, path) for item, path in artifact_paths if path.suffix.casefold() in {".log", ".out", ".err"} or "log" in path.name.casefold()]
+            if not logs:
+                st.info("No log files are indexed for this job.")
+            else:
+                log_index = st.selectbox(
+                    "Log file",
+                    range(len(logs)),
+                    format_func=lambda index: str(logs[index][0].get("relative_path", logs[index][1].name)),
+                    key=f"job-log-{run_id}",
+                )
+                log_path = logs[log_index][1]
+                try:
+                    with log_path.open("rb") as log_file:
+                        file_size = log_file.seek(0, io.SEEK_END)
+                        log_file.seek(max(0, file_size - 200_000))
+                        content = log_file.read(200_000).decode("utf-8", errors="replace")
+                    st.code(content, language="text")
+                    if file_size > 200_000:
+                        st.caption("Showing the last 200 KB.")
+                except OSError as exc:
+                    st.error(f"Could not read this log: {exc}")
+
+    if citations_tab.open:
+        with citations_tab:
+            citation_rows = _citation_values({"input": input_payload, "metadata": metadata, "result": result})
+            if citation_rows:
+                for label, citation in citation_rows:
+                    st.markdown(f"**{label}**")
+                    st.write(citation)
+            else:
+                st.info("This job does not have citation details recorded in its metadata or result files.")
+
+    if not results_tab.open:
+        return
+
     artifact_paths = _job_artifact_paths(details)
     candidates_path = run_dir / "artifacts/normalized_candidates/candidates.jsonl"
-    if candidates_path.is_file():
-        # Results candidates may live in the normalized artifact manifest even
-        # when result.json contains only aggregate pipeline status. Load them
-        # before building the structure picker so linked analysis structures
-        # can use their saved runs:/// provenance.
-        try:
-            saved_candidates = read_candidates(candidates_path)
-        except (OSError, ValueError):
-            saved_candidates = []
-        if saved_candidates:
-            result_candidates = saved_candidates
     if is_complex_preparation and str(job.get("status") or "").casefold() in {"completed", "succeeded"}:
         prepared_target = next(
             (path for item, path in artifact_paths
@@ -7658,9 +7727,12 @@ def _render_job_details() -> None:
         from mn_molecular_design_studio.binder_results_ui import render_binder_outcomes
         from mn_molecular_design_studio.job_catalog import get_job_access_record
         result_identity = get_job_access_record(str(job.get("task_group") or ""), run_id) or {}
-        has_binder_outcomes = render_binder_outcomes({**job, **result_identity}, result_candidates, CURRENT_USER,
-            inputs=input_payload, key=f"binder-outcomes-{run_id}")
-        if tool_runs := result_payload.get("tile_runs"):
+        no_final_candidates = str(job.get("tool")) == "visual_pipeline" and not result_candidates
+        has_binder_outcomes = not no_final_candidates and render_binder_outcomes(
+            {**job, **result_identity}, result_candidates, CURRENT_USER,
+            inputs=input_payload, key=f"binder-outcomes-{run_id}",
+        )
+        if tool_runs := details.get("tile_runs"):
             st.subheader("Pipeline tool results")
             selected_run = st.selectbox(
                 "Tool run", range(len(tool_runs)),
@@ -7712,7 +7784,8 @@ def _render_job_details() -> None:
         csv_artifacts = (
             []
             if has_dedicated_prediction_results or has_dedicated_surface_results
-            else [(item, path) for item, path in artifact_paths if path.suffix.casefold() == ".csv"]
+            else [(item, path) for item, path in artifact_paths if path.suffix.casefold() == ".csv"
+                  and not (no_final_candidates and path == candidates_path.with_name("final_evidence.csv"))]
         )
         preferred_csv_names = (
             ("ipsae_metrics.csv",) if is_ipsae
@@ -7840,10 +7913,12 @@ def _render_job_details() -> None:
                 if len(csv_df) >= 50_000:
                     st.caption("Tool output preview limited to 50,000 rows. Download the original CSV from the Files tab.")
                 csv_loaded = True
+            except pd.errors.EmptyDataError:
+                st.info("This output table is empty.")
             except (OSError, ValueError, pd.errors.ParserError, UnicodeError) as exc:
                 st.warning(f"Could not read the tool's CSV output: {exc}")
 
-        candidates = [] if has_dedicated_prediction_results or has_dedicated_surface_results else result_payload.get("candidates") or []
+        candidates = [] if has_dedicated_prediction_results or has_dedicated_surface_results else result_candidates
         if candidates and not csv_loaded:
             accepted_ids = {path.stem.casefold() for _, path in accepted_structures}
             candidate_rows = []
@@ -7914,100 +7989,102 @@ def _render_job_details() -> None:
                 with st.expander("Candidate metadata"):
                     st.json(candidate["raw_metadata"])
         elif not candidates and not csv_loaded and not has_dedicated_prediction_results and not has_dedicated_surface_results:
-            st.info("No normalized candidate records are available for this job yet.")
-            if result:
-                st.subheader("Run result")
-                st.json(result)
+            if no_final_candidates:
+                st.info("This pipeline has no published final candidates. Check Pipeline steps for completed and failed stages.")
+            else:
+                st.info("No normalized candidate records are available for this job yet.")
 
         if is_docking_job:
             _render_docking_pose_preview(run_id, run_dir, artifact_paths, result, {**job, "project_id": project_id})
         elif (visible_structure_artifacts or trajectory_preview_artifacts) and not has_dedicated_prediction_results and not has_dedicated_surface_results:
-            st.subheader("Structure preview")
-            preview_options = [
-                ("trajectory", item, path, topology_path)
-                for item, path, topology_path in trajectory_preview_artifacts
-            ]
-            preview_options.extend(("structure", item, path, None) for item, path in visible_structure_artifacts)
-            structure_index = st.selectbox(
-                "Structure file",
-                range(len(preview_options)),
-                format_func=lambda index: (
-                    (
-                        "[XTC trajectory] "
-                        f"{preview_options[index][1].get('relative_path', preview_options[index][2].name)}"
+            preview = st.expander("Structure preview", key=f"job-structure-preview-{run_id}", on_change="rerun")
+            if preview.open:
+                with preview:
+                    preview_options = [
+                        ("trajectory", item, path, topology_path)
+                        for item, path, topology_path in trajectory_preview_artifacts
+                    ]
+                    preview_options.extend(("structure", item, path, None) for item, path in visible_structure_artifacts)
+                    structure_index = st.selectbox(
+                        "Structure file",
+                        range(len(preview_options)),
+                        format_func=lambda index: (
+                            (
+                                "[XTC trajectory] "
+                                f"{preview_options[index][1].get('relative_path', preview_options[index][2].name)}"
+                            )
+                            if preview_options[index][0] == "trajectory"
+                            else (
+                                f"[{_structure_design_status(preview_options[index][1], preview_options[index][2])}] "
+                                f"{preview_options[index][1].get('relative_path', preview_options[index][2].name)}"
+                            )
+                        ),
+                        key=f"job-structure-{run_id}-{design_scope.casefold().replace(' ', '-')}",
                     )
-                    if preview_options[index][0] == "trajectory"
-                    else (
-                        f"[{_structure_design_status(preview_options[index][1], preview_options[index][2])}] "
-                        f"{preview_options[index][1].get('relative_path', preview_options[index][2].name)}"
-                    )
-                ),
-                key=f"job-structure-{run_id}-{design_scope.casefold().replace(' ', '-')}",
-            )
-            preview_kind, _structure_item, structure_path, topology_path = preview_options[structure_index]
-            linked_result = _structure_item.get("linked_result") if isinstance(_structure_item, dict) else None
-            if linked_result:
-                st.caption(
-                    f"Linked PLIP structure · produced by {linked_result['producing_job']} · "
-                    f"source pose {linked_result['source_pose_id'] or 'not recorded'} · "
-                    f"ligand {linked_result['ligand_name'] or linked_result['ligand_id'] or 'not recorded'}"
-                )
-                with st.expander("Structure and source provenance"):
-                    st.json({key: value for key, value in linked_result.items() if key not in {"path", "candidate"}})
-            if preview_kind == "structure" and st.button(
-                "Analyze selected structure",
-                icon=":material/biotech:",
-                key=f"job-open-complex-analysis-{run_id}-{structure_index}",
-            ):
-                from mn_molecular_design_studio.complex_analysis_ui import open_result_complex
-                try:
-                    open_result_complex(
-                        run_dir, structure_path,
-                        linked_result.get("candidate") if linked_result else None,
-                        user=CURRENT_USER,
-                    )
-                except (PermissionError, ValueError, OSError) as exc:
-                    st.warning(str(exc))
-            try:
-                if preview_kind == "trajectory":
-                    if structure_path.stat().st_size > 50 * 1024 * 1024:
-                        st.info("This trajectory is over 50 MB; download it from the Files tab to inspect it locally.")
-                    else:
-                        topology_text = topology_path.read_text(encoding="utf-8", errors="replace")
-                        trajectory_base64 = base64.b64encode(structure_path.read_bytes()).decode("ascii")
-                        molstar_custom_component(
-                            [
-                                StructureVisualization(
-                                    pdb=topology_text,
-                                    trajectory={"coordinates_base64": trajectory_base64, "format": "xtc"},
-                                    color="uniform",
-                                    color_params={"value": "0x318c70"},
-                                    representation_type="cartoon",
+                    preview_kind, _structure_item, structure_path, topology_path = preview_options[structure_index]
+                    linked_result = _structure_item.get("linked_result") if isinstance(_structure_item, dict) else None
+                    if linked_result:
+                        st.caption(
+                            f"Linked PLIP structure · produced by {linked_result['producing_job']} · "
+                            f"source pose {linked_result['source_pose_id'] or 'not recorded'} · "
+                            f"ligand {linked_result['ligand_name'] or linked_result['ligand_id'] or 'not recorded'}"
+                        )
+                        with st.expander("Structure and source provenance"):
+                            st.json({key: value for key, value in linked_result.items() if key not in {"path", "candidate"}})
+                    if preview_kind == "structure" and st.button(
+                        "Analyze selected structure",
+                        icon=":material/biotech:",
+                        key=f"job-open-complex-analysis-{run_id}-{structure_index}",
+                    ):
+                        from mn_molecular_design_studio.complex_analysis_ui import open_result_complex
+                        try:
+                            open_result_complex(
+                                run_dir, structure_path,
+                                linked_result.get("candidate") if linked_result else None,
+                                user=CURRENT_USER,
+                            )
+                        except (PermissionError, ValueError, OSError) as exc:
+                            st.warning(str(exc))
+                    try:
+                        if preview_kind == "trajectory":
+                            if structure_path.stat().st_size > 50 * 1024 * 1024:
+                                st.info("This trajectory is over 50 MB; download it from the Files tab to inspect it locally.")
+                            else:
+                                topology_text = topology_path.read_text(encoding="utf-8", errors="replace")
+                                trajectory_base64 = base64.b64encode(structure_path.read_bytes()).decode("ascii")
+                                molstar_custom_component(
+                                    [
+                                        StructureVisualization(
+                                            pdb=topology_text,
+                                            trajectory={"coordinates_base64": trajectory_base64, "format": "xtc"},
+                                            color="uniform",
+                                            color_params={"value": "0x318c70"},
+                                            representation_type="cartoon",
+                                        )
+                                    ],
+                                    key=f"job-trajectory-viewer-{run_id}-{structure_index}",
+                                    height=520,
+                                    show_controls=False,
                                 )
-                            ],
-                            key=f"job-trajectory-viewer-{run_id}-{structure_index}",
-                            height=520,
-                            show_controls=False,
-                        )
-                        st.caption("BioEmu XTC coordinates loaded with their matching topology.cif. Mol* animation controls are available for trajectories with multiple frames.")
-                else:
-                    if structure_path.stat().st_size > 50 * 1024 * 1024:
-                        st.info("This structure is over 50 MB; download it from the Files tab to inspect it locally.")
-                    else:
-                        structure_text = structure_path.read_text(encoding="utf-8", errors="replace")
-                        molstar_custom_component(
-                            [StructureVisualization(pdb=structure_text, color="chain-id", representation_type="cartoon")],
-                            key=f"job-structure-viewer-compact-{run_id}-{structure_index}",
-                            height=520,
-                            show_controls=False,
-                        )
-            except OSError as exc:
-                st.warning(f"Could not load this structure preview: {exc}")
+                                st.caption("BioEmu XTC coordinates loaded with their matching topology.cif. Mol* animation controls are available for trajectories with multiple frames.")
+                        else:
+                            if structure_path.stat().st_size > 50 * 1024 * 1024:
+                                st.info("This structure is over 50 MB; download it from the Files tab to inspect it locally.")
+                            else:
+                                structure_text = structure_path.read_text(encoding="utf-8", errors="replace")
+                                molstar_custom_component(
+                                    [StructureVisualization(pdb=structure_text, color="chain-id", representation_type="cartoon")],
+                                    key=f"job-structure-viewer-compact-{run_id}-{structure_index}",
+                                    height=520,
+                                    show_controls=False,
+                                )
+                    except OSError as exc:
+                        st.warning(f"Could not load this structure preview: {exc}")
         elif not is_docking_job and not has_dedicated_prediction_results and not has_dedicated_surface_results:
             st.info(f"No {design_scope.casefold()} structure files were found in this job's Results folder.")
 
         if str(metadata.get("tool") or "").casefold() == "boltzgen":
-            _render_boltzgen_campaign_report(run_dir, result_payload)
+            _render_boltzgen_campaign_report(run_dir, details)
 
         if is_bindcraft2:
             _render_bindcraft2_campaign_report(run_dir, input_payload, result)
@@ -8024,8 +8101,8 @@ def _render_job_details() -> None:
             for index, path in enumerate(result_files):
                 try:
                     download_cols[index % len(download_cols)].download_button(
-                        f"Download {path.name}",
-                        data=path.read_bytes(),
+                        "Download run record (JSON)" if path.name == "result.json" else f"Download {path.name}",
+                        data=path.read_bytes,
                         file_name=path.name,
                         mime="application/json" if path.suffix.lower() == ".json" else "application/octet-stream",
                         key=f"job-result-download-{run_id}-{index}",
@@ -8033,79 +8110,11 @@ def _render_job_details() -> None:
                 except OSError as exc:
                     st.caption(f"Could not read {path.name}: {exc}")
 
-        # Molecular Database is a promotion/organization action, not the run's
-        # prediction summary. Keep it after the scientific results so it does
-        # not displace the batch comparison at the top of the job page.
-        from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions, render_run_comparison
+        if st.toggle("Show Database actions and comparisons", key=f"job-database-actions-{run_id}"):
+            from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions, render_run_comparison
 
-        render_run_comparison(run_dir, CURRENT_USER, str((read_json(run_dir / "molecular_design_studio.json") or {}).get("project_id") or ""))
-        render_run_database_actions(run_dir, CURRENT_USER, _studio_projects())
-
-    with files_tab:
-        st.subheader("Job files")
-        if not artifact_paths:
-            st.info("No files are indexed for this job yet.")
-        else:
-            file_rows = [
-                {
-                    "File": str(item.get("relative_path", path.name)),
-                    "Type": str(item.get("kind") or path.suffix.lstrip(".") or "file"),
-                    "Size": _format_bytes(int(item.get("size_bytes") or path.stat().st_size)),
-                    "Modified": str(item.get("modified_at") or "—"),
-                }
-                for item, path in artifact_paths
-            ]
-            st.dataframe(file_rows, hide_index=True, use_container_width=True)
-            file_index = st.selectbox(
-                "Choose a file to download",
-                range(len(artifact_paths)),
-                format_func=lambda index: str(artifact_paths[index][0].get("relative_path", artifact_paths[index][1].name)),
-                key=f"job-file-{run_id}",
-            )
-            item, path = artifact_paths[file_index]
-            try:
-                st.download_button(
-                    f"Download {path.name}",
-                    data=path.read_bytes(),
-                    file_name=path.name,
-                    mime="application/octet-stream",
-                    key=f"job-artifact-download-{run_id}",
-                )
-            except OSError as exc:
-                st.error(f"Could not read this file: {exc}")
-
-    with settings_tab:
-        st.subheader("Inputs and recorded settings")
-        st.json({"input": input_payload, "metadata": metadata})
-
-    with logs_tab:
-        logs = [(item, path) for item, path in artifact_paths if path.suffix.casefold() in {".log", ".out", ".err"} or "log" in path.name.casefold()]
-        if not logs:
-            st.info("No log files are indexed for this job.")
-        else:
-            log_index = st.selectbox(
-                "Log file",
-                range(len(logs)),
-                format_func=lambda index: str(logs[index][0].get("relative_path", logs[index][1].name)),
-                key=f"job-log-{run_id}",
-            )
-            log_path = logs[log_index][1]
-            try:
-                content = log_path.read_text(encoding="utf-8", errors="replace")
-                st.code(content[-200_000:], language="text")
-                if len(content) > 200_000:
-                    st.caption("Showing the last 200,000 characters.")
-            except OSError as exc:
-                st.error(f"Could not read this log: {exc}")
-
-    with citations_tab:
-        citation_rows = _citation_values({"input": input_payload, "metadata": metadata, "result": result})
-        if citation_rows:
-            for label, citation in citation_rows:
-                st.markdown(f"**{label}**")
-                st.write(citation)
-        else:
-            st.info("This job does not have citation details recorded in its metadata or result files.")
+            render_run_comparison(run_dir, CURRENT_USER, str(project_id or ""))
+            render_run_database_actions(run_dir, CURRENT_USER, _studio_projects())
 
 
 def _database_groups_file() -> Path:

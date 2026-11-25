@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import re
 import json
+from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 
@@ -64,6 +65,46 @@ def status(rows):
 
 def is_visual_pipeline(row):
     return any(str(row.get(key) or "").casefold() == "visual_pipeline" for key in ("tool", "job_type"))
+
+
+def _current_batch_dispatch(batch):
+    attempts = batch.get("attempts") or []
+    return batch.get("cluster_job_id") or (attempts[-1].get("cluster_job_id") if attempts else None)
+
+
+def pipeline_step_summary(execution, parent, jobs):
+    """Project latest worker states over the saved controller ledger."""
+    scope = _operation_scope(parent)
+    workers = {}
+    for job in jobs:
+        job_id = job.get("cluster_job_id")
+        if not job_id or job is parent or _operation_scope(job) != scope:
+            continue
+        if job_id in workers and (not workers[job_id] or reference(workers[job_id]) != reference(job)):
+            workers[job_id] = {}  # Conflicting execution identities cannot confirm a batch.
+        else:
+            workers[job_id] = job
+    stopped = str(parent.get("status") or "").lower() in {"cancelled", "canceled", "stopped", "failed", "lost"}
+    summaries = []
+    for node_id, step in (execution.get("nodes") or {}).items():
+        controller = str(step.get("status") or "unknown")
+        state = controller
+        if stopped and controller == "pending":
+            state = "not_reached"
+        elif stopped and controller in {"queued", "running", "collecting", "preparing", "cancelling"}:
+            state = "interrupted"
+        counts, last_recorded = Counter(), 0
+        for batch in step.get("batches") or []:
+            dispatch_id = _current_batch_dispatch(batch)
+            worker_status = (workers.get(dispatch_id) or {}).get("status")
+            saved = batch.get("status") or "unknown"
+            counts[str(worker_status or saved).lower()] += 1
+            last_recorded += worker_status is None
+        summaries.append({"id": node_id, **({"label": step["label"]} if step.get("label") else {}),
+                          "status": state, "controller_status": controller,
+                          "collected_candidate_count": step.get("candidate_count"),
+                          "worker_batch_statuses": dict(counts), "worker_batches_last_recorded": last_recorded})
+    return summaries
 
 
 def graph_execution_stamp(run_dir):
