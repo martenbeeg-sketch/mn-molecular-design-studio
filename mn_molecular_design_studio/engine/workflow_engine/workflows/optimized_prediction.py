@@ -3128,6 +3128,8 @@ def run_optimized_prediction(
         item_results = []
         failures = []
         source_collections = {}
+        from mn_molecular_design_studio.cofolding_results import af3_pae_sidecar
+
         for task in normalized_tasks:
             row = rows_by_id.get(task["id"])
             task_structures: list[Path] = []
@@ -3176,7 +3178,14 @@ def run_optimized_prediction(
                     native_structure_path.with_name(f"pae_{native_structure_path.stem}.json"),
                 )
                 native_localfold_pae = _localfold_pae_path(native_structure_path, selected_options["model"]) if engine == "localfold" else None
-                pae_path = next((value for value in pae_candidates if value.is_file()), native_localfold_pae or mol1_pae_path)
+                pae_path = next(
+                    (value for value in pae_candidates if value.is_file()),
+                    native_localfold_pae or mol1_pae_path,
+                )
+                native_af3_pae = None
+                if pae_path is None and engine in {"alphafold3", "af3_torch", "openfold3_jax", "openfold3_ob0"}:
+                    native_af3_pae = af3_pae_sidecar(native_structure_path)
+                    pae_path = native_af3_pae
                 metrics = {
                     "plddt_mean": _mean_plddt(structure_path),
                     "binder_plddt": _mean_plddt(structure_path, binder_chains) if profile["api_engine"] == "mol1" and binder_chains else None,
@@ -3225,6 +3234,7 @@ def run_optimized_prediction(
                         "scientific_contract": task["scientific_contract"],
                         "native_prediction_structure": str(native_structure_path),
                         "pae_path": str(pae_path) if pae_path else None,
+                        **({"pae_format": "af3_json"} if native_af3_pae else {}),
                         **({"pae_available": bool(pae_path)} if engine == "localfold" else {}),
                         "identity_check": identity_check,
                         "molecule_chain_options": task["molecule_chain_options"],

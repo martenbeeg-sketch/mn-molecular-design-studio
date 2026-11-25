@@ -282,6 +282,8 @@ def test_peer_prediction_does_not_require_or_transfer_upstream_models(tmp_path, 
     old_collection = tmp_path / 'prior-full-collection.jsonl'; old_collection.write_text('{}\n')
     provenance = {'checkpoint_provenance': {'path': str(weights), 'sha256': bundles.digest_file(weights)},
                   'candidate_execution': {'effective_request': {'candidates_jsonl': str(old_collection)}},
+                  'chaperone_handoffs': [{'handler_metrics': {'studio': {'ckpt_path': '/worker/old/checkpoint'}}}],
+                  'scientific_contract': {'source_structure': '/worker/old/staged.cif', 'schema_version': 1},
                   'candidate_set': {'native_measurements': {'ckpt_path': '/worker/old/checkpoint'},
                                     'source_provenance': {'uri': 'cluster://old-node/design/run/result.json'}}}
     collection = tmp_path / 'selected.jsonl'
@@ -299,7 +301,13 @@ def test_peer_prediction_does_not_require_or_transfer_upstream_models(tmp_path, 
     for key in ('checkpoint_provenance', 'candidate_execution'):
         assert json.loads(row['raw_metadata'][key]['record']) == provenance[key]
     assert row['raw_metadata']['candidate_set'] == provenance['candidate_set']
+    assert row['raw_metadata']['chaperone_handoffs'] == provenance['chaperone_handoffs']
+    assert row['raw_metadata']['scientific_contract'] == provenance['scientific_contract']
     assert row['metrics'] == {'ckpt_path': 'runs:///design/remote/nvidia/RFD4-Proteina', 'iptm': 0.7}
+    new_prediction = {'workflow': 'refolding.optimized_prediction',
+                      'parameters': {'tasks': [{'scientific_contract': provenance['scientific_contract']}]}}
+    with pytest.raises(ValueError, match='Worker-specific path cannot be transferred: source_structure'):
+        cb.pack_request(new_prediction, tmp_path / 'invalid.zip')
 
 
 @pytest.mark.parametrize('status', ['completed', 'failed', 'lost'])

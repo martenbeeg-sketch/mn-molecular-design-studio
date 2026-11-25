@@ -60,6 +60,20 @@ def test_native_per_model_confidence_pairs_do_not_borrow_neighbour_scores(tmp_pa
     assert _confidence_sidecar(structure)['ranking_score'] == .79
 
 
+def test_af3_pae_link_requires_an_exact_sample_and_valid_matrix(tmp_path):
+    first = tmp_path / "job_seed-1_sample-0_model.cif"
+    second = tmp_path / "job_seed-1_sample-1_model.cif"
+    sidecar = tmp_path / "job_seed-1_sample-0_confidences.json"
+    sidecar.write_text(json.dumps({"pae": [[0., 3.], [5., 0.]]}))
+    assert results.af3_pae_sidecar(first) == sidecar
+    assert results.af3_pae_sidecar(second) is None
+
+    sidecar.write_text(json.dumps({"pae": [[0., 3.]]}))
+    assert results.af3_pae_sidecar(first) is None
+    sidecar.write_text(json.dumps({"pae": [[float("nan")]]}))
+    assert results.af3_pae_sidecar(first) is None
+
+
 @pytest.mark.parametrize('structure_name,npz_name', [
     ('job_model_0.pdb', 'pae_job_model_0.npz'),
     ('job__full__s1_x0.cif', 'job__full__s1_x0_pae.npz'),

@@ -23,7 +23,9 @@ from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths impor
 from mn_molecular_design_studio.engine.workflow_engine.core.hotspot_metrics import calculate_hotspot_metrics
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import create_job, finish_job, read_json, update_status, write_json
 from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import apply_docker_cpu_limits_to_steps
-from mn_molecular_design_studio.measurement_status import finite_number, measurement_outcome, measurement_summary, RANGES
+from mn_molecular_design_studio.measurement_status import (
+    IPSAE_NO_QUALIFIED_CONTACTS, RANGES, finite_number, measurement_outcome, measurement_summary,
+)
 
 
 ANALYSIS_GROUP = "analysis"
@@ -1768,6 +1770,8 @@ def _ipsae_engine(candidate: dict[str, Any], pae_path: Path | None) -> tuple[str
     if "boltz" in source_tool:
         return "boltz", "boltz_npz"
     raw = candidate.get("raw_metadata") or {}
+    if pae_path and pae_path.suffix.lower() == ".json" and raw.get("pae_format") == "af3_json":
+        return str(raw.get("api_engine") or "af3"), "af3_json"
     if pae_path and (raw.get("ipsae_aligned_rfd4_pae") or (raw.get("database_pae_evidence") or {}).get("oracle_model_sha256")):
         return "openfold3", "af3_json"
     return "af2", "af2_json"
@@ -2025,7 +2029,10 @@ def _parse_ipsae_summary_scores(summary_path: Path, focus_chain: str = "A") -> d
     if ipsae_min is None and ipsae_max is None:
         result["ipsae_error"] = "IPSAE summary has no parsable chain-pair scores"
     elif qualified_contact_rows == 0:
-        result["ipsae_error"] = "no PAE-qualified interface contacts at current IPSAE cutoffs"
+        # An explicit zero with an empty qualified contact set is usable. Keep
+        # ambiguous or nonzero scores with the same diagnostic marked as errors.
+        empty_score = ipsae_min == 0 and ipsae_max in {None, 0} and ipsae_avg in {None, 0}
+        result["ipsae_note" if empty_score else "ipsae_error"] = IPSAE_NO_QUALIFIED_CONTACTS
     return result
 
 

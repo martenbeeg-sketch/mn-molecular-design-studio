@@ -482,6 +482,15 @@ def _pae_matrix(payload: dict) -> np.ndarray | None:
     return None
 
 
+def af3_pae_sidecar(structure: Path) -> Path | None:
+    """Locate the full-confidence PAE for this exact native AF3-format sample."""
+    stem = structure.stem.removesuffix("_model")
+    sidecar = structure.with_name(f"{stem}_confidences.json")
+    if sidecar.is_file() and _pae_matrix(read_payload(sidecar)) is not None:
+        return sidecar
+    return None
+
+
 def _saved_interface_pae(run_dir: Path, candidate: dict, structure: Path, files: list[Path]) -> tuple[dict, dict] | None:
     """Derive reproducible directional PAE means from an exact saved sidecar."""
     from mn_molecular_design_studio.output_vocabulary import engine_name

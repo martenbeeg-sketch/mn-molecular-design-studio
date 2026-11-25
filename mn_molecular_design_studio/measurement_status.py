@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 
+IPSAE_NO_QUALIFIED_CONTACTS = "no PAE-qualified interface contacts at current IPSAE cutoffs"
+
 # Physical output domains, not task acceptance thresholds.
 RANGES = {"ipsae": (0, 1), "ipsae_min": (0, 1), "ipsae_max": (0, 1), "ipsae_avg": (0, 1),
           "iptm": (0, 1), "ptm": (0, 1), "binder_plddt": (0, 100), "ipae": (0, None), "ipde": (0, None),

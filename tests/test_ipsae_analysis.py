@@ -102,6 +102,23 @@ def test_structure_only_candidate_is_reported_as_partial_measurement(tmp_path, m
     assert candidate["raw_metadata"]["measurement_status"]["status"] == "partial"
 
 
+def test_zero_ipsae_with_no_qualified_contacts_is_scored_evidence(tmp_path):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import analysis
+    from mn_molecular_design_studio.measurement_status import IPSAE_NO_QUALIFIED_CONTACTS, measurement_outcome
+
+    summary = tmp_path / "summary.txt"
+    summary.write_text(
+        "Chn1 Chn2 Type dist1 dist2 ipSAE ipSAE_avg\n"
+        "A B asym 0 0 0.0 0.0\n"
+        "A B max 0 0 0.0 0.0\n"
+    )
+    metrics = analysis._parse_ipsae_summary_scores(summary, focus_chain="A")
+    assert metrics["ipsae"] == 0
+    assert metrics["ipsae_note"] == IPSAE_NO_QUALIFIED_CONTACTS
+    assert "ipsae_error" not in metrics
+    assert measurement_outcome(metrics, ["ipsae"])["status"] == "measured"
+
+
 def test_design_contact_preservation_is_selectable_and_missing_data_never_passes():
     metric_field = METRICS["ipsae_design_contact_preservation_fraction"]["field"]
     available = dict(available_metrics("miniprotein", "fasta_idr", "complex", engine="ipsae"))

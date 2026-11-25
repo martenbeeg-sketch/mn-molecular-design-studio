@@ -116,7 +116,7 @@ def pack_request(request, destination):
         if isinstance(value, dict):
             # Measurements are historical data, including native checkpoint labels;
             # they are not operational paths for the downstream worker.
-            if key in {'metrics', 'native_measurements', 'source_provenance'}:
+            if key in {'metrics', 'native_measurements', 'handler_metrics', 'source_provenance'}:
                 return copy.deepcopy(value)
             # Upstream execution/checkpoint records describe history, not
             # files required by this new task. Preserve them as opaque origin
@@ -129,9 +129,16 @@ def pack_request(request, destination):
             if owned_source and candidates and candidates != source_run.rstrip('/') + '/artifacts/normalized_candidates/candidates.jsonl':
                 raise ValueError('Select the normalized candidate manifest from the owning source run.')
             skipped = {'source_run_dir', 'candidates_jsonl'} if owned_source else {'source_run_dir'}
+            # A saved prediction's contract describes its upstream input.
+            # Contracts on new prediction tasks still stage source_structure.
+            saved_contract = key == 'raw_metadata' and 'scientific_contract' in value
+            if saved_contract:
+                skipped.add('scientific_contract')
             result = {k: ({'origin_node': config.identity(), 'record': json.dumps(v, sort_keys=True)}
                           if k in provenance else transform(v, base, k))
                       for k, v in value.items() if k not in skipped}
+            if saved_contract:
+                result['scientific_contract'] = copy.deepcopy(value['scientific_contract'])
             if owned_source:
                 # The coordinator checks source project access and pins the
                 # request to the workstation that owns these paths.
