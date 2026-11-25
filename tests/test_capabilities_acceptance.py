@@ -85,6 +85,16 @@ def assert_editable(graph, operation):
     assert {operation, "results"} <= kinds
 
 
+def comparable(graph):
+    indices = {node["id"]: index for index, node in enumerate(graph["nodes"])}
+    nodes = [node["data"] for node in graph["nodes"]]
+    edges = sorted(
+        (indices[edge["source"]], edge["sourceHandle"], indices[edge["target"]], edge["targetHandle"])
+        for edge in graph["edges"]
+    )
+    return nodes, edges
+
+
 @pytest.mark.parametrize(("row", "options"), tuple(binder_cases()))
 def test_binder_preset_contract(row, options):
     graph = new_binder_pipeline(row["route_id"], target_input=row["target_input"], binder_format=row["output"], **options)
@@ -101,14 +111,8 @@ def test_binder_preset_contract(row, options):
         )
 
 
-def binder_ui_cases():
-    for row in catalogue()["items"]:
-        if row["access"] == "pipeline":
-            yield pytest.param(row, id="/".join(row[key] for key in ("engine", "target_input", "output", "route_id")))
-
-
-@pytest.mark.parametrize("row", tuple(binder_ui_cases()))
-def test_binder_cell_creates_and_reopens_its_own_preset(row, monkeypatch, tmp_path):
+@pytest.mark.parametrize(("row", "options"), tuple(binder_cases()))
+def test_binder_cell_creates_and_reopens_its_own_preset(row, options, monkeypatch, tmp_path):
     from streamlit.testing.v1 import AppTest
 
     engine, output, context = (row[key] for key in ("engine", "output", "target_input"))
@@ -135,22 +139,21 @@ render_design_tasks("coverage", lambda graph: st.session_state.__setitem__("cove
 
         route = next(route for route in compatible_routes(context, output) if route.id == row["route_id"])
         variants[0].set_value(route).run()
+    if refolder := options.get("refold_engine"):
+        app.selectbox(key=prefix + "-refold").set_value(refolder).run()
+    if options.get("interface_analysis"):
+        app.checkbox(key=prefix + "-analysis").check().run()
+    if options.get("soluble_mpnn"):
+        app.checkbox(key=prefix + "-soluble").check().run()
     app.button(key=prefix + "-create-pipeline").click().run()
     assert not app.exception and not app.error
     graph = app.session_state["coverage-graph"]
     assert_editable(graph, row["canvas_node"])
     refolders = [widget for widget in app.selectbox if widget.key == prefix + "-refold"]
-    options = {"refold_engine": refolders[0].value} if refolders else {}
-    expected = new_binder_pipeline(row["route_id"], target_input=context, binder_format=output, **options)
-    def comparable(graph):
-        indices = {node["id"]: index for index, node in enumerate(graph["nodes"])}
-        nodes = [node["data"] for node in graph["nodes"]]
-        edges = sorted(
-            (indices[edge["source"]], edge["sourceHandle"], indices[edge["target"]], edge["targetHandle"])
-            for edge in graph["edges"]
-        )
-        return nodes, edges
-
+    settings = dict(options)
+    if refolders:
+        settings["refold_engine"] = refolders[0].value
+    expected = new_binder_pipeline(row["route_id"], target_input=context, binder_format=output, **settings)
     assert comparable(graph) == comparable(expected)
     saved = save_definition(graph, "coverage-user", "coverage-project")
     reopened, = list_definitions("coverage-user", "coverage-project")
@@ -170,6 +173,54 @@ def test_operation_preset_contract(operation, options):
         assert by_kind[operation]["workflow_parameters"]["mode"] == mode
     if source := options.get("source"):
         assert source in by_kind
+
+
+@pytest.mark.parametrize(("operation", "options"), tuple(operation_cases()))
+def test_operation_setup_saves_and_reopens_preset(operation, options, monkeypatch, tmp_path):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", str(tmp_path))
+    setup = {k: v for k, v in options.items() if k in
+             {"predict_affinity", "ligand_design_mode", "bioemu2_mode", "design_task"}}
+    setup["prediction"] = bool(options.get("prediction_mode") and not options.get("predict_affinity")) or (
+        operation in SAVED_DESIGN_REFOLDERS and not options.get("predict_affinity"))
+    app = AppTest.from_string(f"""
+import streamlit as st
+from mn_molecular_design_studio.design_capabilities_ui import _operation_setup
+_operation_setup({operation!r}, "setup", lambda graph: st.session_state.__setitem__("graph", graph),
+                 database_user={{"id": "coverage-user", "role": "user"}}, project_id="coverage-project", **{setup!r})
+""")
+    if options.get("source") == "molecule_source":
+        # Selection, access and provenance are exercised through the live database-input check.
+        def ready_source(*args):
+            def configure(graph):
+                node = next(node for node in graph["nodes"] if node["data"]["kind"] == "molecule_source")
+                node["data"]["params"]["source_run_dir"] = "runs:///database-selection/test-snapshot"
+            return configure
+        monkeypatch.setattr(ui, "_database_source", ready_source)
+
+    app.run()
+    key = "setup-prediction-source"
+    if not options.get("prediction_mode") and any(control.key == key for control in app.radio):
+        app.radio(key=key).set_value("Saved designs").run()
+    if options.get("prediction_mode") and not options.get("predict_affinity"):
+        app.selectbox(key="setup-molecular-mode").set_value(options["prediction_mode"]).run()
+    if options.get("source") and any(control.key == "setup-source" for control in app.selectbox):
+        app.selectbox(key="setup-source").set_value(options["source"]).run()
+    if options.get("prepare"):
+        app.radio(key="setup-prepare").set_value("unprepared").run()
+    if options.get("design_task") == "new_fold" and operation != "rfd4":
+        app.selectbox(key="setup-goal").set_value("backbones").run()
+    app.button(key="setup-create-pipeline").click().run()
+    assert not app.exception and not app.error
+    graph = app.session_state["graph"]
+    expected = build_capability_graph(operation, **options)
+    if options.get("source") == "molecule_source":
+        ready_source()(expected)
+    assert comparable(graph) == comparable(expected)
+    saved = save_definition(graph, "coverage-user", "coverage-project")
+    reopened, = list_definitions("coverage-user", "coverage-project")
+    assert reopened["revision"] == saved["revision"] and reopened["graph"] == graph
 
 
 @pytest.mark.parametrize(("start", "options", "next_steps"), [

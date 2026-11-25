@@ -99,14 +99,28 @@ These cases carry forward the gaps in the [distributed run](evidence/release-acc
 
 | Case | Coverage to date | Evidence needed |
 | --- | --- | --- |
-| `LIB-02` Multi-round screening | Live run `964D6` passed the two-round selection, ranking and pose-retention checks on PC002975. | Repeat across two workstations. Check worker transfer checksums and preserve the winning poses and recorded failures after remote cleanup. Include a scored duplicate that would otherwise occupy two shortlist places. |
-| `RUN-02` Distributed retry and cancellation | One mixed-workstation cancellation and successful fan-in were recorded in `921A0` and `FB731`. | Exercise retry and cancellation with workers active on two hosts at once. Verify that completed work is reused, prerequisite failures block dependents, every cancelled worker stops, and the parent has one durable Results row. |
-| `UI-02` Non-binder browser presets | All visible setup buttons were opened as a regular user. All 82 binder presets were exercised in Streamlit widget tests through save and reopen. | Save and reopen the remaining non-binder combinations and compare the settings and typed edges with their API equivalents. Use the per-case checklist to record each browser result. |
-| `UI-03` Pipeline and template permissions | Project and template lifecycle have regression coverage. | Verify distinct regular-user and instructor accounts. The regular user can open and copy a shared template and save a project pipeline. The instructor can update the shared template, and existing run snapshots still open at their recorded version. |
-| `DB-02` Admission controls | Browser and API checks exercised frozen database input and access checks. | Run accepted, rejected and incomplete archived controls through admission on an isolated database. Verify the exact saved structure and scores, one publication across a retry, and analysis attachment to the accepted record. |
-| `FMT-02` Generator, format and target-context combinations | Preset contracts and browser setup cover the advertised formats. Native evidence covers specific recorded fixtures. | Record one execution and downstream handoff per feasible format, engine, and target context using the designated benign fixture. Record contract-only and unavailable cases explicitly. Verify the optional refolder, sequence design, and analysis settings through the graph they create. |
-| `AN-02` BioEmu propagation from Results | Propagation ran successfully using the coordinate file from a saved prediction. | Check the completed-design input route end to end. Direct use of a named Run output requires support for an ensemble-producing consumer in the saved-run contract. |
-| `PERF-01` Results response time | Worker links and Results rendering were checked on small fixtures. | Measure first usable table, worker drill-down and scroll response on a fixed 500-row result and a larger archived run. Record first and repeat loads on the same workstation and compare with the prior release. |
+| `FMT-02` Generator, format and target-context combinations | 196 binder setup variants were saved, reopened and compared against the corresponding preset, including alternate refolders, sequence redesign and optional analysis. | Native execution and downstream handoff are still specific to the engines and formats with recorded runs. Add suitable benign fixtures and record the remaining native cases separately. |
+| `AN-02` BioEmu propagation from Results | `EAB47` executed **Completed design job → Propagate** from an archived synthetic monomer and published an XTC plus matching topology. Both frames passed the configured checks. | Direct selection of a named Run output is currently unsupported for BioEmu propagation. Its output is an ensemble, and the saved-run batch collector currently merges candidate tables. |
+
+## Follow-up verification on 26 November
+
+| Case | Evidence |
+| --- | --- |
+| `LIB-02` Two-workstation screening | Replay `592C1` executed both rounds on PC002975 and PC004032. The independent sort of six worker CSVs matched all 12 scores in Results, representing 11 distinct chemistries. After the worker pose directories were pruned, all four retained pose checksums still matched. Three of the poses came from the peer. Fixture regressions cover duplicate chemistries at the top of the ranking, and preservation of failed-compound records. |
+| `RUN-02` Retry and cancellation | `34B49` recovered on the same parent after a test-injected peer disconnect before second-round dispatch. The completed first-round record and four worker IDs stayed identical, and the retry completed round two on both PCs. `3E313` cancelled with both workers active and exited cleanly with both child jobs and the parent cancelled. The controller preserves the cancellation status and clears stale step errors when a retry completes. Prerequisite blocking and retry history also passed the graph and candidate-worker regressions. |
+| `UI-02` Non-binder setup | Streamlit widget tests saved and reopened all 144 enumerated non-binder operation presets, including alternate starting inputs. Saved node settings and typed connections matched their equivalent API graph builders. The browser table-action sweep and live database input test remain recorded separately. |
+| `UI-03` Permissions and snapshots | Authenticated fixture accounts exercised the shared-template and project endpoints. The student could read, copy, save and submit a project pipeline. The student received 403 for shared-template creation and edits. The instructor published and edited the template. The earlier student's saved draft and submitted graph kept their original mode after that edit. |
+| `DB-02` Admission controls | Isolated SQL controls admitted a passing record and excluded rejected and incomplete controls. Repeating the save reused the same collection, preserved the source model, stored its exact PDB bytes and original score, and wrote a single score observation. Evaluation controls attached to the exact saved representation and rejected mismatched inputs. |
+| `PERF-01` Results response time | Headless Chromium opened 500-row and 5,000-row archived-format fixtures as a regular user on PC002975. Both revisions showed the pipeline table and launched the worker drill-down. A 270-pixel scroll settled in 15–29 ms in the browser probe. Times below are single observations per visit and include normal Streamlit rendering. |
+
+### Results timings
+
+| Rows | Revision | First / repeat table | First / repeat worker drill-down |
+| --- | --- | --- | --- |
+| 500 | `c8d9506` | 0.94 / 0.85 s | 0.44 / 0.42 s |
+| 500 | `35e6c8b` | 1.10 / 0.83 s | 0.95 / 0.46 s |
+| 5,000 | `c8d9506` | 1.54 / 1.49 s | 1.87 / 1.87 s |
+| 5,000 | `35e6c8b` | 1.56 / 1.85 s | 1.87 / 1.89 s |
 
 ### Two-round screening on the published release
 
@@ -114,4 +128,6 @@ Run `964D6` used release `35e6c8b` in the isolated fixture workspace on PC002975
 
 The final table contained all 12 scores. Independently sorting the two worker CSVs and deduplicating canonical isomeric SMILES yielded the same four retained poses. Their checksums matched the manifest, and both workers' pose directories had been pruned. The Runs API showed one completed pipeline with three linked jobs. A read-only count found zero molecular database observations for the screening run and the two docking workers.
 
-On the published release, 471 Capabilities and Results tests, 103 screening regressions, and 93 database-policy, Results UI and job-hierarchy tests passed. The native replay used one workstation. `LIB-02` stays open for cross-workstation pose retention and the scored-duplicate control.
+On the published release, 471 Capabilities and Results tests, 103 screening regressions, and 93 database-policy, Results UI and job-hierarchy tests passed. The single-workstation replay preceded the two-workstation screening check above.
+
+The follow-up included 196 binder setup and 144 non-binder setup widget checks, 105 screening regressions, and a Chaperone candidate handoff through the installed worker interpreter. The documented cancellation and retry checks used isolated workdirs on both PCs.

@@ -81,6 +81,8 @@ def _write_graph_state(path: Path, state: dict, *, node: str | None = None,
         item = state.setdefault("nodes", {}).setdefault(node, {})
         if status is not None:
             item["status"] = status
+        if status in {"completed", "cancelled"}:
+            item.pop("error", None)
         item.update(values)
         item["updated_at"] = utc_now()
     state["updated_at"] = utc_now()
@@ -863,6 +865,17 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
         write_json(state_path, state)
         write_json(graph_state_path, graph_state)
 
+    def record_cancellation():
+        cancel.set()
+        state["status"] = "cancelled"
+        state.pop("error", None)
+        update_status(campaign, "cancelled", progress_label="Active-learning campaign cancelled; completed rounds are saved")
+        for step in graph_state["nodes"].values():
+            if step.get("status") in {"running", "queued"}:
+                step["status"] = "cancelled"
+        _write_graph_state(graph_state_path, graph_state, node=nodes["active_results"]["id"], status="cancelled")
+        checkpoint()
+
     def publish_history(pose_paths=None):
         history = {"schema_version": "studio.active-learning-round-history.v1",
                    "stop_reason": state.get("stop_reason"), "rounds": state["rounds"],
@@ -899,10 +912,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
 
         while True:
             if cancelled():
-                cancel.set()
-                update_status(campaign, "cancelled", progress_label="Active-learning campaign cancelled; completed rounds are saved")
-                _write_graph_state(graph_state_path, graph_state, node=nodes["active_results"]["id"], status="cancelled")
-                checkpoint()
+                record_cancellation()
                 return campaign
             pending = state.get("pending_round")
             if not pending:
@@ -1119,6 +1129,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
         write_json(manifest_path, external_manifest)
         state["database_selection"] = selection
         state["status"] = "completed"
+        state.pop("error", None)
         checkpoint()
         for kind in ("active_binder_rule", "active_train", "active_predict", "active_select"):
             if graph_state.get("nodes", {}).get(nodes[kind]["id"], {}).get("status") != "completed":
@@ -1165,8 +1176,8 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
         except Exception:
             pass
         if cancelled():
-            update_status(campaign, "cancelled", progress_label="Active-learning campaign cancelled; completed rounds are saved")
-            raise
+            record_cancellation()
+            return campaign
         state["status"] = "failed"
         state["error"] = f"{type(exc).__name__}: {exc}"
         checkpoint()
@@ -1323,9 +1334,14 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
                 failures.extend(failed_rows)
                 publish_progress()
             except Exception as exc:
-                errors.append(f"{worker['node_name']}: {exc}")
-                status_by_worker[lane_key(worker)].update(status="failed", error=str(exc))
+                if cancel_check():
+                    status_by_worker[lane_key(worker)].update(status="cancelled")
+                else:
+                    errors.append(f"{worker['node_name']}: {exc}")
+                    status_by_worker[lane_key(worker)].update(status="failed", error=str(exc))
                 publish_progress()
+    if cancel_check():
+        raise InterruptedError("Active-learning docking was cancelled.")
     if errors:
         raise RuntimeError("The docking round did not finish on every computer: " + "; ".join(errors))
     return results, failures

@@ -846,6 +846,66 @@ def test_md_starter_and_remote_validation_report_deferred_workstation_checks(api
     assert queued.json()["job"]["cluster_job_id"] == "md-fixture"
 
 
+def test_shared_template_permissions_and_submitted_snapshot(api_data, monkeypatch):
+    from mn_molecular_design_studio.capability_pipeline import build_capability_graph
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs, workflow_queue
+    from mn_molecular_design_studio.runtime import reference_root
+
+    client = api_data["client"]
+    project = api_data["project"]["id"]
+    student = headers(api_data, "student")
+    prefix = "/api/v1/pipelines"
+    shared = prefix + "/shared-templates"
+    graph = build_capability_graph("tile_tmol")
+
+    def settings(draft):
+        step = next(node for node in draft["nodes"] if node["data"]["kind"] == "tile_tmol")
+        return step["data"]["params"]["workflow_parameters"]
+
+    settings(graph)["mode"] = "score"
+    publish = {"graph": graph, "name": "Geometry check acceptance"}
+    denied = client.post(shared + "/save", headers=student, json=publish)
+    assert denied.status_code == 403, denied.text
+    response = client.post(shared + "/save", json=publish)
+    assert response.status_code == 200, response.text
+    template = response.json()
+    path = shared + "/" + template["id"]
+    assert client.get(path, headers=student).json()["revision"] == template["revision"]
+    response = client.post(path + "/use", headers=student)
+    assert response.status_code == 200, response.text
+    draft = response.json()["graph"]
+    assert draft["id"] != template["graph"]["id"]
+
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_SCHEDULER_MODE", "local")
+    pending = []
+    monkeypatch.setattr(workflow_queue, "spawn_worker_for_run", pending.append)
+    structure = reference_root() / "fixture.pdb"
+    structure.parent.mkdir(parents=True, exist_ok=True)
+    structure.write_text("ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00 20.00           C\nEND\n")
+    settings(draft)["structure_paths"] = [str(structure)]
+    payload = {"graph": draft, "project_id": project, "gpu_device": "0"}
+    saved = client.post(prefix + "/save", headers=student, json={**payload, "version": True})
+    assert saved.status_code == 200, saved.text
+    queued = client.post(prefix + "/run", headers=student, json=payload)
+    assert queued.status_code == 202, queued.text
+    run, = pending
+    first_input = (Path(run) / "input.json").read_bytes()
+
+    settings(graph)["mode"] = "minimize"
+    update = {**publish, "template_id": template["id"], "expected_revision": template["revision"]}
+    rejected = client.post(shared + "/save", headers=student, json=update)
+    assert rejected.status_code == 403
+    updated = client.post(shared + "/save", json=update)
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["revision"] != template["revision"]
+    assert settings(client.post(path + "/use", headers=student).json()["graph"])["mode"] == "minimize"
+    listed = client.get(prefix, headers=student, params={"project_id": project}).json()
+    original, = [item["graph"] for item in listed if item["graph"]["id"] == draft["id"]]
+    assert settings(original)["mode"] == "score"
+    assert (Path(run) / "input.json").read_bytes() == first_input
+    assert settings(jobs.read_json(Path(run) / "input.json")["params"]["graph"])["mode"] == "score"
+
+
 def test_rejected_pipeline_replays_original_error_but_lost_dispatch_stays_uncertain(api_data, monkeypatch):
     from mn_molecular_design_studio import api
     from mn_molecular_design_studio.cluster import config, service

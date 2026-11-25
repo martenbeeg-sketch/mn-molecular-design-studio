@@ -137,6 +137,41 @@ def test_docking_round_runs_both_local_gpu_workers_and_steals_pending_batches(tm
     assert calls.count('1') == 7 and calls.count('0') == 1
 
 
+def test_recovered_step_clears_stale_error(tmp_path):
+    state = {"nodes": {"out": {"status": "failed", "error": "Isolated worker disconnect"}}}
+    path = tmp_path / "graph_execution.json"
+    controller._write_graph_state(path, state, node="out", status="completed", retained_pose_count=4)
+    assert state["nodes"]["out"]["status"] == "completed"
+    assert "error" not in state["nodes"]["out"]
+    assert state["nodes"]["out"]["retained_pose_count"] == 4
+
+
+def test_cancelled_round_keeps_worker_status_cancelled(tmp_path, monkeypatch):
+    import threading
+    import pytest
+
+    cancelled = threading.Event()
+    rows = [{"library_id": "lib", "compound_key": 1, "compound_id": "one",
+             "smiles": "CCO", "fingerprint": bytes(128)}]
+    workers = [{"node_id": "local", "node_name": "Organizer", "local": True,
+                "cpu_cores": 2, "gpu_device": "0", "batch_share": 1}]
+    states = []
+
+    def cancel_running_worker(**kwargs):
+        cancelled.set()
+        return {"status": "cancelled"}
+
+    monkeypatch.setattr(controller, "_docking_params", lambda *args, **kwargs: {"retained_pose_count": 1})
+    monkeypatch.setattr(controller, "_dispatch_docking_shard", cancel_running_worker)
+    with pytest.raises(InterruptedError, match="docking was cancelled"):
+        controller._dock_round(campaign=tmp_path, round_number=1, rows=rows, workers=workers,
+            docking={"worker_batch_size": 2, "batch_retained_pose_count": 1}, target={}, owner_id="owner",
+            project_id="project", ssh_user="compute", work_directory=tmp_path / "round",
+            cancel_check=cancelled.is_set, worker_progress=states.append)
+    assert states[-1][0]["status"] == "cancelled"
+    assert "error" not in states[-1][0]
+
+
 def test_missing_winner_does_not_change_previously_published_pose(tmp_path):
     run = tmp_path / "worker"
     poses = run / "artifacts/poses"

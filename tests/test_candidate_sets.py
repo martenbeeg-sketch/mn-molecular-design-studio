@@ -186,13 +186,15 @@ def test_direct_sequence_design_edge_only_refolds_sequenced_candidates(collectio
 
 
 def test_graph_prediction_edge_uses_configured_chaperone_handler(collection_harness, monkeypatch):
-    pytest.importorskip("chaperone")
+    import os
     import sys
     from mn_molecular_design_studio import chaperone_adapter
 
-    monkeypatch.setattr(chaperone_adapter, "worker_configuration", lambda: {
-        "python": sys.executable, "source": "", "blocks": "", "source_revision": "fixture-worker",
-    })
+    if not os.environ.get("MDS_CHAPERONE_CONFIG"):
+        pytest.importorskip("chaperone")
+        monkeypatch.setattr(chaperone_adapter, "worker_configuration", lambda: {
+            "python": sys.executable, "source": "", "blocks": "", "source_revision": "fixture-worker",
+        })
     h = collection_harness
     from mn_molecular_design_studio import candidate_execution
     observations = []

@@ -1716,7 +1716,11 @@ def test_results_passing_collection_preserves_engine_model_and_is_idempotent(dat
             "SELECT provenance FROM molecule_sources WHERE group_id=? AND json_extract(provenance,'$.saved_selection')=1",
             (first["group_id"],),
         ).fetchall()
+        observations = connection.execute(
+            "SELECT metrics FROM molecule_observations WHERE group_id=?", (first["group_id"],),
+        ).fetchall()
     assert len(member_structures) == 1
+    assert Path(database.structure_file(A, member_structures[0]["id"])).read_bytes() == (run / "pass.pdb").read_bytes()
     structure_context = json.loads(member_structures[0]["context"])
     assert structure_context["candidate_id"] == "binder-pass"
     assert structure_context["candidate_model_id"] == "boltz-model-3"
@@ -1727,6 +1731,7 @@ def test_results_passing_collection_preserves_engine_model_and_is_idempotent(dat
     assert structure_context["parent_ids"] == ["rfd4-parent-9"]
     assert structure_context["portable"] is True
     assert len(sources) == 1
+    assert [json.loads(row["metrics"])["ipTM"] for row in observations] == [0.81]
     source = json.loads(sources[0]["provenance"])
     assert source["acceptance_stage"] == "Final computational acceptance"
     assert source["acceptance_decision"]["policy"]["version"] == "accept-v3"
