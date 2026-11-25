@@ -393,15 +393,17 @@ def _require_current_user_job_access(job: dict) -> None:
         raise PermissionError("Job not found.")
 
 
-def _inspect_current_user_job(reference: str, *, include_candidates: bool = False) -> dict:
+def _inspect_current_user_job(
+    reference: str, *, include_candidates: bool = False, include_hidden: bool = False,
+) -> dict:
     try:
-        row = resolve_job(reference)
+        row = resolve_job(reference, include_hidden=include_hidden)
     except AutomationError as exc:
         if CURRENT_USER.get("role") != "admin":
             raise AutomationError("No accessible job matches that reference.") from exc
         raise
     _require_current_user_job_access(row)
-    return inspect_job(reference, include_candidates=include_candidates)
+    return inspect_job(reference, include_candidates=include_candidates, include_hidden=include_hidden)
 
 
 def _cancel_current_user_job(reference: str, *, reason: str) -> dict:
@@ -7160,12 +7162,21 @@ def _render_job_details() -> None:
             st.rerun()
         return
 
-    back_col, refresh_col = st.columns([0.85, 0.15], vertical_alignment="center")
-    if back_col.button("← Back to My results", key="job-details-back"):
-        st.session_state["page"] = "My runs"
+    return_link = st.session_state.get("pipeline-step-return") or {}
+    parent_reference = return_link.get("parent") if return_link.get("child") == reference else None
+    back_col, refresh_col = st.columns([4, 1], vertical_alignment="center")
+    back_label = "← Back to pipeline run" if parent_reference else "← Back to My results"
+    if back_col.button(back_label, key="job-details-back"):
+        if parent_reference:
+            st.session_state["selected-job-reference"] = parent_reference
+            st.session_state.pop("pipeline-step-return", None)
+        else:
+            st.session_state["page"] = "My runs"
         st.rerun()
     refresh_workers = refresh_col.button("Refresh", icon=":material/refresh:", key="job-details-refresh",
                                          help="Refresh this run and check its linked workers.")
+    if parent_reference and return_link.get("step"):
+        st.caption(f"Pipeline step · {return_link['step']}")
 
     if reference.startswith("cluster:"):
         from mn_molecular_design_studio.cluster.ui import render_job
@@ -7173,7 +7184,7 @@ def _render_job_details() -> None:
         return
 
     try:
-        details = _inspect_current_user_job(reference, include_candidates=True)
+        details = _inspect_current_user_job(reference, include_candidates=True, include_hidden=bool(parent_reference))
     except (AutomationError, OSError, ValueError) as exc:
         st.error(f"Could not open this job: {exc}")
         return
@@ -7212,7 +7223,8 @@ def _render_job_details() -> None:
         (str(project.get("name")) for project in _studio_projects() if project.get("id") == project_id),
         "No project",
     )
-    output_summary = ("Candidates", str(details.get("candidate_count", 0)))
+    is_pipeline = str(job.get("tool")) == "visual_pipeline"
+    output_summary = ("Final candidates" if is_pipeline else "Candidates", str(details.get("candidate_count", 0)))
     job_metrics = result.get("metrics") or {}
     linked_analysis_count = (job_metrics.get("surface_analysis_count") or 0) + (job_metrics.get("md_analysis_count") or 0)
     if raw_title == "surface_analysis":
@@ -7250,23 +7262,20 @@ def _render_job_details() -> None:
         context=campaign_context,
         cancel=lambda value: _cancel_current_user_job(value, reason="Campaign cancelled from Results"),
     )
-    saved_graph, execution = {}, {}
-    if str(job.get("tool")) == "visual_pipeline":
-        pipeline_run = Path(job["run_dir"])
-        try:
-            saved_graph = json.loads((pipeline_run / "graph_snapshot.json").read_text())
-            execution = json.loads((pipeline_run / "graph_execution.json").read_text())
-        except (OSError, ValueError):
-            saved_graph, execution = {}, {}
-        with st.expander("Pipeline steps & saved graph", expanded=True):
-            from mn_molecular_design_studio import logical_runs
-            from mn_molecular_design_studio.cluster import config, transport
+    execution = {}
+    if is_pipeline:
+        from mn_molecular_design_studio import logical_runs
+        from mn_molecular_design_studio.cluster import config, transport
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json_raw
+        from mn_molecular_design_studio.pipeline_run_results_ui import render_pipeline_steps
 
-            labels = {n["id"]: n["data"]["label"] for n in saved_graph.get("nodes", [])}
+        saved_graph = read_json_raw(run_dir / "graph_snapshot.json")
+        execution = read_json_raw(run_dir / "graph_execution.json")
+        with st.expander("Pipeline steps & saved graph", expanded=True):
             states = execution.get("nodes") or {}
             cached_workers = st.session_state.get("job-linked-workers") or {}
             linked = cached_workers.get("jobs", []) if cached_workers.get("reference") == reference else []
-            if refresh_workers and any(step.get("batches") for step in states.values()):
+            if refresh_workers and states:
                 try:
                     runs = logical_runs.catalog(CURRENT_USER, project_id=project_id,
                         token=str(st.session_state.get("studio-session-token") or "development-mode"))
@@ -7278,29 +7287,18 @@ def _render_job_details() -> None:
                         st.session_state["job-linked-workers"] = {"reference": reference, "jobs": linked}
                 except (OSError, ValueError, sqlite3.Error, transport.ClusterUnavailable):
                     pass
-            step_rows = []
-            for summary in logical_runs.pipeline_step_summary(execution, job, linked):
-                node_id = summary["id"]
-                state = states[node_id]
-                workers = state.get("worker_nodes") or []
-                computer_text = ", ".join(f"{item.get('name') or item.get('node_id')} · {item.get('status', 'queued')}" for item in workers)
-                batches = " · ".join(f"{count} {status.replace('_', ' ')}"
-                                     for status, count in sorted(summary["worker_batch_statuses"].items()))
-                if summary["worker_batches_last_recorded"]:
-                    batches += f" ({summary['worker_batches_last_recorded']} last recorded by controller)"
-                step_rows.append({"Step": labels.get(node_id, node_id), "Status": summary["status"].replace("_", " "),
-                                  "Job": state.get("job_code", ""), "Computers": computer_text,
-                                  "Worker batches": batches, "Collected candidates": summary["collected_candidate_count"],
-                                  "Detail": state.get("error", "")})
-            st.dataframe(step_rows, hide_index=True, use_container_width=True)
-            for node_id, state in execution.get("nodes", {}).items():
+            render_pipeline_steps(reference, job, saved_graph, execution, linked, run_dir=run_dir, user_id=CURRENT_USER["id"])
+            labels = {node["id"]: node["data"]["label"] for node in saved_graph.get("nodes", [])}
+            for node_id, state in states.items():
                 workers = state.get("worker_nodes") or []
                 if workers:
                     step_label = labels.get(node_id, node_id)
                     if st.button(f"View computers · {step_label} ({len(workers)})", key=f"pipeline-computers-{run_id}-{node_id}"):
                         _show_pipeline_computer_details(step_label, workers)
-            st.caption("Refresh to check linked workers. Collected candidates are results received by the pipeline.")
-            st.download_button("Download run graph", json.dumps(saved_graph, indent=2), file_name=f"pipeline-{run_id}.json", mime="application/json", key=f"pipeline-graph-download-{run_id}")
+            if saved_graph:
+                st.download_button("Download run graph", json.dumps(saved_graph, indent=2),
+                                   file_name=f"pipeline-{run_id}.json", mime="application/json",
+                                   key=f"pipeline-graph-download-{run_id}")
             if saved_graph and project_id and st.button("Edit graph as a draft", key=f"pipeline-graph-edit-{run_id}"):
                 st.session_state["pipeline-pending-draft"] = {"project_id": project_id,
                     "graph": {**saved_graph, "id": secrets.token_hex(16)}}
@@ -7734,17 +7732,6 @@ def _render_job_details() -> None:
             {**job, **result_identity}, result_candidates, CURRENT_USER,
             inputs=input_payload, key=f"binder-outcomes-{run_id}",
         )
-        if tool_runs := details.get("tile_runs"):
-            st.subheader("Pipeline tool results")
-            selected_run = st.selectbox(
-                "Tool run", range(len(tool_runs)),
-                format_func=lambda index: f"{tool_runs[index]['label']} · {tool_runs[index]['run_id']}",
-                key=f"pipeline-tool-run-{run_id}",
-            )
-            if st.button("Open tool Results", key=f"pipeline-tool-results-{run_id}"):
-                child = tool_runs[selected_run]
-                st.session_state["selected-job-reference"] = f"{child['task_group']}/{child['run_id']}"
-                st.rerun()
         if candidates_path.is_file():
             if any((row.get("raw_metadata") or {}).get(key) for row in result_candidates for key in ("measurement_status", "selection", "source_candidate", "candidate_set")):
                 from mn_molecular_design_studio.result_presentation import candidate_state_rows

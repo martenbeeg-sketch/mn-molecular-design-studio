@@ -94,16 +94,27 @@ def pipeline_step_summary(execution, parent, jobs):
         elif stopped and controller in {"queued", "running", "collecting", "preparing", "cancelling"}:
             state = "interrupted"
         counts, last_recorded = Counter(), 0
+        batch_details = []
         for batch in step.get("batches") or []:
             dispatch_id = _current_batch_dispatch(batch)
-            worker_status = (workers.get(dispatch_id) or {}).get("status")
-            saved = batch.get("status") or "unknown"
-            counts[str(worker_status or saved).lower()] += 1
+            worker = workers.get(dispatch_id) or {}
+            worker_status = worker.get("status")
+            saved = str(batch.get("status") or "unknown").lower()
+            started = bool(dispatch_id or batch.get("job_run_dir") or batch.get("attempts"))
+            batch_status = str(worker_status or saved).lower()
+            if (stopped or controller in {"failed", "blocked", "cancelled"}) and not started and saved in {
+                "pending", "queued", "submitting", "cancelled", "canceled", "aborted",
+            }:
+                batch_status = "not_submitted"
+            counts[batch_status] += 1
             last_recorded += worker_status is None
+            batch_details.append({"receipt": batch, "worker": worker, "cluster_job_id": dispatch_id,
+                                  "status": batch_status})
         summaries.append({"id": node_id, **({"label": step["label"]} if step.get("label") else {}),
                           "status": state, "controller_status": controller,
                           "collected_candidate_count": step.get("candidate_count"),
-                          "worker_batch_statuses": dict(counts), "worker_batches_last_recorded": last_recorded})
+                          "worker_batch_statuses": dict(counts), "worker_batches_last_recorded": last_recorded,
+                          "batches": batch_details})
     return summaries
 
 

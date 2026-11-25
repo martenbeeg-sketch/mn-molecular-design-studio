@@ -36,10 +36,31 @@ def test_partial_pipeline_results_defers_details_and_ignores_empty_evidence(tmp_
     (run / "result.json").write_text(json.dumps({
         "success": False, "outputs": {"raw_trace": "x" * 600_000},
     }))
-    (run / "graph_snapshot.json").write_text('{"nodes": []}')
+    child = runs / "analysis" / "native-step"
+    child.mkdir(parents=True)
+    (child / "metadata.json").write_text(json.dumps({
+        "task_group": "analysis", "run_id": child.name, "tool": "fixture_tool", "status": "completed",
+        "campaign_name": "Fixture tool output", "hidden": True,
+    }))
+    (child / "molecular_design_studio.json").write_text((run / "molecular_design_studio.json").read_text())
+    (run / "artifacts/collected.jsonl").write_text(
+        json.dumps({"candidate_id": "saved-1", "source_tool": "fixture_tool", "metrics": {"plddt": 77}}) + "\n"
+    )
+    (run / "graph_snapshot.json").write_text(json.dumps({
+        "nodes": [{"id": node, "data": {"label": label}} for node, label in
+                  [("refold", "Batch step"), ("failed", "Failed check"), ("tool", "Local tool")]],
+        "edges": [{"source": "tool", "target": "refold"}, {"source": "refold", "target": "failed"}],
+    }))
     (run / "graph_execution.json").write_text(json.dumps({
-        "nodes": {"refold": {"status": "completed", "candidate_count": 2,
-                              "batches": [{"status": "completed"}]}},
+        "nodes": {
+            "failed": {"status": "failed", "error": "Worker configuration is unavailable",
+                       "batches": [{"status": "submitting"}, {"status": "cancelled"}]},
+            "refold": {"status": "completed", "candidate_count": 2,
+                       "output": {"candidates_jsonl": "artifacts/collected.jsonl"},
+                       "batches": [{"status": "completed", "job_run_dir": str(child), "candidate_count": 2},
+                                   {"status": "completed", "cluster_job_id": "remote-batch"}]},
+            "tool": {"status": "completed", "job_run_dir": str(child)},
+        },
     }))
 
     def reject_eager_work(*args, **kwargs):
@@ -75,6 +96,39 @@ def test_partial_pipeline_results_defers_details_and_ignores_empty_evidence(tmp_
     assert not app.json
     settings = next(table.value for table in app.dataframe if "Field" in table.value.columns)
     assert settings.set_index("Field").loc["Input › Params › Batch size", "Value"] == "50"
+
+    app.session_state[f"job-detail-tabs-{run.name}"] = "Results"
+    step_key = f"pipeline-run-step-campaign/{run.name}"
+    steps = next(table.value for table in app.dataframe if "Step" in table.value.columns)
+    assert list(steps["Step"]) == ["Local tool", "Batch step", "Failed check"]
+    assert list(steps["Batches"])[-1] == "2 not submitted"
+
+    app.session_state[step_key] = "failed"
+    app.run()
+    assert not app.exception
+    assert any("Worker configuration is unavailable" in item.value for item in app.error)
+    batch_table = next(table.value for table in app.dataframe if "Batch" in table.value.columns)
+    assert list(batch_table["Results"]) == ["", ""]
+
+    app.session_state[step_key] = "refold"
+    app.session_state[step_key + "-refold-collected"] = True
+    app.run()
+    assert not app.exception
+    batch_table = next(table.value for table in app.dataframe if "Batch" in table.value.columns)
+    assert list(batch_table["Results"]) == ["Open", "Open"]
+    collected = next(table.value for table in app.dataframe if "Candidate" in table.value.columns)
+    assert collected.iloc[0]["pLDDT"] == 77
+
+    app.session_state[step_key] = "tool"
+    app.session_state[step_key + "-open"] = "tool"
+    app.run()
+    assert not app.exception
+    assert any(title.value == "Fixture tool output" for title in app.title)
+    assert not app.json
+    app.button(key="job-details-back").click().run()
+    assert not app.exception
+    assert app.session_state["selected-job-reference"] == f"campaign/{run.name}"
+    assert any(item.label == "Open tool results" for item in app.button)
 
 
 def test_result_details_preserve_values_and_bound_large_payloads():

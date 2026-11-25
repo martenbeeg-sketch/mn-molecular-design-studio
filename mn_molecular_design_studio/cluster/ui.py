@@ -2847,9 +2847,16 @@ def render_job(reference, user, token, submit):
         from mn_molecular_design_studio.md_remote_ui import render_remote_md_results
         render_remote_md_results(st, jid, row, token, _fetch_remote_artifact_text)
     if row.get("local_reference"):
-        if st.button("Load full results from workstation", key="cluster-inspect-" + jid):
-            operation = _request("/jobs/" + jid + "/actions", token, {"action": "inspect"}, method="POST")
-            st.session_state["cluster-details-op-" + jid] = operation["command_id"]
+        inspect_key = "cluster-details-op-" + jid
+        load_results = st.button("Load full results from workstation", key="cluster-inspect-" + jid)
+        step_link = st.session_state.get("pipeline-step-return") or {}
+        open_from_pipeline = step_link.get("child") == reference and row.get("availability") == "online"
+        if load_results or (open_from_pipeline and inspect_key not in st.session_state):
+            try:
+                operation = _request("/jobs/" + jid + "/actions", token, {"action": "inspect"}, method="POST")
+                st.session_state[inspect_key] = operation["command_id"]
+            except (ValueError, transport.ClusterUnavailable) as exc:
+                st.warning(str(exc))
         @st.fragment(run_every=2)
         def inspect_operation():
             command_id = st.session_state.get("cluster-details-op-" + jid)
@@ -2864,6 +2871,14 @@ def render_job(reference, user, token, submit):
             if op["status"] != "completed":
                 st.info("Waiting for the owning workstation to return the results."); return
             data = op["response"]
+            if _is_visual_pipeline_row(row):
+                from mn_molecular_design_studio.pipeline_run_results_ui import render_pipeline_steps
+                outputs = (data.get("result") or {}).get("outputs") or {}
+                graph = ((data.get("input") or {}).get("params") or {}).get("graph") or {}
+                directory = (data.get("job") or {}).get("run_dir")
+                with st.expander("Pipeline steps", expanded=True):
+                    render_pipeline_steps(reference, row, graph, {"nodes": outputs.get("pipeline_nodes") or {}},
+                                          [], run_dir=Path(directory) if directory else None, user_id=user["id"])
             from mn_molecular_design_studio.distributed_campaign_ui import render_campaign_context
             render_campaign_context(st, data.get("distributed_campaign_context"))
             candidates = data.get("results", {}).get("candidates", [])

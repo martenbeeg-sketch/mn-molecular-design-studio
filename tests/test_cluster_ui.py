@@ -462,7 +462,8 @@ ui._render_remote_prediction_results("job", {"availability": "online"}, data, ca
     assert fetched == ["complex_model_1.pdb", "model_1_pae.json"]
 
 
-def test_remote_job_displays_sequence_and_loads_a_representative_structure(isolated, monkeypatch):
+@pytest.mark.parametrize("opened_from_pipeline", [False, True])
+def test_remote_job_displays_sequence_and_loads_a_representative_structure(isolated, monkeypatch, opened_from_pipeline):
     import importlib
 
     candidate = {
@@ -505,10 +506,14 @@ def test_remote_job_displays_sequence_and_loads_a_representative_structure(isola
     at = AppTest.from_string(
         'from mn_molecular_design_studio.cluster.ui import render_job\n'
         'render_job("cluster:job-1", {"id":"scientist"}, "token", lambda *a, **k: {})'
-    ).run()
+    )
+    if opened_from_pipeline:
+        at.session_state["pipeline-step-return"] = {"child": "cluster:job-1", "parent": "campaign/pipeline"}
+    at.run()
     assert not at.exception
-    next(button for button in at.button if button.label == "Load full results from workstation").click().run()
-    assert not at.exception
+    if not opened_from_pipeline:
+        next(button for button in at.button if button.label == "Load full results from workstation").click().run()
+        assert not at.exception
     assert structure_requests == ["artifacts/design/model.pdb"]
     assert viewer_calls
     visualization = viewer_calls[0][0][0][0]
