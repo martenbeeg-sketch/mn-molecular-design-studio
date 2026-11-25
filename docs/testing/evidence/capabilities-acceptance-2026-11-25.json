@@ -1,0 +1,1928 @@
+{
+  "studio_revision": "c8d9506 with acceptance changes",
+  "fixture_only_cases": 346,
+  "entry_point": "Pipelines > Capabilities",
+  "cases": {
+    "test_binder_preset_contract[RFD4-Proteina/structure/miniprotein/rfd4-generator/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/miniprotein/rfd4-generator/soluble_mpnn=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/multidomain/miniprotein/rfd4-generator/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/multidomain/miniprotein/rfd4-generator/soluble_mpnn=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/miniprotein/rfd4-external/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/miniprotein/rfd4-external/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/miniprotein/rfd4-external/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/miniprotein/rfd4-external/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/miniprotein/rfd4-external/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/miniprotein/rfd4-external/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/miniprotein/rfd4-external/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/miniprotein/rfd4-external/soluble_mpnn=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/multidomain/miniprotein/rfd4-external/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/multidomain/miniprotein/rfd4-external/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/multidomain/miniprotein/rfd4-external/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/multidomain/miniprotein/rfd4-external/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/multidomain/miniprotein/rfd4-external/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/multidomain/miniprotein/rfd4-external/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/multidomain/miniprotein/rfd4-external/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/multidomain/miniprotein/rfd4-external/soluble_mpnn=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/miniprotein/rfd4-internal/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/miniprotein/rfd4-internal/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/multidomain/miniprotein/rfd4-internal/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/multidomain/miniprotein/rfd4-internal/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/miniprotein/bindcraft2-generator/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/miniprotein/bindcraft2-generator/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/miniprotein/bindcraft2-generator/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/miniprotein/bindcraft2-generator/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/miniprotein/bindcraft2-generator/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/miniprotein/bindcraft2-generator/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/miniprotein/bindcraft2-generator/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/miniprotein/bindcraft2-generator/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/miniprotein/bindcraft2-generator/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/miniprotein/bindcraft2-generator/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/miniprotein/bindcraft2-generator/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/miniprotein/bindcraft2-generator/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/miniprotein/bindcraft2-generator/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/miniprotein/bindcraft2-generator/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/miniprotein/bindcraft2/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/miniprotein/bindcraft2/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFdiffusion3/structure/miniprotein/rfd3/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFdiffusion3/structure/miniprotein/rfd3/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion3/structure/miniprotein/rfd3/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion3/structure/miniprotein/rfd3/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion3/structure/miniprotein/rfd3/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion3/structure/miniprotein/rfd3/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion3/structure/miniprotein/rfd3/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion3/multidomain/miniprotein/rfd3/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFdiffusion3/multidomain/miniprotein/rfd3/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion3/multidomain/miniprotein/rfd3/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion3/multidomain/miniprotein/rfd3/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion3/multidomain/miniprotein/rfd3/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion3/multidomain/miniprotein/rfd3/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion3/multidomain/miniprotein/rfd3/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/peptide/bindcraft2-peptide/default]": {
+      "contract": "passed",
+      "browser": "canvas_saved_reopened",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/peptide/bindcraft2-peptide/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/cyclic_peptide/bindcraft2-cyclic/default]": {
+      "contract": "passed",
+      "browser": "canvas_opened",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/cyclic_peptide/bindcraft2-cyclic/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/vhh/bindcraft2-vhh/default]": {
+      "contract": "passed",
+      "browser": "canvas_opened",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/vhh/bindcraft2-vhh/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BoltzGen/structure/vhh/boltzgen-vhh/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BoltzGen/multidomain/vhh/boltzgen-vhh/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[ESMFold2 Binder/structure/vhh/esmfold2-vhh/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/idr/miniprotein/rfd4-idr/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFdiffusion/structure/miniprotein/rfdiffusion/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFdiffusion/structure/miniprotein/rfdiffusion/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion/structure/miniprotein/rfdiffusion/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion/structure/miniprotein/rfdiffusion/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion/structure/miniprotein/rfdiffusion/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion/structure/miniprotein/rfdiffusion/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion/structure/miniprotein/rfdiffusion/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Genie3/structure/miniprotein/genie3/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[Genie3/structure/miniprotein/genie3/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Genie3/structure/miniprotein/genie3/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Genie3/structure/miniprotein/genie3/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Genie3/structure/miniprotein/genie3/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Genie3/structure/miniprotein/genie3/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Genie3/structure/miniprotein/genie3/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Genie3/multidomain/miniprotein/genie3/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[Genie3/multidomain/miniprotein/genie3/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Genie3/multidomain/miniprotein/genie3/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Genie3/multidomain/miniprotein/genie3/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Genie3/multidomain/miniprotein/genie3/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Genie3/multidomain/miniprotein/genie3/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Genie3/multidomain/miniprotein/genie3/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[PXDesign/structure/miniprotein/pxdesign/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[PXDesign/structure/miniprotein/pxdesign/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[PXDesign/structure/miniprotein/pxdesign/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[PXDesign/structure/miniprotein/pxdesign/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[PXDesign/structure/miniprotein/pxdesign/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[PXDesign/structure/miniprotein/pxdesign/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[PXDesign/structure/miniprotein/pxdesign/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[PXDesign/multidomain/miniprotein/pxdesign/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[PXDesign/multidomain/miniprotein/pxdesign/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[PXDesign/multidomain/miniprotein/pxdesign/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[PXDesign/multidomain/miniprotein/pxdesign/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[PXDesign/multidomain/miniprotein/pxdesign/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[PXDesign/multidomain/miniprotein/pxdesign/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[PXDesign/multidomain/miniprotein/pxdesign/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/structure/miniprotein/complexa-generator/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/structure/miniprotein/complexa-generator/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/structure/miniprotein/complexa-generator/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/structure/miniprotein/complexa-generator/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/structure/miniprotein/complexa-generator/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/structure/miniprotein/complexa-generator/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/structure/miniprotein/complexa-generator/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/multidomain/miniprotein/complexa-generator/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/multidomain/miniprotein/complexa-generator/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/multidomain/miniprotein/complexa-generator/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/multidomain/miniprotein/complexa-generator/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/multidomain/miniprotein/complexa-generator/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/multidomain/miniprotein/complexa-generator/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/multidomain/miniprotein/complexa-generator/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/structure/miniprotein/complexa/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[Proteina-Complexa/multidomain/miniprotein/complexa/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[ESMFold2 Binder/structure/miniprotein/esmfold2-protein/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[ESMFold2 Binder/structure/miniprotein/esmfold2-protein/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[ESMFold2 Binder/structure/miniprotein/esmfold2-protein/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[ESMFold2 Binder/structure/miniprotein/esmfold2-protein/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[ESMFold2 Binder/structure/miniprotein/esmfold2-protein/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[ESMFold2 Binder/structure/miniprotein/esmfold2-protein/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[ESMFold2 Binder/structure/miniprotein/esmfold2-protein/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/large_protein/bindcraft2-large-protein/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/large_protein/bindcraft2-large-protein/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/vhh/bindcraft2-vhh-native/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/vhh/bindcraft2-vhh-native/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/scfv/bindcraft2-scfv/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/scfv/bindcraft2-scfv/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/fab/bindcraft2-fab/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/fab/bindcraft2-fab/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/arp/bindcraft2-arp/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/arp/bindcraft2-arp/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/multidomain/bindcraft2-multidomain/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/multidomain/bindcraft2-multidomain/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/structure/homo_oligomer/bindcraft2-homo-oligomer/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/multidomain/homo_oligomer/bindcraft2-homo-oligomer/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BoltzGen/structure/miniprotein/boltzgen-generator/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BoltzGen/structure/miniprotein/boltzgen-generator/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BoltzGen/structure/miniprotein/boltzgen-generator/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BoltzGen/structure/miniprotein/boltzgen-generator/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BoltzGen/structure/miniprotein/boltzgen-generator/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BoltzGen/structure/miniprotein/boltzgen-generator/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BoltzGen/structure/miniprotein/boltzgen-generator/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BoltzGen/multidomain/miniprotein/boltzgen-generator/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BoltzGen/multidomain/miniprotein/boltzgen-generator/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BoltzGen/multidomain/miniprotein/boltzgen-generator/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BoltzGen/multidomain/miniprotein/boltzgen-generator/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BoltzGen/multidomain/miniprotein/boltzgen-generator/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BoltzGen/multidomain/miniprotein/boltzgen-generator/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BoltzGen/multidomain/miniprotein/boltzgen-generator/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[BoltzGen/structure/miniprotein/boltzgen-miniprotein/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BoltzGen/multidomain/miniprotein/boltzgen-miniprotein/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BoltzGen/structure/peptide/boltzgen-peptide/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BoltzGen/multidomain/peptide/boltzgen-peptide/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BoltzGen/structure/cyclotide/boltzgen-cyclotide/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BoltzGen/multidomain/cyclotide/boltzgen-cyclotide/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BoltzGen/structure/vhh/boltzgen-vhh-native/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BoltzGen/multidomain/vhh/boltzgen-vhh-native/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[ESMFold2 Binder/structure/scfv/esmfold2-scfv/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/vhh/rfd4-vhh/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFpeptides/structure/cyclic_peptide/rfpeptides/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFdiffusion3/structure/cyclic_peptide/rfd3-cyclic/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/cyclic_peptide/rfd4-cyclic/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFantibody/structure/vhh/rfantibody-vhh/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFantibody/structure/scfv/rfantibody-scfv/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/idr/miniprotein/bindcraft2-idr-miniprotein/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/idr/large_protein/bindcraft2-idr-large-protein/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/idr/peptide/bindcraft2-idr-peptide/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/idr/cyclic_peptide/bindcraft2-idr-cyclic-peptide/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/idr/vhh/bindcraft2-idr-vhh/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/idr/scfv/bindcraft2-idr-scfv/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/idr/fab/bindcraft2-idr-fab/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/idr/arp/bindcraft2-idr-arp/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/idr/multidomain/bindcraft2-idr-multidomain/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft2/idr/homo_oligomer/bindcraft2-idr-homo-oligomer/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[BindCraft/structure/miniprotein/bindcraft-classic/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[Protpardelle-1C/structure/miniprotein/protpardelle-binder/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[Protpardelle-1C/structure/miniprotein/protpardelle-binder/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Protpardelle-1C/structure/miniprotein/protpardelle-binder/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Protpardelle-1C/structure/miniprotein/protpardelle-binder/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Protpardelle-1C/structure/miniprotein/protpardelle-binder/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Protpardelle-1C/structure/miniprotein/protpardelle-binder/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Protpardelle-1C/structure/miniprotein/protpardelle-binder/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion \\u03b2-pairing/structure/miniprotein/rfdiffusion-beta-pairing/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFdiffusion \\u03b2-pairing/structure/miniprotein/rfdiffusion-beta-pairing/refold_engine=boltz2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion \\u03b2-pairing/structure/miniprotein/rfdiffusion-beta-pairing/refold_engine=prediction_mol1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion \\u03b2-pairing/structure/miniprotein/rfdiffusion-beta-pairing/refold_engine=af2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion \\u03b2-pairing/structure/miniprotein/rfdiffusion-beta-pairing/refold_engine=rf3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion \\u03b2-pairing/structure/miniprotein/rfdiffusion-beta-pairing/refold_engine=prediction_openfold3_ob0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[RFdiffusion \\u03b2-pairing/structure/miniprotein/rfdiffusion-beta-pairing/interface_analysis=True]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_binder_preset_contract[Peptide Trap/idr/miniprotein/peptide-trap-idr/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[Kejia IDR threading/idr/miniprotein/kejia-idr/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/antibody/rfd4-antibody/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[RFD4-Proteina/structure/tcr/rfd4-tcr/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[MIMOSA \\xb7 RFantibody/structure/vhh/rfantibody-mimosa-vhh/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_binder_preset_contract[MIMOSA \\xb7 BoltzGen/structure/vhh/boltzgen-mimosa-vhh/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested",
+      "widget_save_and_reopen": "passed",
+      "browser_table_action": "setup_opened"
+    },
+    "test_operation_preset_contract[RFD4-Proteina/protein_small_molecule]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFD4-Proteina/enzyme]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFD4-Proteina/motif]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFD4-Proteina/dna_binder]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFD4-Proteina/redesign]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFD4-Proteina/rna_design]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFD4-Proteina/new_fold]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFdiffusion3/protein_small_molecule]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFdiffusion3/enzyme]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFdiffusion3/dna_binder]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFdiffusion3/rna_binder]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFdiffusion/motif]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFdiffusion/redesign]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[RFdiffusion/new_fold]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[Proteina-Complexa/protein_small_molecule]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[Proteina-Complexa/motif]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[BoltzGen/protein_small_molecule]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[BoltzGen/redesign]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[Genie3/motif]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[Genie3/new_fold]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[Protpardelle-1c/motif]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[Protpardelle-1c/redesign]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[Protpardelle-1c/new_fold]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[AbMPNN/redesign]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[conDitar/pocket]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[DrugRPG/pocket]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[FLOWR.root/reference_ligand]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[LDDM/reference_ligand]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[OMTRA/pocket]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[OMTRA/reference_ligand]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[OMTRA/pharmacophore]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[paOPT/admet]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[PFM/pocket]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[PGMG/pharmacophore]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[PocketFlow/pocket]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[PocketXMol/pocket]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[bioemu2/sample-equilibrium]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[bioemu2/predict-structure]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[bioemu2/propagate]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[bioemu2/propagate/saved-design]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[rfd4_fold/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[rf3/protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[rf3/protein_protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[rf3/protein_ligand]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[rf3/protein_dna]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[rf3/protein_rna]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[rf3/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[rf3/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[boltz2/protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[boltz2/protein_protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[boltz2/protein_ligand]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[boltz2/protein_dna]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[boltz2/protein_rna]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[boltz2/protein_macrocyclic]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[boltz2/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[boltz2/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[af3/protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[af3/protein_protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[af3/protein_ligand]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[af3/protein_dna]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[af3/protein_rna]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[af2/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[af2/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_protenix_v2/protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_protenix_v2/protein_protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_protenix_v2/protein_ligand]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_protenix_v2/protein_dna]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_protenix_v2/protein_rna]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_esmfold2/protein]": {
+      "contract": "passed",
+      "browser": "canvas_saved_reopened",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_esmfold2/protein_protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_chai1/protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_chai1/protein_protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_chai1/protein_ligand]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_chai1/protein_dna]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_chai1/protein_rna]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_openfold3_ob0/protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_openfold3_ob0/protein_protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_openfold3_ob0/protein_ligand]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_openfold3_ob0/protein_dna]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_openfold3_ob0/protein_rna]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_openfold3_ob0/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_openfold3_ob0/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_colabfold/protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[prediction_colabfold/protein_protein]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_docking_vina/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_docking_autodock_gpu/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_docking_gnina/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_docking_rosetta_ligand/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_docking_unidock_pro/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_affinity_nesso/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_complex_prepare/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_tmol/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_tmol/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_md_openmm/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_md_openmm/prepare-first]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_md_gromacs/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_md_gromacs/prepare-first]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_prepare_library/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_library_centroids/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_library_centroids/prepare-first]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[sabr/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[filter/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[surface_analysis/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[md_analysis/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[ipsae/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[ipsae/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[rosetta_metrics/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[complex_analysis/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[sequence_qc/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[sequence_qc/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[sequence_qc/molecule_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[proteinsol/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[proteinsol/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[proteinsol/molecule_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[biotite_interface/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[biotite_interface/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[sequence_clustering/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[sequence_clustering/molecule_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[interface_clustering/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[foldseek/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[pep_patch/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[pep_patch/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[esm1v_score/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[esm1v_score/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[esm1v_score/molecule_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[esmif_score/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[esmif_score/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[native_ligand_interactions/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[plip/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[pandamap/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[posebusters/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[candidate_merge/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[shared_filter/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[shared_filter/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[candidate_analyzer/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[candidate_rank/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_detection_masif_seed/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_detection_pesto/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_detection_scannet/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_detection_surf2spot/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_binderscope/default]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_validation_acceptance/project_design_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[tile_validation_acceptance/run_source]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_operation_preset_contract[boltz2/affinity]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_guided_optional_steps_assemble_connected_graphs[prediction_esmfold2-options0-next_steps0]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_guided_optional_steps_assemble_connected_graphs[boltz2-options1-next_steps1]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_guided_optional_steps_assemble_connected_graphs[tile_complex_prepare-options2-next_steps2]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_guided_optional_steps_assemble_connected_graphs[tile_complex_prepare-options3-next_steps3]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_guided_optional_steps_assemble_connected_graphs[tile_prepare_library-options4-next_steps4]": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "test_monomer_label_in_prediction_input_editor": {
+      "contract": "passed",
+      "browser": "untested",
+      "live": "untested"
+    },
+    "browser[ESMFold2 Full/Protein monomer/Sequence Composition]": {
+      "contract": "passed",
+      "browser": "results_verified",
+      "live": "passed",
+      "run_code": "9F0D8"
+    }
+  },
+  "follow_up": {
+    "browser_setup_buttons": {
+      "protein_binders": 68,
+      "other_protein_design": 24,
+      "structure_prediction": 10,
+      "docking_affinity": 7,
+      "structure_preparation": 2,
+      "molecular_dynamics": 2,
+      "library_preparation": 2,
+      "conformational_sampling": 3,
+      "small_molecule_design": 12,
+      "analysis_validation": 30
+    },
+    "binder_widget_save_and_reopen": 82,
+    "native_runs": {
+      "8D088": "Passed. Four of five input rows yielded fingerprints. The next step produced four centroids.",
+      "B2C70": "Expected negative. The saved prediction contained one 20-residue sequence and Protein-Sol reported its length requirement.",
+      "2ED48": "Passed. The frozen database selection produced one analysis record and a final evidence CSV."
+    },
+    "report": "capabilities-follow-up-2026-11-25.md"
+  }
+}
