@@ -298,6 +298,9 @@ def replay(parent, node, source, retained, scientific_key):
     predictor = NODE_CATALOG[kind]["category"] == "Structure prediction"
     target = source["target"]
     if not predictor:
+        if not target.get("identity"):
+            target = {**target, "identity": cs.target_identity(target)}
+
         def rows():
             for row in cs.iter_candidates(retained):
                 verify_target(row, target)

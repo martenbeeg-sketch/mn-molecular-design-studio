@@ -2472,7 +2472,7 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
             target = nodes[incoming[node_id][0]]["data"]["params"] if incoming[node_id] else {}
             if incoming[node_id] and target.get("target_input") != "idr":
                 raise PipelineInputError(node_id, "Connect a Target step that supplies an IDR sequence.")
-            if require_inputs:
+            if require_inputs and not node["data"].get("retained_run_dir"):
                 adapter = kejia_idr_input if kind == "kejia_idr" else peptide_trap_input
                 try:
                     adapter.prepare_request(sequence_template_parameters(node["data"]["params"], target),
@@ -2601,7 +2601,7 @@ def validate_graph(graph: dict, *, require_inputs=False, require_files=True, all
             p=node['data']['params']
             if p.get('task') not in {'unconditional','symmetry','custom','fold'} and not p.get('target_pdb'):
                 raise ValueError('Load a structure in '+node['data']['label']+' or connect a Target block.')
-        if require_inputs and kind == "rfdiffusion_beta_pairing":
+        if require_inputs and kind == "rfdiffusion_beta_pairing" and not node["data"].get("retained_run_dir"):
             p = node["data"]["params"]
             if not incoming[node_id] and not p.get("target_pdb"):
                 raise ValueError("Load a PDB target in RFdiffusion β-pairing or connect a Target block.")

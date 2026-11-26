@@ -65,13 +65,14 @@ def collection_harness(tmp_path, monkeypatch):
         parents.append(path)
         return SimpleNamespace(run_dir=path)
     monkeypatch.setattr(gp, "create_job", create)
-    def source(name, tool, size, *, rejected=(), backbone=()):
+    def source(name, tool, size, *, rejected=(), backbone=(), coordinates=None):
         path = tmp_path / name
         path.mkdir()
         rows = []
         for i in range(size):
             rows.append(dict(candidate_id=f"{name}-{i}", stage="generation.backbone" if i in backbone else "generation.backbone_sequence",
-                source_tool=tool, binder_sequence=None if i in backbone else binder_sequence, complex_pdb=target, target_pdb=target,
+                source_tool=tool, binder_sequence=None if i in backbone else binder_sequence,
+                complex_pdb=coordinates or target, target_pdb=coordinates or target,
                 binder_chains=["B"], target_chains=["A"], parents=[],
                 metrics={"native_pass_filters": i not in rejected, "native_score": i}, raw_metadata={"fixture": True}))
         normalized = path / "artifacts/normalized_candidates/candidates.jsonl"
@@ -768,3 +769,70 @@ def test_node_bound_acceptance_reuses_exact_independent_decision_without_reading
     measured = rows[0]['raw_metadata']['validation_acceptance']['measurements'][METRICS['iptm']['field']]
     assert measured['value'] == .8
     assert cs.metadata(rows[0])['shared_filter']['status'] == 'passed'
+
+
+def _preset_generator_cases():
+    from mn_molecular_design_studio.design_capabilities import catalogue
+
+    for route in catalogue()["items"]:
+        if route["access"] == "pipeline":
+            yield pytest.param(route, id=f'{route["route_id"]}/{route["target_input"]}')
+
+
+@pytest.mark.parametrize("route", list(_preset_generator_cases()))
+def test_binder_preset_routes_retain_their_candidate_output(collection_harness, route, monkeypatch):
+    """Check the Results handoff using an inert fixture and the real graph controller."""
+    from mn_molecular_design_studio.binder_pipeline import new_binder_pipeline, stage_idr_target
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS
+
+    h = collection_harness
+    context = route["target_input"]
+    target = {"target_pdb": h.target, "target_chains": "A"}
+    coordinates = h.target
+    if context == "idr":
+        fixture_sequence = "A" * 10
+        target = stage_idr_target(fixture_sequence, "a" * 32)
+        coordinates = structure(h.tmp_path / "idr-complex.pdb", target=fixture_sequence)
+    graph = new_binder_pipeline(route["route_id"], target_input=context, binder_format=route["output"], inputs=target)
+    generator = next(node for node in graph["nodes"] if node["data"]["kind"] == route["canvas_node"])
+    target_node = next(node for node in graph["nodes"] if node["data"]["kind"] == "target")
+    results = next(node for node in graph["nodes"] if node["data"]["kind"] == "results")
+    # Check the common artifact boundary before a route's optional scientific stages.
+    graph["nodes"] = [target_node, generator, results]
+    graph["edges"] = [
+        next(edge for edge in graph["edges"] if edge["source"] == target_node["id"] and edge["target"] == generator["id"]),
+        {"id": "candidate-to-results", "source": generator["id"], "sourceHandle": "out",
+         "target": results["id"], "targetHandle": "in"},
+    ]
+    tool = WORKFLOWS[route["workflow"]].tool
+    assert tool
+    fixture_run = h.source("fixture", tool, 1, coordinates=coordinates)
+    supports_replay = pg.NODE_CATALOG[route["canvas_node"]]["category"] in {"Design engine", "Design pipeline"}
+    if supports_replay:
+        missing_fresh_input = {
+            "rfdiffusion_beta_pairing": "Select target β-strand residue ranges",
+            "kejia_idr": "Upload a template structure",
+        }.get(route["canvas_node"])
+        if missing_fresh_input:
+            with pytest.raises(ValueError, match=missing_fresh_input):
+                pg.validate_graph(graph, require_inputs=True)
+        generator["data"]["retained_run_dir"] = str(fixture_run)
+
+    def fixture_submit(request, parent, node, **kwargs):
+        assert not supports_replay, "Retained branches must not submit a new workflow"
+        assert node["id"] == generator["id"]
+        assert request["workflow"] == route["workflow"]
+        return fixture_run
+
+    monkeypatch.setattr(gp, "_submit", fixture_submit)
+    run = gp.run_graph_pipeline(graph, "Fixture Results handoff", "owner", "project", reuse_completed=False)
+    result = read_json(run / "result.json")
+    execution = read_json(run / "graph_execution.json")["nodes"]
+    assert execution[generator["id"]]["status"] == "completed", execution[generator["id"]]
+    assert execution[results["id"]]["status"] == "completed", execution[results["id"]]
+    assert result["success"] is True
+    candidate, = result["outputs"]["candidates"]
+    assert candidate["raw_metadata"]["pipeline_original_candidate_id"] == "fixture-0"
+    assert candidate["source_tool"] == tool
+    assert candidate["binder_sequence"] == "GGG"
+    assert Path(candidate["complex_pdb"]).read_bytes() == Path(coordinates).read_bytes()
