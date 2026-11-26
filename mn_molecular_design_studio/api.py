@@ -1050,10 +1050,18 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
     _validate_user_path_values(graph, user, _request_directory(user, None))
     for node in graph["nodes"]:
         if node["data"]["kind"] == "run_source":
-            from mn_molecular_design_studio import logical_runs
-            reference = node["data"]["params"].get("run_reference")
+            params = node["data"]["params"]
+            reference = params.get("run_reference")
             if reference:
-                _call(logical_runs.resolve, reference, logical_runs.catalog(user, project_id=project_id))
+                if runnable and params.get("selected_docking_poses") is not None:
+                    from mn_molecular_design_studio.run_graph import load_source
+
+                    _call(load_source, reference, owner_id=str(user["id"]), project_id=project_id,
+                          selected_docking_poses=params["selected_docking_poses"], allow_development=is_development_mode())
+                else:
+                    from mn_molecular_design_studio import logical_runs
+
+                    _call(logical_runs.resolve, reference, logical_runs.catalog(user, project_id=project_id))
         if node["data"].get("retained_run_dir") and node["data"].get("enabled", True):
             from mn_molecular_design_studio.candidate_pipeline import retained_source
             retained_path = resolve_stored_path(node["data"]["retained_run_dir"], must_exist=True)

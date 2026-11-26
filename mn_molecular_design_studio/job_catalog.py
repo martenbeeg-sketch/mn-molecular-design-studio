@@ -446,6 +446,8 @@ def _job_payload(
     # every catalog response; some workflows retain large result summaries.
     from mn_molecular_design_studio.logical_runs import IDENTITY_FIELDS
     identity = {key: metadata[key] for key in IDENTITY_FIELDS if key in metadata}
+    if pipeline_parent and metadata.get("pipeline_parent_run_dir") and not identity.get("parent_run_id"):
+        identity["parent_run_id"] = Path(pipeline_parent.rstrip("/")).name
     from mn_molecular_design_studio.job_dependencies import FIELDS, projected_references
     identity.update({key: metadata[key] for key in FIELDS if key in metadata})
     identity["dependency_refs"] = projected_references(metadata, inputs, root=_results_root())

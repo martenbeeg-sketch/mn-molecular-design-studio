@@ -90,6 +90,28 @@ def test_pipeline_reusing_a_saved_input_keeps_its_own_run_and_steps():
     }
 
 
+def test_catalog_groups_legacy_pose_worker_by_pipeline_parent_before_source_campaign(isolated, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import create_job, submission_tags
+    from mn_molecular_design_studio.job_catalog import _job_payload
+
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(isolated / "runs"))
+    node_id = row("source")["node_id"]
+    with submission_tags(campaign_id="source-campaign", pipeline_parent_node_id=node_id,
+                         pipeline_parent_run_dir="runs:///campaign/analysis-pipeline", graph_node_id="contacts"):
+        job = create_job("analysis", "analysis", "native_ligand_interactions", {}, {})
+    payload = _job_payload(job.run_dir)
+    worker = row(job.run_dir.name, task_group="analysis", campaign_id=payload["campaign_id"],
+                 pipeline_parent_node_id=payload["pipeline_parent_node_id"], **json.loads(payload["run_identity_json"]))
+    parent = row("analysis-pipeline", tool="visual_pipeline", task_group="campaign")
+    source = row("source-campaign", tool="visual_pipeline", task_group="campaign")
+
+    grouped = runs.group_runs([source, worker, parent])
+    assert {run["name"]: {item["run_id"] for item in run["jobs"]} for run in grouped} == {
+        "analysis-pipeline": {"analysis-pipeline", job.run_dir.name},
+        "source-campaign": {"source-campaign"},
+    }
+
+
 def test_completed_pipeline_keeps_worker_retry_history_without_becoming_partial():
     root = row("pipeline", task_group="campaign", tool="visual_pipeline")
     worker = row("replacement", campaign_id="pipeline", graph_node_id="simulation")

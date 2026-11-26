@@ -105,12 +105,12 @@ def initialize_batches(parent, node, source, params, key, settings):
     return batches
 
 
-def load_source(reference, *, owner_id, project_id, selected_docking_poses=None, allow_development=False):
+def load_source(reference, *, owner_id, project_id, selected_docking_poses=None, allow_development=False, token=""):
     from mn_molecular_design_studio import logical_runs
     from mn_molecular_design_studio.cluster.candidate_batches import actor
     from mn_molecular_design_studio.cluster import config
     user = actor(owner_id, project_id, allow_development=allow_development)
-    run, output = logical_runs.resolve(reference, logical_runs.catalog(user, project_id=project_id))
+    run, output = logical_runs.resolve(reference, logical_runs.catalog(user, project_id=project_id, token=token))
     if selected_docking_poses is not None:
         if (not isinstance(selected_docking_poses, list) or not selected_docking_poses
                 or len(selected_docking_poses) > 1000):

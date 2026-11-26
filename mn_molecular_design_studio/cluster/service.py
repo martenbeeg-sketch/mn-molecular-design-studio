@@ -139,6 +139,16 @@ def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="
             raise ValueError("The source job must belong to the selected project.")
         request_payload["source_job"] = config.artifact_uri(config.identity(), row["task_group"], row["run_id"])
     plan = schema_check(request_payload, kind, request_dir)
+    if kind == "pipeline":
+        from mn_molecular_design_studio.run_graph import load_source
+
+        for node in plan["graph"]["nodes"]:
+            data = node["data"]
+            params = data["params"]
+            if data["kind"] == "run_source" and params.get("selected_docking_poses") is not None:
+                load_source(params["run_reference"], owner_id=str(user["id"]), project_id=project_id,
+                            selected_docking_poses=params["selected_docking_poses"], token=token,
+                            allow_development=token == "development-mode")
     if validate_only:
         if kind == "pipeline":
             owner_nodes = bundles.referenced_nodes(request_payload)

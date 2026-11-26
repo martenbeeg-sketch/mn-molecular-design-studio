@@ -296,6 +296,36 @@ def headers(data, role):
     return {"Authorization": "Bearer " + data[role + "_token"]}
 
 
+@pytest.mark.parametrize("placement", ["local", "auto"])
+def test_pipeline_rejects_docking_pose_from_another_run_before_dispatch(api_data, monkeypatch, placement):
+    from mn_molecular_design_studio import logical_runs
+    from mn_molecular_design_studio.capability_pipeline import build_capability_graph
+    from mn_molecular_design_studio.cluster import config
+
+    project = api_data["project"]["id"]
+    source = {"node_id": "compute-node", "task_group": "ligand-docking", "run_id": "source",
+              "project_id": project, "status": "completed", "has_docking_results": True}
+    reference = "run:0123456789abcdef01234567"
+    monkeypatch.setattr(logical_runs, "catalog", lambda *args, **kwargs: [{
+        "id": reference, "outputs": [{"id": "results", "reference": reference + "~results", "sources": [source]}],
+    }])
+    if placement == "auto":
+        settings = {**config.load(), "mode": "coordinator"}
+        monkeypatch.setattr(config, "load", lambda: settings)
+
+    graph = build_capability_graph("native_ligand_interactions", source="run_source")
+    source_params = next(node["data"]["params"] for node in graph["nodes"] if node["data"]["kind"] == "run_source")
+    source_params.update(run_reference=reference + "~results", selected_docking_poses=[
+        {"source_job_reference": "compute-node:ligand-docking/different", "pose_id": "dockpose-unrelated"},
+    ])
+    request = {"graph": graph, "project_id": project, "execution": {"placement": placement}}
+    for action in ("validate", "run"):
+        response = api_data["client"].post(f"/api/v1/pipelines/{action}", json=request)
+        assert response.status_code == 422, response.text
+        assert "not part of this authorized Run output" in response.json()["detail"]
+    assert not list((api_data["root"] / "results/runs/campaign").glob("*/metadata.json"))
+
+
 def import_compounds(data):
     response = data["client"].post("/api/v1/molecules/imports", json={
         "method": "smiles", "text": "CCO ethanol\nCCN ethylamine", "project_id": data["project"]["id"]})

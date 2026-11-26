@@ -849,7 +849,8 @@ def test_distributed_tile_submission_uses_cpu_controller_and_normal_workflow_api
     assert len(submitted) == 1
     assert submission_context == [{
         "studio_owner_id": "owner", "studio_project_id": "project", "studio_development_mode": True,
-        "pipeline_parent_node_id": cluster_config.identity(), "pipeline_parent_run_dir": str(parent),
+        "parent_run_id": parent.name, "pipeline_parent_node_id": cluster_config.identity(),
+        "pipeline_parent_run_dir": str(parent),
         "campaign_id": parent.name, "campaign_name": "Fixture", "graph_node_id": "tile-1",
     }]
     assert submitted[0]["parameters"]["distributed_campaign"]["enabled"] is True

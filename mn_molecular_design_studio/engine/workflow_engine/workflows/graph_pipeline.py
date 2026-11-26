@@ -1008,7 +1008,8 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     pipeline_name = read_json(parent / "input.json").get("params", {}).get("pipeline_name", "Pipeline")
     with submission_tags(studio_owner_id=owner_id, studio_project_id=project_id,
                          studio_development_mode=bool(parent_metadata.get("studio_development_mode")),
-                         pipeline_parent_node_id=cluster_config.identity(), pipeline_parent_run_dir=str(parent),
+                         parent_run_id=parent.name, pipeline_parent_node_id=cluster_config.identity(),
+                         pipeline_parent_run_dir=str(parent),
                          campaign_id=parent.name, campaign_name=pipeline_name, graph_node_id=node["id"]):
         result = submit_workflow_request(path, defer_dispatch=True) if shared_campaign_child else submit_workflow_request(path)
     mark_studio_job(result, owner_id=owner_id, project_id=project_id)
