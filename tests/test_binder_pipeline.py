@@ -72,12 +72,14 @@ def test_design_capabilities_match_registered_workflows_and_picker_routes():
     by_route = {(row["route_id"], row["target_input"]): row["native_verification"]
                 for row in data["items"] if row["route_id"]}
     assert Counter(row["status"] for row in by_route.values()) == {
-        "archived_downstream": 19, "archived_results": 5, "unverified": 58,
+        "archived_downstream": 19, "archived_results": 6, "unverified": 57,
     }
     assert by_route["rfd4-idr", "idr"]["status"] == "archived_downstream"
     assert by_route["rfpeptides", "structure"]["status"] == "archived_results"
     assert by_route["rfd4-internal", "structure"]["status"] == "archived_downstream"
     assert by_route["rfd4-internal", "multidomain"]["status"] == "unverified"
+    assert by_route["rfd4-generator", "structure"]["status"] == "archived_results"
+    assert by_route["bindcraft2", "structure"]["status"] == "unverified"
     assert by_route["rfd4-generator", "structure"]["priority_review"] is True
     assert all("native_verification" not in row for row in data["items"] if not row["route_id"])
 
@@ -292,7 +294,7 @@ def test_protein_binder_verification_filter_keeps_only_matching_variants(monkeyp
         assert kwargs["key"].endswith("-unverified")
         assert "Native execution unverified" in markup
         assert "Archived downstream verified" not in markup
-        return {"choose": ["RFD4-Proteina", "miniprotein"]}
+        return {"choose": ["BindCraft2", "miniprotein"]}
 
     monkeypatch.setattr(design_capabilities_ui, "_matrix", click_filtered_cell)
     app = AppTest.from_string("""

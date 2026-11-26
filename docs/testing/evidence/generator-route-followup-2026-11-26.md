@@ -13,7 +13,7 @@ Two additional disordered-sequence routes have native outputs linked to complete
 
 For each row, the read-only check matched the native run and candidate ID, the SHA-256 of the native structure bytes, the saved Database record and a completed BinderScope observation. Where the assessment used a registered derivative, it matched the derivative digest and followed the saved source-model link to the original. These are historical Database handoffs. The same-run Capabilities graphs for these two routes still need live verification.
 
-Together with the earlier 17 pipeline chains, this establishes historical native downstream evidence for 19 of the 82 combinations. The other 63 still lack such evidence. Five of those have standalone native structures. The peer BindCraft2 R3 archive declares sequence input, and the archived ESMFold2 VHH job also declares sequence-only input. The structured-target routes therefore remain open.
+Together with the earlier 17 pipeline chains, this establishes historical native downstream evidence for 19 of the 82 combinations. The other 63 still lack an independent downstream scientific result. The peer BindCraft2 R3 archive declares sequence input, and the archived ESMFold2 VHH job also declares sequence-only input. The structured-target routes therefore remain open.
 
 ## Results regression
 
@@ -40,14 +40,20 @@ The replay verified all 18 original candidate IDs, their parent IDs and sequence
 
 The regression suite on `ef30bb3` completed with 967 passing checks and one skipped Chaperone check. The skipped check passed separately using the configured Chaperone worker.
 
+## Priority workflow replays
+
+The archived RFD4 worker `DCDFF` used a structured target and completed generation with internal refolding disabled. Its six generated designs were replayed through the exact **Generator only** preset in isolated run `8E976`. The Results API returned all six entries with their original candidate IDs, parent links, sequence values, and structure checksums. This qualifies the route as **Archived Results verified**.
+
+The structured-target native BindCraft2 archive contains five matching receipts across the three workstations. `84ACD`, `C5F60`, and `724E2` completed with zero normalized candidates. `F8785` and `4BC60` failed. Isolated replay `E94E8` loaded the explicit empty collection from `84ACD` through the **Native validation and filters** preset. Results reported a completed run with zero records. This verifies the empty-result path. The route remains **Native execution unverified** for usable outputs.
+
 ## Coverage after replay
 
 | Target context | Native downstream evidence | Native output verified in Results | No matching native output | Total |
 | --- | ---: | ---: | ---: | ---: |
-| Structure | 17 | 3 | 23 | 43 |
+| Structure | 17 | 4 | 22 | 43 |
 | Multidomain | 0 | 0 | 26 | 26 |
 | Disordered sequence | 2 | 2 | 9 | 13 |
-| **Total** | **19** | **5** | **58** | **82** |
+| **Total** | **19** | **6** | **57** | **82** |
 
 The evidence columns count each combination once, at its strongest verified level.
 
@@ -55,18 +61,18 @@ The evidence columns count each combination once, at its strongest verified leve
 
 In Capabilities → Protein design → Protein binders, use **Native verification** to display a single evidence level or choose **Priority review**. The table shows the shared status when every visible variant has the same level. Open the workflow setup for the status of the exact variant and target context. The design capabilities API and MCP tool return the same status and priority on each binder row.
 
-The first review group covers seven miniprotein routes. Recorded campaigns support prioritizing RFD4 with separate or internal refolding, disordered-sequence RFD4, structured BindCraft2 generation with separate refolding, and disordered-sequence native BindCraft2. The group also includes standalone RFD4 generation and structured native BindCraft2 to close adjacent gaps in those frequently used workflow families. Both retain **Native execution unverified** until exact receipts are available.
+The first review group covers seven miniprotein routes. Recorded campaigns support prioritizing RFD4 with separate or internal refolding, disordered-sequence RFD4, structured BindCraft2 generation with separate refolding, and disordered-sequence native BindCraft2. The group also includes standalone RFD4 generation and structured native BindCraft2 to close adjacent gaps in those frequently used workflow families. The priority workflow replays established Results coverage for standalone RFD4. Structured native BindCraft2 is the remaining unverified route in this group.
 
 ## Evidence for the 65 combinations reviewed
 
 | Route | Target context | Native evidence |
 | --- | --- | --- |
-| `rfd4-generator` | Structure | No matching receipt located |
+| `rfd4-generator` | Structure | Archived output `DCDFF` verified in Results replay `8E976` |
 | `rfd4-generator` | Multidomain | No matching receipt located |
 | `rfd4-external` | Multidomain | No matching receipt located |
 | `rfd4-internal` | Multidomain | No matching receipt located |
 | `bindcraft2-generator` | Multidomain | No matching receipt located |
-| `bindcraft2` | Structure | No matching receipt located |
+| `bindcraft2` | Structure | Completed empty outputs. Empty-result path verified in replay `E94E8` |
 | `bindcraft2` | Multidomain | No matching receipt located |
 | `rfd3` | Multidomain | No matching receipt located |
 | `bindcraft2-peptide` | Structure | No matching receipt located |
