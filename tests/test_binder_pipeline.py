@@ -46,6 +46,8 @@ def test_registered_binder_routes_build_valid_graphs(route):
 
 
 def test_design_capabilities_match_registered_workflows_and_picker_routes():
+    from collections import Counter
+
     from mn_molecular_design_studio.design_capabilities import catalogue
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS
     from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
@@ -67,6 +69,17 @@ def test_design_capabilities_match_registered_workflows_and_picker_routes():
     assert {row["engine"] for row in cyclic if row["access"] == "pipeline"} == {
         "BindCraft2", "BoltzGen", "RFdiffusion3", "RFD4-Proteina", "RFpeptides",
     }
+    by_route = {(row["route_id"], row["target_input"]): row["native_verification"]
+                for row in data["items"] if row["route_id"]}
+    assert Counter(row["status"] for row in by_route.values()) == {
+        "archived_downstream": 19, "archived_results": 5, "unverified": 58,
+    }
+    assert by_route["rfd4-idr", "idr"]["status"] == "archived_downstream"
+    assert by_route["rfpeptides", "structure"]["status"] == "archived_results"
+    assert by_route["rfd4-internal", "structure"]["status"] == "archived_downstream"
+    assert by_route["rfd4-internal", "multidomain"]["status"] == "unverified"
+    assert by_route["rfd4-generator", "structure"]["priority_review"] is True
+    assert all("native_verification" not in row for row in data["items"] if not row["route_id"])
 
 
 def test_cyclic_binder_tile_inherits_connected_target():
@@ -261,6 +274,37 @@ render_design_tasks("cap", lambda _: None)
     assert 'data-engine="Genie3" data-output="new_fold"' in app.text[0].value
     assert 'data-engine="AbMPNN"' not in app.text[0].value
     assert app.text[0].value.count('scope="col"') == 2
+
+
+def test_protein_binder_verification_filter_keeps_only_matching_variants(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import design_capabilities_ui
+
+    def click_filtered_cell(**kwargs):
+        markup = kwargs["data"]
+        if kwargs["key"].endswith("-all"):
+            assert "Varies by workflow" in markup
+            return {}
+        if kwargs["key"].endswith("-priority"):
+            assert "RFpeptides" not in markup
+            assert "Miniprotein" in markup
+            return {}
+        assert kwargs["key"].endswith("-unverified")
+        assert "Native execution unverified" in markup
+        assert "Archived downstream verified" not in markup
+        return {"choose": ["RFD4-Proteina", "miniprotein"]}
+
+    monkeypatch.setattr(design_capabilities_ui, "_matrix", click_filtered_cell)
+    app = AppTest.from_string("""
+from mn_molecular_design_studio.design_capabilities_ui import render_design_tasks
+render_design_tasks("cap", lambda _: None)
+""").run()
+    app.selectbox(key="cap-verification").set_value("priority").run()
+    assert not app.exception
+    app.selectbox(key="cap-verification").set_value("unverified").run()
+    assert not app.exception
+    assert all(widget.label != "Workflow goal" for widget in app.selectbox)
+    assert any("Native execution unverified" in item.value and "Priority review" in item.value for item in app.caption)
 
 
 def test_route_compatibility_and_branch_preserve_existing_target():

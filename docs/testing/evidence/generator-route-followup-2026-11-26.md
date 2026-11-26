@@ -51,6 +51,12 @@ The regression suite on `ef30bb3` completed with 967 passing checks and one skip
 
 The evidence columns count each combination once, at its strongest verified level.
 
+### Verification priority
+
+In Capabilities → Protein design → Protein binders, use **Native verification** to display a single evidence level or choose **Priority review**. The table shows the shared status when every visible variant has the same level. Open the workflow setup for the status of the exact variant and target context. The design capabilities API and MCP tool return the same status and priority on each binder row.
+
+The first review group covers seven miniprotein routes. Recorded campaigns support prioritizing RFD4 with separate or internal refolding, disordered-sequence RFD4, structured BindCraft2 generation with separate refolding, and disordered-sequence native BindCraft2. The group also includes standalone RFD4 generation and structured native BindCraft2 to close adjacent gaps in those frequently used workflow families. Both retain **Native execution unverified** until exact receipts are available.
+
 ## Evidence for the 65 combinations reviewed
 
 | Route | Target context | Native evidence |

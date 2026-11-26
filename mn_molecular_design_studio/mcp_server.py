@@ -281,7 +281,10 @@ def create_server(client=None):
     @server.tool(annotations=read)
     async def design_capabilities(ctx: Context, target_input: str | None = None,
                                   binder_format: str | None = None) -> dict[str, Any]:
-        """Read Studio's design capability matrix. Target filters include structure, multidomain, idr and sequence. Use binder format keys from the unfiltered response."""
+        """Read Studio's design capabilities, including native verification and review priority for binder routes.
+
+        Target filters include structure, multidomain, idr and sequence. Use binder format keys from the unfiltered response.
+        """
         query = {key: value for key, value in {"target_input": target_input, "binder_format": binder_format}.items()
                  if value is not None}
         return await call(ctx, "GET", "/api/v1/pipelines/design-capabilities", query=query)

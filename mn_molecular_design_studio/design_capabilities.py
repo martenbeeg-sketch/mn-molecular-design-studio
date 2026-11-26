@@ -7,6 +7,48 @@ from mn_molecular_design_studio.binder_pipeline import FORMATS, ROUTES, TARGET_I
 
 
 ACCESS = {"pipeline": "Build pipeline", "canvas": "Pipeline Builder", "tile": "Open tool", "api": "API only"}
+NATIVE_VERIFICATION_LABELS = {
+    "archived_downstream": "Archived downstream verified",
+    "archived_results": "Archived Results verified",
+    "unverified": "Native execution unverified",
+}
+
+# Evidence for exact route and context pairs from the generator acceptance
+# playbook. Archived evidence stays scoped to the recorded run configuration.
+_ARCHIVED_DOWNSTREAM = {
+    "structure": frozenset({
+        "rfd4-external", "rfd4-internal", "rfd3", "rfdiffusion", "genie3", "pxdesign",
+        "protpardelle-binder", "bindcraft2-generator", "boltzgen-generator", "complexa-generator",
+        "esmfold2-protein", "rfdiffusion-beta-pairing", "rfantibody-vhh", "rfantibody-mimosa-vhh",
+        "boltzgen-vhh", "boltzgen-vhh-native", "boltzgen-mimosa-vhh",
+    }),
+    "idr": frozenset({"rfd4-idr", "bindcraft2-idr-miniprotein"}),
+}
+_ARCHIVED_RESULTS = {
+    "structure": frozenset({"rfpeptides", "complexa", "boltzgen-miniprotein"}),
+    "idr": frozenset({"peptide-trap-idr", "kejia-idr"}),
+}
+_PRIORITY_REVIEW = {
+    "structure": frozenset({"rfd4-generator", "rfd4-external", "rfd4-internal", "bindcraft2-generator", "bindcraft2"}),
+    "idr": frozenset({"rfd4-idr", "bindcraft2-idr-miniprotein"}),
+}
+
+
+def native_verification(route_id: str, target_input: str) -> dict:
+    """Report native evidence and review priority independently."""
+    if route_id in _ARCHIVED_DOWNSTREAM.get(target_input, ()):
+        status = "archived_downstream"
+    elif route_id in _ARCHIVED_RESULTS.get(target_input, ()):
+        status = "archived_results"
+    else:
+        status = "unverified"
+    return {
+        "status": status,
+        "label": NATIVE_VERIFICATION_LABELS[status],
+        "priority_review": route_id in _PRIORITY_REVIEW.get(target_input, ()),
+    }
+
+
 OTHER_TASKS = {
     "protein_small_molecule": "Protein binder for a small molecule",
     "enzyme": "Enzyme or catalytic scaffold",
@@ -84,9 +126,15 @@ def catalogue(*, target_input=None, binder_format=None):
     rows = [row for row in _capabilities()
             if (target_input is None or row.target_input == target_input)
             and (binder_format is None or row.output in binder_outputs)]
+    items = []
+    for row in rows:
+        item = asdict(row)
+        if row.route_id:
+            item["native_verification"] = native_verification(row.route_id, row.target_input)
+        items.append(item)
     data = {"schema": "studio.design-capabilities.v1", "target_inputs": TARGET_INPUTS.copy(),
             "binder_formats": FORMATS.copy(), "other_tasks": OTHER_TASKS.copy(), "access": ACCESS.copy(),
-            "items": [asdict(row) for row in rows]}
+            "items": items}
     if target_input is None and binder_format is None:
         data["small_molecule_design"] = small_molecule_catalogue()
     return data

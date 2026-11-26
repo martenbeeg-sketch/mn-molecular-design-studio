@@ -12,7 +12,9 @@ from mn_molecular_design_studio.capability_pipeline import (
     DOCKING, MD_ENGINES, POSE_ANALYSES, SAVED_DESIGN_REFOLDERS, SAVED_SOURCES,
     add_followup, build_capability_graph, followup_choices, source_choices,
 )
-from mn_molecular_design_studio.design_capabilities import ACCESS, catalogue, small_molecule_catalogue
+from mn_molecular_design_studio.design_capabilities import (
+    ACCESS, NATIVE_VERIFICATION_LABELS, catalogue, native_verification, small_molecule_catalogue,
+)
 from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
 
 
@@ -114,6 +116,7 @@ _matrix = st.components.v2.component(
         }
         tbody tr:last-child > * { border-bottom: 0; }
         .operation-use { display: block; font-weight: normal; }
+        .native-verification { display: block; margin-top: .2rem; font-size: .78rem; }
         button {
             font: inherit;
             color: inherit;
@@ -147,7 +150,7 @@ _matrix = st.components.v2.component(
 )
 
 
-def _matrix_markup(by_engine, columns, access, *, action_column=False, primary_access="pipeline"):
+def _matrix_markup(by_engine, columns, access, *, action_column=False, primary_access="pipeline", verification=None):
     labels = ["Studio access"] if action_column else columns.values()
     headers = "".join(f'<th scope="col">{escape(label)}</th>' for label in labels)
     table = [f'<table><thead><tr><th scope="col">Engine / checkpoint</th>{headers}</tr></thead><tbody>']
@@ -160,9 +163,12 @@ def _matrix_markup(by_engine, columns, access, *, action_column=False, primary_a
                 continue
             title = f"{access[level]} · {engine} · {label}"
             style = ' data-pipeline="true"' if level == primary_access else ""
+            labels = (verification or {}).get((engine, code), ())
+            summary = next(iter(labels)) if len(labels) == 1 else "Varies by workflow"
+            note = f'<span class="native-verification">{escape(summary)}</span>' if labels else ""
             table.append(
                 f'<td><button type="button" data-engine="{escape(engine)}" data-output="{escape(code)}"'
-                f' aria-label="{escape(title)}"{style}>{escape(access[level])}</button></td>'
+                f' aria-label="{escape(title)}"{style}>{escape(access[level])}</button>{note}</td>'
             )
         table.append("</tr>")
     return "".join([*table, "</tbody></table>"])
@@ -174,6 +180,13 @@ def _binder_options(key, routes, *, label="Workflow variant"):
     route = (st.selectbox(label, routes, format_func=lambda item: item.variant, key=key + "-variant")
              if len(routes) > 1 else routes[0])
     st.caption(route.summary)
+    evidence = native_verification(route.id, route.target_input)
+    priority = " · Priority review" if evidence["priority_review"] else ""
+    st.caption(f"**{evidence['label']}**{priority}")
+    if evidence["status"] == "archived_downstream":
+        st.caption("The archived output reached a downstream scientific step in its recorded configuration.")
+    elif evidence["status"] == "archived_results":
+        st.caption("The archived output opened in Results. The independent scientific handoff is still open.")
     options = {}
     supported = supported_interface_constraints(route)
     if supported:
@@ -216,28 +229,48 @@ def render_design_tasks(key, open_pipeline):
     }}
     task = st.selectbox("Design task", list(tasks), format_func=tasks.get, key=key + "-task")
     other_tasks = task != "protein_binders"
+    review = "all"
     if other_tasks:
         columns = {task: tasks[task]}
         target = "all"
     else:
         columns = data["binder_formats"]
         targets = {"all": "All target inputs", **data["target_inputs"]}
-        target = st.selectbox("Target input", list(targets), index=1, format_func=targets.get, key=key + "-target")
+        review_options = {"all": "All workflows", "priority": "Priority review", **NATIVE_VERIFICATION_LABELS}
+        target_col, review_col = st.columns(2)
+        target = target_col.selectbox("Target input", list(targets), index=1, format_func=targets.get,
+                                     key=key + "-target")
+        review = review_col.selectbox("Native verification", list(review_options), format_func=review_options.get,
+                                      key=key + "-verification")
     rows = [row for row in data["items"] if row["output"] in columns
             and (target == "all" or row["target_input"] == target)]
     if not rows:
         st.info("No documented design workflows for this target input.")
         return
+    if review == "priority":
+        rows = [row for row in rows if row["native_verification"]["priority_review"]]
+    elif review != "all":
+        rows = [row for row in rows if row["native_verification"]["status"] == review]
+    if not rows:
+        st.info("No workflows match this verification filter for the selected target input.")
+        return
+    if review != "all":
+        visible_formats = {row["output"] for row in rows}
+        columns = {code: label for code, label in columns.items() if code in visible_formats}
     access = data["access"]
     if any(row["access"] == "pipeline" for row in rows):
         st.caption("Choose Build pipeline to configure a workflow.")
     by_engine = {}
+    verification = {}
     for row in rows:
         cells = by_engine.setdefault(row["engine"], {})
         available = cells.setdefault(row["output"], set())
         available.add(row["access"])
+        if evidence := row.get("native_verification"):
+            verification.setdefault((row["engine"], row["output"]), set()).add(evidence["label"])
     choice = _matrix(
-        data=_matrix_markup(by_engine, columns, access, action_column=other_tasks), key=f"{key}-matrix-{task}-{target}",
+        data=_matrix_markup(by_engine, columns, access, action_column=other_tasks, verification=verification),
+        key=f"{key}-matrix-{task}-{target}-{review}",
         on_choose_change=lambda: None,
     ).get("choose")
     if not choice:
@@ -255,7 +288,8 @@ def render_design_tasks(key, open_pipeline):
                 target_input = (st.selectbox("Target context", target_inputs, format_func=data["target_inputs"].get,
                                              key=f"{key}-{engine}-{output}-context")
                                 if len(target_inputs) > 1 else target_inputs[0])
-                routes = [route for route in compatible_routes(target_input, output) if route.engine == engine]
+                route_ids = {row["route_id"] for row in selected_rows if row["target_input"] == target_input}
+                routes = [route for route in compatible_routes(target_input, output) if route.id in route_ids]
                 setup_key = f"{key}-{target_input}-{engine}-{output}"
                 preset = _binder_options(setup_key, routes, label="Workflow goal")
                 graph = new_binder_pipeline(**preset)
