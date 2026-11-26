@@ -25,7 +25,7 @@ _ARCHIVED_DOWNSTREAM = {
     "idr": frozenset({"rfd4-idr", "bindcraft2-idr-miniprotein"}),
 }
 _ARCHIVED_RESULTS = {
-    "structure": frozenset({"rfpeptides", "complexa", "boltzgen-miniprotein", "rfd4-generator"}),
+    "structure": frozenset({"rfpeptides", "complexa", "boltzgen-miniprotein", "rfd4-generator", "bindcraft2"}),
     "idr": frozenset({"peptide-trap-idr", "kejia-idr"}),
 }
 _PRIORITY_REVIEW = {
