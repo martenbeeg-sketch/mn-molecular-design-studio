@@ -390,18 +390,20 @@ def poll_summary(batch, *, owner_id, project_id, allow_development=False):
 
 def poll(batch, *, owner_id, project_id, allow_development=False, persist_transfers=None,
          candidate_collection="artifacts/normalized_candidates/candidates.jsonl", require_result=True):
-    """Return a local verified snapshot only after every candidate file arrives."""
-    collection_path = Path(str(candidate_collection))
-    if (collection_path.is_absolute() or ".." in collection_path.parts
+    """Collect verified candidate files, or just the result receipt for an ensemble."""
+    collection_path = Path(candidate_collection) if candidate_collection is not None else None
+    if collection_path is not None and (collection_path.is_absolute() or ".." in collection_path.parts
             or not str(collection_path).startswith("artifacts/") or collection_path.suffix != ".jsonl"):
         raise ValueError("Candidate collection must be a safe run-relative JSONL artifact path.")
+    if collection_path is None and not require_result:
+        raise ValueError("Collecting a job without a candidate collection requires its result receipt.")
     user = actor(owner_id, project_id, allow_development=allow_development)
     store = Store()
     job = store.job(batch['cluster_job_id'], user)
     batch['worker'] = job.get('node_id')
     batch['wait_reason'] = job.get('wait_reason') or ''
     status = job.get('status', 'queued')
-    collection = collection_path.as_posix()
+    collection = collection_path.as_posix() if collection_path is not None else None
     remote_root = str(job.get('location') or '').rstrip('/')
     catalog = {str(a.get('relative_path') or a.get('path') or '').removeprefix(remote_root + '/') for a in job.get('artifacts', [])}
     partial = status in {'failed', 'cancelled', 'lost'} and collection in catalog
@@ -419,7 +421,7 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
             return 'disconnected', None, job
         return status, None, job
     directory = Path(batch['manifest']).with_suffix('.collected')
-    names = ['metadata.json', 'input.json', collection]
+    names = ['metadata.json', 'input.json', collection] if collection else ['metadata.json']
     if require_result and (not partial or 'result.json' in catalog):
         names.append('result.json')
     paths = {
@@ -437,6 +439,10 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
         raise ValueError('Remote job completion disagrees with its scientific artifacts.')
     if not partial and require_result and result.get('success') is not True:
         raise ValueError('Remote job completion disagrees with its scientific artifacts.')
+    if collection is None:
+        return "completed", {
+            "result": result, "result_path": paths["result.json"], "artifact_paths": catalog,
+        }, job | {"metadata": metadata}
     rows = [json.loads(line) for line in paths[collection].read_text().splitlines() if line.strip()]
     receipt = None
     if 'native_execution.json' in catalog:

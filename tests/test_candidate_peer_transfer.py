@@ -2,6 +2,7 @@ import json
 import zipfile
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -338,6 +339,30 @@ def test_poll_preserves_native_receipts_and_completed_partial_members(tmp_path, 
     assert row['candidate_id'] == 'exact-member' and row['parents'] == ['original']
     assert job['native_execution']['native_invocations'] == 1
     assert Path(row['complex_pdb']).read_text() == 'ATOM'
+
+
+def test_remote_ensemble_collection_fetches_receipts_without_fetching_trajectories(tmp_path, monkeypatch):
+    batch = {"cluster_job_id": "ensemble", "manifest": str(tmp_path / "batch.json"), "unit_count": 1}
+    xtc = "artifacts/bioemu2/system/samples.xtc"
+    result = {"success": True, "metrics": {"systems": 1}}
+    files = {name: tmp_path / name for name in ("metadata.json", "result.json")}
+    files["metadata.json"].write_text(json.dumps({"status": "completed"}))
+    files["result.json"].write_text(json.dumps(result))
+    catalog = [*files, xtc, "artifacts/bioemu2/system/topology.cif"]
+    job = {"status": "completed", "node_id": "worker",
+           "artifacts": [{"relative_path": name} for name in catalog]}
+    monkeypatch.setattr(cb, "Store", lambda: SimpleNamespace(job=lambda *_: job))
+    monkeypatch.setattr(cb, "actor", lambda *args, **kwargs: {})
+    monkeypatch.setattr(cb, "_artifact", lambda batch, job, path, *args, **kwargs: files[path])
+    status, output, _ = cb.poll(batch, owner_id="owner", project_id="project", candidate_collection=None)
+    assert status == "completed"
+    from mn_molecular_design_studio.candidate_execution import collect_ensemble
+    collect_ensemble(batch, output["result"], output["result_path"], output["artifact_paths"], "cluster:ensemble")
+    assert batch["tile_run"]["trajectory_paths"] == [xtc]
+    assert batch["tile_run"]["job_reference"] == "cluster:ensemble"
+    assert batch["completed_units"] == 1
+    with pytest.raises(ValueError, match="paired trajectory and topology"):
+        collect_ensemble(batch, result, files["result.json"], [xtc], "cluster:ensemble")
 
 
 def test_poll_collects_the_exact_structure_from_the_authorized_source_job(tmp_path, monkeypatch):

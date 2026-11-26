@@ -9,8 +9,8 @@ def compatible(kind):
     from mn_molecular_design_studio.quality_tools import TOOLS
     if TOOLS.get(kind, {}).get("cohort"):
         return False
-    if kind in TILES and TILES[kind].output != "candidates":
-        # The saved-Run batch collector merges normalized candidate manifests.
+    if kind in TILES and TILES[kind].output != "candidates" and kind != "tile_bioemu2":
+        # Other saved-Run consumers must publish normalized candidate manifests.
         return False
     from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, _get_function
@@ -48,6 +48,9 @@ def source_request(kind, params, source, name):
         raise ValueError("Selected raw docking poses can connect only to a registered protein–ligand analysis such as PLIP.")
     if not compatible(kind):
         raise ValueError("Connect Run results to a tool with a compatible saved candidate collection.")
+    if kind == "tile_bioemu2":
+        from mn_molecular_design_studio.pipeline_tile_workflows import TILES, validate_parameters
+        validate_parameters(TILES[kind], params["workflow_parameters"], {"candidates"}, runnable=True)
     if kind == "shared_filter":
         from mn_molecular_design_studio.validation_acceptance import campaign_policy_from_node
         return dict(schema_version=1, workflow="analysis.validation_acceptance", parameters={

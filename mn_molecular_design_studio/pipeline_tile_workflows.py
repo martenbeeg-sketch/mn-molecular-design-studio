@@ -177,7 +177,7 @@ def validate_parameters(tile: TileWorkflow, settings: dict, connected_ports: set
         source_dir = bool(settings.get("source_run_dir"))
         manifest = bool(settings.get("candidates_jsonl"))
         candidates_connected = "candidates" in connected_ports
-        if (not candidates_connected and source_dir != manifest) or (structures and (candidates_connected or source_dir)):
+        if source_dir != manifest or (candidates_connected and (source_dir or structures)) or (structures and source_dir):
             raise ValueError("Choose uploaded starting structures or one complete candidate collection.")
         sequences = settings.get("protein_sequences") or []
         if not isinstance(sequences, list):

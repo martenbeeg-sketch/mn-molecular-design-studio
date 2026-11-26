@@ -238,9 +238,21 @@ def test_saved_run_uses_the_exact_candidate_manifest_for_acceptance():
 
 
 def test_saved_run_rejects_outputs_the_batch_collector_cannot_merge():
-    assert not connection_compatibility("run_source", "tile_bioemu2", target_handle="candidates")["compatible"]
-    assert connection_compatibility("project_design_source", "tile_bioemu2", target_handle="candidates")["compatible"]
     assert not connection_compatibility("run_source", "candidate_merge")["compatible"]
+
+
+def test_bioemu2_named_run_routes_only_to_propagation():
+    kind = "tile_bioemu2"
+    for source_kind in ("run_source", "project_design_source"):
+        assert connection_compatibility(source_kind, kind, target_handle="candidates")["compatible"]
+    source = {"deferred_run_source": True, "run_dir": "/work/design/cohort",
+              "candidates_jsonl": "/work/design/cohort/artifacts/normalized_candidates/candidates.jsonl"}
+    request = source_request(kind, {"workflow_parameters": {"mode": "propagate"}}, source, "Saved Run")
+    assert request["workflow"] == "simulation.bioemu2"
+    assert request["parameters"]["candidates_jsonl"] == source["candidates_jsonl"]
+    with pytest.raises(ValueError, match="sequence|structures"):
+        source_request(kind, {"workflow_parameters": {"mode": "sample-equilibrium", "protein_sequences": ["AAAA"]}},
+                       source, "Saved Run")
 
 
 def test_binderscope_requires_an_explicit_native_campaign_on_canvas():

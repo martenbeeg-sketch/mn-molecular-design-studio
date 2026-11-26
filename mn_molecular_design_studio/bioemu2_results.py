@@ -8,6 +8,15 @@ from typing import Any
 BIOEMU2_JOB_TOOLS = {"bioemu2", "bioemu2_sampling"}
 
 
+def ensemble_trajectories(artifact_paths):
+    """Find trajectory/topology pairs in a BioEmu-2 artifact inventory."""
+    paths = {Path(value) for value in artifact_paths}
+    root = Path("artifacts/bioemu2")
+    return sorted(path for path in paths if not path.is_absolute() and ".." not in path.parts
+                  and path.is_relative_to(root) and path.suffix.lower() == ".xtc"
+                  and path.with_name("topology.cif") in paths)
+
+
 def trajectory_preview_artifacts(job_tool: str, run_dir: Path, artifact_paths: list[tuple[dict[str, Any], Path]]):
     """Return BioEmu XTC artifacts paired with a sibling topology.cif.
 

@@ -310,7 +310,7 @@ def run_outputs(run):
         output_name = row.get("studio_run_output_name")
         stage_id = row.get("graph_node_id") or (row.get("campaign_step_index") if row.get("pipeline_parent_node_id") else None)
         if not output_id and stage_id and not row.get("pipeline_iteration") and root.get("tool") == "visual_pipeline":
-            stage_id = re.sub(r"_b\d+_a\d+$", "", str(stage_id))
+            stage_id = re.sub(r"_(?:b|source_)\d+_a\d+$", "", str(stage_id))
             output_id = "step-" + hashlib.sha256(stage_id.encode()).hexdigest()[:16]
             output_name = row.get("campaign_step") or row.get("tool") or "Workflow output"
         # Historical analyses already record their upstream job. Keep each

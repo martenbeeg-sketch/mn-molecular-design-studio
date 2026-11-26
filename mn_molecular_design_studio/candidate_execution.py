@@ -394,6 +394,22 @@ def aggregate(batches, *, stream=False):
     return rows() if stream else list(rows())
 
 
+def collect_ensemble(batch, result, result_path, artifact_paths, job_reference):
+    from mn_molecular_design_studio.bioemu2_results import ensemble_trajectories
+
+    trajectories = ensemble_trajectories(artifact_paths)
+    metrics = result.get("metrics") or {}
+    systems = metrics.get("systems")
+    if type(systems) is not int or systems < 1 or len(trajectories) != systems:
+        raise ValueError("BioEmu-2 did not publish one paired trajectory and topology per system.")
+    batch["tile_run"] = {
+        "job_reference": job_reference, "workflow": "simulation.bioemu2", "label": "BioEmu-2",
+        "metrics": metrics, "trajectory_paths": [path.as_posix() for path in trajectories],
+    }
+    batch["output_hashes"] = {str(result_path): file_digest(result_path)}
+    batch.update(status="completed", completed_units=batch["unit_count"], completed_at=utc_now())
+
+
 def progress(batches):
     return dict(total_units=sum(b['unit_count'] for b in batches),
                 total_batches=len(batches),
@@ -433,6 +449,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
     import time
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import submission_tags
     allow_development = bool(read_json(Path(parent) / 'metadata.json').get('studio_development_mode'))
+    collects_ensembles = node['data']['kind'] == 'tile_bioemu2' and bool(source.get('run_sources'))
     if 'batches' not in current:
         current['batches'] = initialize(parent, node, source, params, key, settings,
             make_source=graph._local_source, make_request=graph.node_request, read_rows=graph._absolute_candidates)
@@ -466,8 +483,9 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
         status = None
         if batch.get('cluster_job_id'):
             from mn_molecular_design_studio.cluster import candidate_batches
+            collection_options = {"candidate_collection": None} if collects_ensembles else {}
             status, output, remote_job = candidate_batches.poll(batch, owner_id=owner_id, project_id=project_id,
-                                                              allow_development=allow_development)
+                                                              allow_development=allow_development, **collection_options)
             batch['status'] = status
             if status == 'disconnected':
                 batch.setdefault('disconnected_since', time.time())
@@ -486,7 +504,10 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                            allocation=remote_job.get('metadata', {}).get('resource_allocation'))
             if remote_job.get('native_execution'):
                 attempt['native_execution'] = remote_job['native_execution']
-            if output is not None:
+            if output is not None and collects_ensembles:
+                collect_ensemble(batch, output["result"], output["result_path"], output["artifact_paths"],
+                                 "cluster:" + str(batch["cluster_job_id"]))
+            elif output is not None:
                 attempt['software'] = remote_job.get('metadata', {}).get('software_environment', {})
                 rows = collect(batch, output, read_rows=graph._absolute_candidates)
                 if status == 'partial':
@@ -526,6 +547,10 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                 result = read_json(child / 'result.json')
                 if result.get('success') is not True:
                     status = batch['status'] = 'failed'
+                elif collects_ensembles:
+                    artifacts = [path.relative_to(child) for path in (child / "artifacts/bioemu2").rglob("*")
+                                 if path.is_file() and path.resolve().is_relative_to(child.resolve())]
+                    collect_ensemble(batch, result, child / "result.json", artifacts, f"{child.parent.name}/{child.name}")
                 else:
                     from mn_molecular_design_studio.cluster.capabilities import gpu_details
                     attempt['hardware'] = gpu_details()
@@ -702,7 +727,15 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
     if any(b['status'] not in TERMINAL for b in batches):
         return None
     failures = [b['batch_id'] for b in batches if b['status'] != 'completed' and not b.get('objective_stop')]
-    if source.get('candidate_set_manifest'):
+    if collects_ensembles:
+        tile_runs = []
+        for batch in batches:
+            if batch.get("tile_run"):
+                if not output_valid(batch):
+                    raise ValueError("The saved BioEmu-2 result receipt failed checksum verification.")
+                tile_runs.append(batch["tile_run"])
+        output = {"tile_runs": tile_runs, "candidate_count": 0}
+    elif source.get('candidate_set_manifest'):
         from mn_molecular_design_studio.candidate_sets import write_collection
         output = write_collection(parent, node['id'] + '_batches', aggregate(batches, stream=True), source['target'])
         output['collection_stage_pending'] = True
@@ -722,7 +755,8 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
     current['partial'] = bool(failures)
     if failures:
         current['error'] = 'Unsuccessful candidate batches: ' + ', '.join(failures)
-    return output, ('partial' if output['candidate_count'] and settings['failure_policy'] == 'partial' else 'failed') if failures else 'completed'
+    has_results = bool(output['candidate_count'] or output.get('tile_runs'))
+    return output, ('partial' if has_results and settings['failure_policy'] == 'partial' else 'failed') if failures else 'completed'
 
 
 def cancel(parent, state):

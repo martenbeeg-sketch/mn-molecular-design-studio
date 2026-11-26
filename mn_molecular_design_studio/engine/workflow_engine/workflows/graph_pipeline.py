@@ -2393,6 +2393,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         for node_id, output in outputs.items():
             if output.get("tile_run"):
                 tile_runs.append({**output["tile_run"], "node_id": node_id})
+            tile_runs.extend({**report, "node_id": node_id} for report in output.get("tile_runs", []))
             analyses = [*(output.get("analysis_runs") or []), *([output["analysis_run"]] if output.get("analysis_run") else [])]
             for analysis in analyses:
                 identity = (str(analysis.get("task_group") or "detection"), str(analysis.get("run_id") or analysis.get("run_dir") or ""))

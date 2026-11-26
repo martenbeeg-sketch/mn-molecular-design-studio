@@ -51,6 +51,8 @@ def operation_cases():
         yield pytest.param("tile_bioemu2", {"bioemu2_mode": mode}, id=f"bioemu2/{mode}")
     yield pytest.param("tile_bioemu2", {"bioemu2_mode": "propagate", "source": "project_design_source"},
                        id="bioemu2/propagate/saved-design")
+    yield pytest.param("tile_bioemu2", {"bioemu2_mode": "propagate", "source": "run_source"},
+                       id="bioemu2/propagate/named-output")
     operations = editor_tool_catalog()
     for category, categories in ui._OPERATION_CATEGORIES.items():
         if category == ui._SAMPLING_CATEGORY:

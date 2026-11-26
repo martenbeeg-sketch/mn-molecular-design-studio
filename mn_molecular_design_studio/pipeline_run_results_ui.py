@@ -98,9 +98,11 @@ def _batch_rows(batches, parent_ref, run_dir, remote_node, user_id):
         references.append(reference)
         node = worker.get("node_id") or batch.get("worker") or attempt.get("worker")
         name = worker.get("node_name") or workstations.get(node) or node
+        trajectories = (batch.get("tile_run") or {}).get("trajectory_paths") or []
         rows.append({
             "Batch": index, "Results": "Open" if reference else "", "Status": _status(entry["status"]),
-            "Outputs": batch.get("candidate_count"), "Inputs": batch.get("unit_count"),
+            "Outputs": len(trajectories) or batch.get("candidate_count"),
+            "Inputs": batch.get("unit_count"),
             "Workstation": config.display_name(name) if name else "—",
             "Attempts": len(batch.get("attempts") or []),
             "Detail": batch.get("error") or attempt.get("error") or batch.get("wait_reason") or "",
@@ -167,13 +169,16 @@ def render_pipeline_steps(parent_ref, parent, graph, execution, linked, *, run_d
         return
     summaries = {step["id"]: step for step in logical_runs.pipeline_step_summary(execution, parent, linked)}
     step_rows = []
+    ensemble_counts = {}
     for node in order:
         summary = summaries.get(node) or {}
         batches = summary.get("worker_batch_statuses") or {}
+        output = (states.get(node) or {}).get("output") or {}
+        ensemble_counts[node] = sum(len(tile.get("trajectory_paths") or []) for tile in output.get("tile_runs") or [])
         step_rows.append({
             "Step": labels.get(node, summary.get("label") or node),
             "Status": _status(summary.get("status") or "pending"),
-            "Outputs": summary.get("collected_candidate_count"),
+            "Outputs": ensemble_counts[node] or summary.get("collected_candidate_count"),
             "Batches": " · ".join(f"{count} {status.replace('_', ' ')}" for status, count in batches.items()),
         })
     errors = [row["Step"] for row in step_rows if row["Status"] == "Failed"]
@@ -209,7 +214,9 @@ def render_pipeline_steps(parent_ref, parent, graph, execution, linked, *, run_d
 
     st.subheader(step["Step"])
     caption = step["Status"]
-    if step["Outputs"] is not None:
+    if ensemble_count := ensemble_counts[selected]:
+        caption += f" · {ensemble_count:,} {'ensemble' if ensemble_count == 1 else 'ensembles'}"
+    elif step["Outputs"] is not None:
         caption += f" · {step['Outputs']:,} collected candidate outputs"
     st.caption(caption)
     if state.get("error"):

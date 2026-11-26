@@ -70,7 +70,7 @@ def build_capability_graph(kind, *, prediction_mode=None, ligand_design_mode="",
             title = f"{title} · {BIOEMU2_MODES[mode][0]}"
 
         if kind == "tile_bioemu2":
-            allowed = {"project_design_source"} if mode == "propagate" else set()
+            allowed = SAVED_SOURCES if mode == "propagate" else {}
         else:
             allowed = source_choices(kind, database_available=True)
         if source and source not in allowed:

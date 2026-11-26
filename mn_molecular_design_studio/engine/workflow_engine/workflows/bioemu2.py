@@ -195,10 +195,11 @@ def run_bioemu2(
         from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
         from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
         source_candidates = read_candidates(Path(candidates_jsonl))
-        structure_paths = [resolve_stored_path(c["complex_pdb"], run_dir=Path(source_run_dir), must_exist=True)
-                           for c in source_candidates if c.get("complex_pdb")]
-        if len(structure_paths) != len(source_candidates):
-            raise ValueError("Every candidate in the selected Run output must have a complex structure for BioEmu-2 propagation.")
+        structure_paths = [resolve_stored_path(c.get("complex_pdb") or c.get("binder_pdb"),
+                                               run_dir=Path(source_run_dir), must_exist=True)
+                           for c in source_candidates]
+        if not structure_paths or any(path is None for path in structure_paths):
+            raise ValueError("Every candidate in the selected Run output must have an available structure for BioEmu-2 propagation.")
     structures = [Path(path).expanduser().resolve() for path in structure_paths or []]
     sequences = [str(sequence).strip() for sequence in protein_sequences or [] if str(sequence).strip()]
     if num_samples < 1:

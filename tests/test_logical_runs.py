@@ -66,6 +66,16 @@ def test_graph_steps_are_named_outputs_and_the_combined_result_is_not_duplicated
     assert len(run["outputs"][1]["sources"]) == 2
 
 
+def test_saved_source_batches_have_one_named_step_output():
+    parent = row("pipeline", tool="visual_pipeline", task_group="campaign")
+    children = [row(f"ensemble-{i}", tool="bioemu2", task_group="simulation", campaign_id="pipeline",
+                    graph_node_id=f"sample_source_{i:06d}_a0") for i in range(2)]
+    run, = runs.group_runs([parent, *children])
+    results, propagation = run["outputs"]
+    assert results["sources"] == [run["root"]]
+    assert {job["run_id"] for job in propagation["sources"]} == {"ensemble-0", "ensemble-1"}
+
+
 def test_pipeline_reusing_a_saved_input_keeps_its_own_run_and_steps():
     original = row("original", task_group="campaign", tool="visual_pipeline")
     saved_trajectory = row("trajectory", task_group="ligand-md", campaign_id="original")

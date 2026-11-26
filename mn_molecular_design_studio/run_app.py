@@ -7227,12 +7227,17 @@ def _render_job_details() -> None:
     output_summary = ("Result records" if is_pipeline else "Candidates", str(details.get("candidate_count", 0)))
     job_metrics = result.get("metrics") or {}
     linked_analysis_count = (job_metrics.get("surface_analysis_count") or 0) + (job_metrics.get("md_analysis_count") or 0)
+    ensemble_count = sum(
+        len(tile.get("trajectory_paths") or []) for tile in (result.get("outputs") or {}).get("tile_runs") or []
+    )
     if raw_title == "surface_analysis":
         output_summary = ("Methods completed", f"{job_metrics.get('successful_tools', 0)} / {job_metrics.get('tool_count', 4)}")
     elif raw_title in surface_titles:
         output_summary = ("Output files", str(job_metrics.get("artifact_count", 0)))
     elif raw_title == "visual_pipeline" and linked_analysis_count and not details.get("candidate_count"):
         output_summary = ("Linked analyses", str(linked_analysis_count))
+    elif is_pipeline and ensemble_count and not details.get("candidate_count"):
+        output_summary = ("Ensembles", str(ensemble_count))
     summary_values = (
         ("Status", str(job.get("status", "unknown")).replace("_", " ").title()),
         ("Tool", display_tool_label(job)),
@@ -7979,7 +7984,9 @@ def _render_job_details() -> None:
                     with metadata_panel:
                         render_result_details(st, candidate["raw_metadata"])
         elif not candidates and not csv_loaded and not has_dedicated_prediction_results and not has_dedicated_surface_results:
-            if no_final_candidates:
+            if ensemble_count:
+                st.info("Open the BioEmu-2 step and select a batch to view its trajectories.")
+            elif no_final_candidates:
                 st.info("This pipeline has no published final candidates. Check Pipeline steps for completed and failed stages.")
             else:
                 st.info("No normalized candidate records are available for this job yet.")
@@ -8070,7 +8077,7 @@ def _render_job_details() -> None:
                                 )
                     except OSError as exc:
                         st.warning(f"Could not load this structure preview: {exc}")
-        elif not is_docking_job and not has_dedicated_prediction_results and not has_dedicated_surface_results:
+        elif not (is_docking_job or has_dedicated_prediction_results or has_dedicated_surface_results or ensemble_count):
             st.info(f"No {design_scope.casefold()} structure files were found in this job's Results folder.")
 
         if str(metadata.get("tool") or "").casefold() == "boltzgen":

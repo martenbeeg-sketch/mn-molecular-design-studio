@@ -9,7 +9,8 @@ from mn_molecular_design_studio.binder_pipeline import (
     RFD4_MODULAR_ROUTES, RFD4_REFOLD_ENGINES, SEPARATE_REFOLD_ROUTES, compatible_routes, new_binder_pipeline, supported_interface_constraints,
 )
 from mn_molecular_design_studio.capability_pipeline import (
-    DOCKING, MD_ENGINES, POSE_ANALYSES, SAVED_DESIGN_REFOLDERS, add_followup, build_capability_graph, followup_choices, source_choices,
+    DOCKING, MD_ENGINES, POSE_ANALYSES, SAVED_DESIGN_REFOLDERS, SAVED_SOURCES,
+    add_followup, build_capability_graph, followup_choices, source_choices,
 )
 from mn_molecular_design_studio.design_capabilities import ACCESS, catalogue, small_molecule_catalogue
 from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
@@ -415,7 +416,7 @@ def _operation_setup(kind, key, open_pipeline, *, prediction=False, predict_affi
     prepare = False
     sources = source_choices(kind, database_available=bool(database_user and project_id)) if not mode else {}
     if kind == "tile_bioemu2" and bioemu2_mode == "propagate":
-        sources = {"": "Upload structures", "project_design_source": "Completed design job"}
+        sources = {"": "Upload structures", **SAVED_SOURCES}
     if kind == "tile_tmol":
         sources = {"": "Upload structures", **sources}
     if len(sources) > 1:
