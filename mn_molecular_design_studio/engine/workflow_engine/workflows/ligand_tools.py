@@ -879,8 +879,8 @@ def validate_ligand_tool_request(workflow_id: str, parameters: dict[str, Any], *
             raise ValueError("Nesso recycling steps must be between 1 and 64.")
         if not 1 <= int(parameters.get("seed", 42)) <= 2_147_483_646:
             raise ValueError("Nesso seed must be a positive 32-bit integer.")
-        if require_files and not nesso_readiness()["ready"]:
-            raise ValueError("Nesso references are incomplete. Install its checkpoint, CCD dictionary, and ESM2 cache under the configured reference directory.")
+        if require_files:
+            require_nesso_references()
     else:
         raise ValueError(f"Unknown ligand tool workflow: {workflow_id}.")
 
@@ -1153,6 +1153,14 @@ def nesso_readiness() -> dict[str, Any]:
         "esm_ready": esm_ready,
         "ready": checkpoint_ready and ccd.is_file() and esm_ready,
     }
+
+
+def require_nesso_references() -> None:
+    if not nesso_readiness()["ready"]:
+        raise ValueError(
+            "Nesso references are incomplete. Install its checkpoint, CCD dictionary, "
+            "and ESM2 cache under the configured reference directory."
+        )
 
 
 def _pdb_protein_sequences(path: Path) -> list[tuple[str, str]]:
@@ -2375,9 +2383,12 @@ def run_ligand_rosetta_ligand(
         ],
     )
     run_root = job.run_dir
+    _write_compound_inputs(run_root, payload, compounds)
     input_dir = run_root / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
-    (input_dir / "receptor.pdb").write_bytes(Path(target_pdb).read_bytes())
+    staged_receptor = run_root / "artifacts" / "input" / "receptor.pdb"
+    staged_receptor.write_bytes(Path(target_pdb).read_bytes())
+    shutil.copyfile(staged_receptor, input_dir / "receptor.pdb")
     with (input_dir / "compounds.tsv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
         writer.writerow(["compound_id", "smiles"])

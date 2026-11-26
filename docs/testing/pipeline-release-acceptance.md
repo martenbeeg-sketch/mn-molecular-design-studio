@@ -116,6 +116,24 @@ These cases carry forward the gaps in the [distributed run](evidence/release-acc
 
 The saved-pose adverse controls `A412D` and `BD958` failed at execution because their source job reference did not belong to the selected Run. Validation and submission now reject this selection before dispatch. The first valid replays `52C52` and `7A0AE` scored both poses but grouped the workers separately when they inherited the docking campaign ID. The final replays used an explicit pipeline parent identity and verified both source provenance and worker grouping. The input poses and trajectory came from retained results. The three analysis jobs ran fresh.
 
+### Docking and pose analysis on the published release
+
+Case `DOCK-03` used `7a76ea9` on PC002975 with an archived 1IEP receptor and two fixed compounds from the screening fixture. A regular user built each docking graph from its Capabilities preset and staged inputs, validated, saved and submitted the graphs through MCP. All three engines executed fresh, wrote two finite scores and two saved poses, and preserved both compound IDs. GNINA populated its CNN pose and affinity fields.
+
+| Docking pipeline and worker | Follow-up pipeline and worker | Observed output |
+| --- | --- | --- |
+| AutoDock Vina `E1DAA` / `8475A` | PLIP `1D166` / `7E572` | Two analyses of the exact saved Vina poses |
+| GNINA `6A84B` / `0B9BA` | PandaMap `FD81A` / `05342` | Two analyses of the exact saved GNINA poses |
+| AutoDock-GPU `502BE` / `18683` | Native Ligand Interactions `E762B` / `86122` | Two analyses of the exact saved AutoDock-GPU poses |
+
+Each graph appeared as one logical Run with its worker underneath. The browser opened the parent Results, docked complexes, **Analyze this pose** controls, and follow-up Results. Follow-up submissions came from MCP and used the exact pose references. All 49 focused regressions passed. The isolated workspace recorded zero molecular Database observations.
+
+Direct Uni-Dock Pro structure-based docking `AE888` (worker `7B5E5`) scored and retained both poses. PoseBusters `B0BAF` (worker `0212F`) processed both. Nesso-1 `361BF` (worker `D07D0`) published two affinity rows with the original compound IDs, finite values and native prediction files. Streamlit opened the Uni-Dock Pro pose and follow-up controls and the Nesso-1 affinity table.
+
+The Nesso-1 control `8D776` used a test worker launched with an empty reference directory. It passed graph validation and failed at execution. Local pipeline validation and submission now use the same required-reference check as the standalone workflow. The regression tests verify that missing references block dispatch and a complete reference set passes validation.
+
+RosettaLigand `990F6` produced two scored poses, but Results could not identify their chemistry because the worker omitted the consumed compound set and receptor declared by its artifact contract. The worker now saves both files. The fresh replay `7383A` (worker `E08A4`) returned two finite REU scores and the expected compound-set digest and receptor bytes. PoseBusters `DBE0E` (worker `A0532`) processed both exact saved poses. Streamlit opened the complex, analysis controls and completed analysis for both engines. The 788-test ligand and Capabilities suite passed, as did the local preflight regressions. Both isolated workspaces recorded zero molecular Database observations.
+
 ### Results timings
 
 | Rows | Revision | First / repeat table | First / repeat worker drill-down |

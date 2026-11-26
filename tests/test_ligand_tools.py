@@ -1137,6 +1137,15 @@ def test_rosettaligand_tile_uses_bundled_runner_and_preserves_reu_labels(tmp_pat
     assert contract["workflow"] == "ligand.docking.rosetta_ligand"
     assert contract["outputs"][0]["score_units"] == "REU"
     assert result["metrics"]["score_units"].startswith("Rosetta energy units")
+    assert (run_dir / "artifacts/input/receptor.pdb").read_bytes() == (run_dir / "input/receptor.pdb").read_bytes()
+
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import docking_pose_options
+
+    pose, = docking_pose_options(run_dir)
+    assert pose["available"]
+    assert pose["compound_id"] == "ethanol"
+    assert pose["smiles"] == "CCO"
+    assert pose["score_row"]["estimated_dg_reu"] == "-7.4"
 
 
 @pytest.mark.parametrize(

@@ -1097,6 +1097,10 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
             if node["data"]["kind"] == "md_source":
                 from mn_molecular_design_studio.md_pipeline import resolve_source
                 _call(resolve_source, node["data"]["params"], owner_id=str(user["id"]), project_id=project_id)
+            if node["data"]["kind"] == "tile_affinity_nesso":
+                from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import require_nesso_references
+
+                _call(require_nesso_references)
             if node["data"]["kind"] != "target":
                 continue
             params = node["data"]["params"]

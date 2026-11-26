@@ -326,6 +326,34 @@ def test_pipeline_rejects_docking_pose_from_another_run_before_dispatch(api_data
     assert not list((api_data["root"] / "results/runs/campaign").glob("*/metadata.json"))
 
 
+def test_nesso_pipeline_checks_local_references_before_dispatch(api_data, monkeypatch):
+    from mn_molecular_design_studio.capability_pipeline import build_capability_graph
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import ligand_tools
+    from mn_molecular_design_studio.ligand_compounds import write_compound_set
+
+    root = api_data["root"]
+    target, compounds = root / "target.pdb", root / "compounds.json"
+    target.write_text("ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00 20.00           C\nEND\n")
+    project = api_data["project"]["id"]
+    write_compound_set(compounds, name="Affinity fixture", compounds=[{"compound_id": "ethanol", "smiles": "CCO"}],
+                       owner_id=api_data["admin"]["id"], project_id=project, created_at="fixture")
+    graph = build_capability_graph("tile_affinity_nesso")
+    params = {node["data"]["kind"]: node["data"]["params"] for node in graph["nodes"]}
+    params["target"].update(target_pdb=str(target), target_chains="A")
+    params["tile_affinity_nesso"]["workflow_parameters"] = {"compound_set_file": str(compounds)}
+    request = {"graph": graph, "project_id": project}
+    monkeypatch.setattr(ligand_tools, "nesso_readiness", lambda: {"ready": False})
+    for action in ("validate", "run"):
+        reply = api_data["client"].post(f"/api/v1/pipelines/{action}", json=request)
+        assert reply.status_code == 422, reply.text
+        assert "Nesso references are incomplete" in reply.json()["detail"]
+    assert not list((root / "results/runs/campaign").glob("*/metadata.json"))
+    monkeypatch.setattr(ligand_tools, "nesso_readiness", lambda: {"ready": True})
+    reply = api_data["client"].post("/api/v1/pipelines/validate", json=request)
+    assert reply.status_code == 200, reply.text
+    assert reply.json()["ready_to_run"]
+
+
 def import_compounds(data):
     response = data["client"].post("/api/v1/molecules/imports", json={
         "method": "smiles", "text": "CCO ethanol\nCCN ethylamine", "project_id": data["project"]["id"]})
