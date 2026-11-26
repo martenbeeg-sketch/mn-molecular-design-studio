@@ -99,7 +99,7 @@ These cases carry forward the gaps in the [distributed run](evidence/release-acc
 
 | Case | Coverage to date | Evidence needed |
 | --- | --- | --- |
-| `FMT-02` Generator, format and target-context combinations | The 196 saved and reopened setup variants cover 82 advertised routes across 13 formats. The routes include 43 structured targets, 26 multidomain targets and 13 disordered sequence inputs. A follow-up suite passed 299 generator and adapter regression tests. | Record a native run and its downstream handoff for each remaining engine, format and target-context combination before marking it live. |
+| `FMT-02` Generator, format and target-context combinations | The 196 saved and reopened setup variants cover 82 route and target-context combinations across 13 formats. The generator and adapter suite passed 299 regression tests. The [archive review](evidence/generator-route-archive-2026-11-26.md) verified native generation and the first pipeline handoff for 12 combinations, plus standalone outputs for eight more. | Verify pipeline handoffs for the other 70 combinations. Verify fresh release runs and optional workflow variants against their own evidence before marking them live. |
 
 ## Follow-up verification on 26 November
 
