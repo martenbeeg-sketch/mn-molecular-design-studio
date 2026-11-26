@@ -24,6 +24,33 @@ The fixed-fixture replay exercised the real graph controller and Results writer 
 
 All 82 fixed-fixture handoffs passed. This suite covers the generator-to-Results boundary before route-specific downstream scientific stages.
 
+## Replay of the five standalone archives
+
+The signed-in acceptance account validated, saved and ran five two-step pipelines on Studio `ef30bb3` using an isolated local scheduler and copies of the native outputs. Each pipeline opened one archived source in Results. The REST API and Streamlit reported the same record counts. A regular user opened the Mol* structure preview for each of the five runs.
+
+| Route | Archived worker | Saved input | Replay | Results records |
+| --- | --- | --- | --- | ---: |
+| `rfpeptides` | `2BDC3` | Existing project designs | `9D309` | 1 |
+| `complexa` | `C98CA` | Existing project designs | `BD2C8` | 2 |
+| `boltzgen-miniprotein` | `B0857` | Existing project designs | `0DA0B` | 2 |
+| `peptide-trap-idr` | `88B99` | Generated project designs | `18F22` | 1 |
+| `kejia-idr` | `BBFC6` | Generated project backbones | `966ED` | 12 |
+
+The replay verified all 18 original candidate IDs, their parent IDs and sequence values, and the SHA-256 of each referenced structure. The isolated Database recorded zero molecules, collections and observations. These five combinations now have a verified native-output-to-Results handoff. They remain open for verification through an independent downstream scientific step.
+
+The regression suite on `ef30bb3` completed with 967 passing checks and one skipped Chaperone check. The skipped check passed separately using the configured Chaperone worker.
+
+## Coverage after replay
+
+| Target context | Native downstream evidence | Native output verified in Results | No matching native output | Total |
+| --- | ---: | ---: | ---: | ---: |
+| Structure | 17 | 3 | 23 | 43 |
+| Multidomain | 0 | 0 | 26 | 26 |
+| Disordered sequence | 2 | 2 | 9 | 13 |
+| **Total** | **19** | **5** | **58** | **82** |
+
+The evidence columns count each combination once, at its strongest verified level.
+
 ## Evidence for the 65 combinations reviewed
 
 | Route | Target context | Native evidence |
@@ -48,7 +75,7 @@ All 82 fixed-fixture handoffs passed. This suite covers the generator-to-Results
 | `genie3` | Multidomain | No matching receipt located |
 | `pxdesign` | Multidomain | No matching receipt located |
 | `complexa-generator` | Multidomain | No matching receipt located |
-| `complexa` | Structure | Standalone output `C98CA` |
+| `complexa` | Structure | Archived output `C98CA` verified in Results replay `BD2C8` |
 | `complexa` | Multidomain | No matching receipt located |
 | `bindcraft2-large-protein` | Structure | No matching receipt located |
 | `bindcraft2-large-protein` | Multidomain | No matching receipt located |
@@ -65,7 +92,7 @@ All 82 fixed-fixture handoffs passed. This suite covers the generator-to-Results
 | `bindcraft2-homo-oligomer` | Structure | No matching receipt located |
 | `bindcraft2-homo-oligomer` | Multidomain | No matching receipt located |
 | `boltzgen-generator` | Multidomain | No matching receipt located |
-| `boltzgen-miniprotein` | Structure | Standalone output `B0857` |
+| `boltzgen-miniprotein` | Structure | Archived output `B0857` verified in Results replay `0DA0B` |
 | `boltzgen-miniprotein` | Multidomain | No matching receipt located |
 | `boltzgen-peptide` | Structure | No matching receipt located |
 | `boltzgen-peptide` | Multidomain | No matching receipt located |
@@ -74,7 +101,7 @@ All 82 fixed-fixture handoffs passed. This suite covers the generator-to-Results
 | `boltzgen-vhh-native` | Multidomain | No matching receipt located |
 | `esmfold2-scfv` | Structure | No matching receipt located |
 | `rfd4-vhh` | Structure | No matching receipt located |
-| `rfpeptides` | Structure | Standalone output `2BDC3` |
+| `rfpeptides` | Structure | Archived output `2BDC3` verified in Results replay `9D309` |
 | `rfd3-cyclic` | Structure | No matching receipt located |
 | `rfd4-cyclic` | Structure | No matching receipt located |
 | `rfantibody-scfv` | Structure | No matching receipt located |
@@ -89,7 +116,7 @@ All 82 fixed-fixture handoffs passed. This suite covers the generator-to-Results
 | `bindcraft2-idr-multidomain` | Disordered sequence | No matching receipt located |
 | `bindcraft2-idr-homo-oligomer` | Disordered sequence | No matching receipt located |
 | `bindcraft-classic` | Structure | No matching receipt located |
-| `peptide-trap-idr` | Disordered sequence | Standalone output `88B99` |
-| `kejia-idr` | Disordered sequence | Standalone output `BBFC6` |
+| `peptide-trap-idr` | Disordered sequence | Archived output `88B99` verified in Results replay `18F22` |
+| `kejia-idr` | Disordered sequence | Archived output `BBFC6` verified in Results replay `966ED` |
 | `rfd4-antibody` | Structure | No matching receipt located |
 | `rfd4-tcr` | Structure | No matching receipt located |
