@@ -126,7 +126,7 @@ def load_formulation_registry(path: Path | None = None) -> FormulationRegistry:
         override = str(os.environ.get(FORMULATION_REGISTRY_ENV) or "").strip()
         selected_path = Path(override).expanduser() if override else None
     if selected_path is None:
-        resource = resources.files("mn_ligand.manifests").joinpath(
+        resource = resources.files(__package__.rsplit(".", 1)[0] + ".manifests").joinpath(
             "formulations.yaml"
         )
         text = resource.read_text(encoding="utf-8")

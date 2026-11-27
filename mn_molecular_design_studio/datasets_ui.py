@@ -161,6 +161,10 @@ def render_datasets(user, projects, *, database=None, submit=None):
         st.markdown("### " + group["name"])
         access = "Private to its owner" if not group["project_id"] else "Shared through its original project: " + project_names.get(group["project_id"], "Project")
         st.caption(f"{group['molecule_count']:,} input members · {access}")
+        if group.get("category") in {"Small-molecule libraries", "Empty datasets", "Mixed molecular datasets"}:
+            from mn_molecular_design_studio.compound_import_history_ui import render_import_history
+
+            render_import_history(database, user, group, prefix="datasets")
         scope = {"id": "dataset:" + selected, "label": group["name"], "entity": {"kind": "dataset", "group_id": selected}}
         render_folder_properties(database, user, {}, scope, projects, read_only=read_only, key_prefix="datasets-folder")
         labels = [project_names.get(project_id, "Unavailable project") for project_id in group["project_references"]]
@@ -203,6 +207,9 @@ def render_datasets(user, projects, *, database=None, submit=None):
             if record:
                 st.markdown("### " + record["name"])
                 render_record_properties(database, user, record, read_only=read_only, key_prefix="datasets-member")
+                from mn_molecular_design_studio.compound_import_history_ui import render_member_reviews
+
+                render_member_reviews(record)
                 for component in record["components"]:
                     st.caption(component["chain"] + " · " + component["type"].replace("small_molecule", "Small molecule"))
                     if component.get("smiles"):

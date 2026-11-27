@@ -223,6 +223,11 @@ def install(app, current_user):
                         raise ValueError("Reviewed tables require one mapped small-molecule SMILES column.")
                     audit = imports.analyze_small_molecule_table(data, filename, smiles_column=next(iter(mapped)),
                         name_column=payload.name_column, id_column=payload.id_column, sheet_name=payload.sheet_name)
+                    if payload.reusable_dataset and user.get("role") == "admin":
+                        from mn_molecular_design_studio.compound_import_history import apply_reviews, archived_reviews
+                        from mn_molecular_design_studio.legacy_preparation_history import archive_roots
+
+                        audit = apply_reviews(data, audit, archived_reviews(data, audit, archive_roots())) or audit
                     records = audit.pop("records")
                 else:
                     records = imports.parse_table(data, filename, chain_columns=payload.chain_columns,

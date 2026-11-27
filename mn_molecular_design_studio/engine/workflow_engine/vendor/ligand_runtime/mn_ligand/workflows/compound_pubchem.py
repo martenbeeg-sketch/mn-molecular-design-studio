@@ -13,15 +13,15 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from mn_ligand.core.artifacts import ArtifactRef, write_artifact_manifest
-from mn_ligand.core.jobs import (
+from ..core.artifacts import ArtifactRef, write_artifact_manifest
+from ..core.jobs import (
     JOB_SCHEMA_VERSION,
     JobRecord,
     display_job_code,
     short_job_code,
 )
-from mn_ligand.runtime import runs_root
-from mn_ligand.workflows.compound_preparation import (
+from ..runtime import runs_root
+from .compound_preparation import (
     compound_component_records,
     normalize_compound_smiles,
 )

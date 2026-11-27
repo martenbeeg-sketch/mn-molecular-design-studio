@@ -287,6 +287,35 @@ def test_import_records_explicit_smiles_replacement_and_original(database, monke
     assert any(row.get("raw_smiles") == "C1CC" and row.get("corrected_smiles") == "C1CC1" for row in rows)
 
 
+def test_pubchem_component_review_is_saved_with_dataset_member(database, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.vendor.ligand_runtime.mn_ligand.workflows import compound_pubchem
+
+    monkeypatch.setattr(compound_pubchem, "search_pubchem_candidates", lambda *args, **kwargs: [{
+        "cid": 123, "smiles": "CCO.[Na+]", "molecular_formula": "C2H6NaO", "query": "fixture", "query_type": "name",
+    }])
+    app = _app(database, monkeypatch, inputs=True)
+    app.button(key="datasets-import-compound").click().run()
+    app.text_input(key="molecular-import-group-name").set_value("Reviewed compounds").run()
+    app.button(key="molecular-import-next").click().run()
+    app.radio(key="molecular-import-method").set_value("SMILES").run()
+    app.text_area(key="molecular-import-smiles").set_value("C1CC fixture").run()
+    next(item for item in app.button if item.label == "Search PubChem").click().run()
+    next(item for item in app.selectbox if item.label == "PubChem structure").set_value(0).run()
+    next(item for item in app.selectbox if item.label == "Component to import").set_value(0).run()
+    next(item for item in app.button if item.label == "Accept selected structure").click().run()
+    assert not app.exception and not app.error
+    next(item for item in app.checkbox if item.label.startswith("I reviewed the report")).set_value(True).run()
+    app.button(key="molecular-import-commit").click().run()
+    assert not app.exception and not app.error
+    group_id = database.groups(USER)[0]["id"]
+    record, = datasets.DatasetView(database, group_id).list_molecules(USER)["items"]
+    source = next(item for item in record["sources"] if item.get("compound_review"))
+    assert source["raw_smiles"] == "C1CC" and source["canonical_smiles"] == "CCO"
+    evidence = source["compound_review"]["candidate"]
+    assert evidence["cid"] == 123 and evidence["pubchem_record_smiles"] == "CCO.[Na+]"
+    assert evidence["component_selection"] == "user-selected component"
+
+
 def test_completed_preparation_can_be_saved_in_datasets_without_reupload(database, monkeypatch, tmp_path):
     import json
 

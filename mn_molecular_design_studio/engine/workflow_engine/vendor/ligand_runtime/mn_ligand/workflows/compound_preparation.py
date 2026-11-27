@@ -20,10 +20,10 @@ from rdkit import Chem, rdBase
 from rdkit.Chem import AllChem, Crippen, Descriptors, Lipinski, QED, rdMolDescriptors
 from rdkit.Chem.MolStandardize import rdMolStandardize
 
-from mn_ligand.core.artifacts import ArtifactRef, write_artifact_manifest
-from mn_ligand.core.formulations import load_formulation_registry
-from mn_ligand.core.jobs import JOB_SCHEMA_VERSION, JobRecord, short_job_code
-from mn_ligand.runtime import cpu_process_limit, resolve_run_dir, runs_root
+from ..core.artifacts import ArtifactRef, write_artifact_manifest
+from ..core.formulations import load_formulation_registry
+from ..core.jobs import JOB_SCHEMA_VERSION, JobRecord, short_job_code
+from ..runtime import cpu_process_limit, resolve_run_dir, runs_root
 
 
 COMPOUND_IMPORT_TASK_GROUP = "compound-import"

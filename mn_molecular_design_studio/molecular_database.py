@@ -43,6 +43,23 @@ def _set_preparation_history(connection, structure_id, history):
     """, (_json(history), structure_id)).rowcount
 
 
+def _save_import_row_source(connection, group_id, batch_key, source_name, checksum, row, molecule_id):
+    provenance = {
+        "type": "table_import_row", "import_batch_id": batch_key, "source_name": source_name,
+        "source_sha256": checksum, "source_row": row["row_number"], "source_id": row.get("source_id") or "",
+        "validation_status": row["status"], "raw_smiles": row["raw_smiles"], "canonical_smiles": row["canonical_smiles"],
+        "warnings": row.get("warnings") or [], "errors": row.get("errors") or [],
+    }
+    if row.get("corrected_smiles"):
+        provenance["corrected_smiles"] = row["corrected_smiles"]
+    if row.get("review"):
+        provenance["compound_review"] = row["review"]
+    batch_id = batch_key.removeprefix("import-batch-")
+    connection.execute("INSERT INTO molecule_sources VALUES (?,?,?,?) ON CONFLICT(source_key) DO UPDATE SET "
+                       "molecule_id=excluded.molecule_id,group_id=excluded.group_id,provenance=excluded.provenance",
+                       (f"import-row:{batch_id}:{row['row_number']}", molecule_id, group_id, _json(provenance)))
+
+
 def _observation_identity(context):
     """Keep supplied selectors (including zero) without guessing missing lineage."""
     candidate = context.get("candidate") or {}
@@ -740,31 +757,14 @@ class MolecularDatabase:
             molecule_id = molecule_by_smiles.get(canonical)
             if molecule_id and row.get("status") in {"valid", "duplicate"}:
                 row["molecule_id"] = molecule_id
-            provenance = {
-                "type": "table_import_row",
-                "import_batch_id": batch_key,
-                "source_name": source_name,
-                "source_sha256": source_sha256,
-                "source_row": row_number,
-                "source_id": str(row.get("source_id") or ""),
-                "validation_status": str(row.get("status") or ""),
-                "raw_smiles": str(row.get("raw_smiles") or ""),
-                **({"corrected_smiles": row["corrected_smiles"]} if row.get("corrected_smiles") else {}),
-                "canonical_smiles": canonical,
-                "warnings": row.get("warnings") or [],
-                "errors": row.get("errors") or [],
-            }
             if molecule_id:
-                source_key = f"import-row:{batch_id}:{row_number}"
-                connection.execute(
-                    "INSERT INTO molecule_sources VALUES (?,?,?,?) ON CONFLICT(source_key) DO UPDATE SET "
-                    "molecule_id=excluded.molecule_id,group_id=excluded.group_id,provenance=excluded.provenance",
-                    (source_key, molecule_id, group_id, _json(provenance)),
-                )
+                _save_import_row_source(connection, group_id, batch_key, source_name, source_sha256, row, molecule_id)
             source_data = row.get("source_data") or {}
             descriptors = dict(row.get("descriptors") or {})
             if row.get("corrected_smiles"):
                 descriptors["corrected_smiles"] = row["corrected_smiles"]
+            if row.get("review"):
+                descriptors["compound_review"] = row["review"]
             descriptors["normalized_compound_id"] = row.get("compound_id") or ""
             descriptors["annotation_stripped_candidate"] = row.get("annotation_stripped_candidate") or ""
             descriptors["candidate_status"] = row.get("candidate_status") or ""
@@ -776,6 +776,68 @@ class MolecularDatabase:
                  _json(row.get("warnings") or []), _json(row.get("errors") or []), _json(descriptors),
                  _json(source_data), molecule_id, int(bool(row.get("matched_existing")))),
             )
+
+    def restore_compound_reviews(self, user, group_id, batch_id, revised):
+        """Resolve rejected rows in place using verified and revalidated review evidence."""
+        from mn_molecular_design_studio.datasets import input_records, is_dataset
+        from mn_molecular_design_studio.molecule_schema import validate_record
+
+        group = self.group(group_id, user, write=True)
+        if not is_dataset(group):
+            raise ValueError("Select the original compound Dataset.")
+        reviewed = [row for row in revised["rows"] if row.get("review")]
+        structures = {record["components"][0]["smiles"]: record for record in input_records(revised["records"])}
+        restored = added = 0
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            batch = connection.execute("SELECT * FROM molecule_import_batches WHERE id=? AND group_id=?",
+                                       (batch_id, group_id)).fetchone()
+            saved_mapping = {key: value for key, value in json.loads(batch["mapping_json"]).items()
+                             if key != "corrections"} if batch else {}
+            proposed_mapping = {key: value for key, value in revised["mapping"].items() if key != "corrections"}
+            if not batch or revised["source_sha256"] != batch["source_sha256"] or proposed_mapping != saved_mapping:
+                raise ValueError("The revalidated reviews must match the original file and column mapping.")
+            for row in reviewed:
+                number = row["row_number"]
+                original = connection.execute("SELECT * FROM molecule_import_rows WHERE batch_id=? AND row_number=?",
+                                              (batch_id, number)).fetchone()
+                if not original or any(original[key] != row[key] for key in ("source_id", "raw_smiles")):
+                    raise ValueError("A reviewed row differs from the original import.")
+                descriptors = json.loads(original["descriptors_json"])
+                if descriptors.get("compound_review") == row["review"]:
+                    continue
+                if original["status"] not in {"invalid", "empty"}:
+                    raise ValueError("A row already has a different accepted result.")
+                canonical = row["canonical_smiles"]
+                record = structures[canonical]
+                _, fingerprint, _ = imports.canonical_components(record["components"])
+                match = connection.execute("SELECT m.id FROM molecules m JOIN molecule_members mm ON mm.molecule_id=m.id "
+                                           "WHERE mm.group_id=? AND m.fingerprint=?", (group_id, fingerprint)).fetchone()
+                duplicate = connection.execute("SELECT MIN(row_number) FROM molecule_import_rows "
+                    "WHERE batch_id=? AND canonical_smiles=? AND status IN ('valid','duplicate')", (batch_id, canonical)).fetchone()[0]
+                if match:
+                    molecule_id = match["id"]
+                else:
+                    validate_record(record, group["schema"])
+                    molecule_id = self._put(connection, group_id, record)
+                    added += 1
+                effective = {**row, "status": "duplicate" if duplicate else "valid"}
+                descriptors.update(row["descriptors"], corrected_smiles=row["corrected_smiles"], compound_review=row["review"])
+                connection.execute("""
+                    UPDATE molecule_import_rows SET status=?,canonical_smiles=?,connectivity_smiles=?,duplicate_of_row=?,
+                        stereo_variant_of_row=?,warnings_json=?,errors_json=?,descriptors_json=?,molecule_id=?,matched_existing=?
+                    WHERE batch_id=? AND row_number=?
+                """, (effective["status"], canonical, row["connectivity_smiles"], duplicate, row.get("stereo_variant_of_row"),
+                      _json(row["warnings"]), _json(row["errors"]), _json(descriptors), molecule_id, int(bool(match)), batch_id, number))
+                _save_import_row_source(connection, group_id, batch_id, batch["source_name"], batch["source_sha256"], effective, molecule_id)
+                restored += 1
+            if restored:
+                summary = {**json.loads(batch["summary_json"]), **revised["summary"]}
+                if "reviewable_unique_structures" in summary:
+                    summary["reviewable_unique_structures"] = summary["unique_structures"]
+                connection.execute("UPDATE molecule_import_batches SET summary_json=? WHERE id=?", (_json(summary), batch_id))
+                connection.execute("UPDATE molecule_groups SET updated_at=? WHERE id=?", (_now(), group_id))
+        return {"restored_rows": restored, "added_molecules": added}
 
     def import_batches(self, user, group_id):
         self.group(group_id, user)
@@ -805,6 +867,7 @@ class MolecularDatabase:
                 "compound_id": descriptors.get("normalized_compound_id", ""),
                 "annotation_stripped_candidate": descriptors.get("annotation_stripped_candidate", ""),
                 "candidate_status": descriptors.get("candidate_status", ""),
+                "review": descriptors.get("compound_review"),
                 "descriptors": descriptors,
                 "source_data": json.loads(row["source_data_json"]),
             })

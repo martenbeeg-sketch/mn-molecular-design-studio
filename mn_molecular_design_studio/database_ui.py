@@ -328,11 +328,32 @@ def _import_content(method, *, recover_preparation=False):
     return records, audit, source_content
 
 
-def _review_smiles_corrections(method, audit, records, source_content, instance):
+@st.cache_data(ttl=180, max_entries=8, show_spinner=False)
+def _matching_compound_reviews(source_content, mapping, rejected, roots):
+    from mn_molecular_design_studio.compound_import_history import archived_reviews
+
+    return archived_reviews(source_content, {"mapping": mapping, "rows": rejected}, roots)
+
+
+def _review_smiles_corrections(method, audit, records, source_content, instance, *, recover_archive=False):
     invalid = {row["row_number"]: row for row in audit["rows"] if row["status"] in {"invalid", "empty"}}
-    if not invalid:
+    if not invalid or source_content is None:
         return records, audit
+    from mn_molecular_design_studio.compound_import_history import apply_reviews
+    from mn_molecular_design_studio.compound_import_history_ui import review_with_pubchem
+
     key = f"dataset-smiles-corrections-{instance}-{audit['batch_id']}"
+    recovered = {}
+    if recover_archive and method != "SMILES":
+        from mn_molecular_design_studio.legacy_preparation_history import archive_roots
+
+        roots = archive_roots()
+        if roots:
+            rejected = [{key: row[key] for key in ("row_number", "status", "source_id", "raw_smiles")} for row in invalid.values()]
+            recovered = _matching_compound_reviews(source_content, audit["mapping"], rejected, roots)
+        if recovered:
+            st.caption(f"Recovered {len(recovered):,} approved MN-Ligand reviews for this exact source file.")
+    approved = review_with_pubchem(invalid, key + "-pubchem")
     with st.expander("Correct invalid SMILES"):
         st.caption("Enter one row number and replacement SMILES per line, then validate the corrections.")
         st.dataframe([{"Row": number, "Input SMILES": row["raw_smiles"], "Candidate": row["annotation_stripped_candidate"]}
@@ -351,17 +372,9 @@ def _review_smiles_corrections(method, audit, records, source_content, instance)
                     raise ValueError(f"Row {number} appears more than once in the corrections.")
                 corrections[number] = parts[1]
             st.session_state[key + "-validated"] = corrections
-        corrections = st.session_state.get(key + "-validated", {})
-        if not corrections or source_content is None:
-            return records, audit
-        if method == "SMILES":
-            revised = imports.analyze_smiles_text(source_content.decode("utf-8-sig"), corrections=corrections)
-            revised["source_name"] = audit["source_name"]
-            revised["source_sha256"] = audit["source_sha256"]
-        else:
-            revised = imports.analyze_small_molecule_table(source_content, audit["source_name"],
-                                                           **audit["mapping"], corrections=corrections)
-        return revised.pop("records"), revised
+    revised = apply_reviews(source_content, audit, {**recovered, **approved}, manual=st.session_state.get(key + "-validated", {}),
+                            pasted=method == "SMILES")
+    return (revised.pop("records"), revised) if revised else (records, audit)
 
 
 def _import_report_frame(rows):
@@ -372,8 +385,13 @@ def _import_report_frame(rows):
         "Compound ID": row.get("compound_id") or "",
         "Name": row.get("name") or "",
         "Input SMILES": row.get("raw_smiles") or "",
-        "Replacement SMILES": row.get("corrected_smiles") or "",
+        "Replacement SMILES": row.get("corrected_smiles") or (row.get("descriptors") or {}).get("corrected_smiles") or "",
         "Canonical isomeric SMILES": row.get("canonical_smiles") or "",
+        "Review method": (row.get("review") or {}).get("method") or "",
+        "PubChem CID": str(((row.get("review") or {}).get("candidate") or {}).get("cid") or ""),
+        "Component selection": ((row.get("review") or {}).get("candidate") or {}).get("component_selection") or "",
+        "Review run": (row.get("review") or {}).get("review_run_id") or "",
+        "Original validation errors": "; ".join((row.get("review") or {}).get("original_errors") or []),
         "Annotation candidate (review only)": row.get("annotation_stripped_candidate") or "",
         "Candidate status": row.get("candidate_status") or "",
         "Duplicate of row": row.get("duplicate_of_row") or "",
@@ -400,6 +418,7 @@ def _import_report_frame(rows):
 def _report_csv(rows):
     import pandas as pd
     frame = pd.DataFrame(_import_report_frame(rows))
+    frame["Review evidence"] = [json.dumps(row["review"], ensure_ascii=False) if row.get("review") else "" for row in rows]
     return frame.to_csv(index=False).encode("utf-8-sig")
 
 
@@ -473,7 +492,8 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
             method, recover_preparation=dataset_mode and user.get("role") == "admin",
         )
         if audit:
-            records, audit = _review_smiles_corrections(method, audit, records, source_content, import_instance)
+            records, audit = _review_smiles_corrections(method, audit, records, source_content, import_instance,
+                                                        recover_archive=dataset_mode and user.get("role") == "admin")
             destination_group = destination.get("group_id")
             existing = database.group_identity_map(user, destination_group) if destination_group else {}
             existing_fingerprints = set(existing)
@@ -526,7 +546,7 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
                     key="molecular-import-report-download-" + import_instance + audit["batch_id"],
                 )
                 st.caption("Canonical SMILES are used for exact structure matching. Salts, formal charge, and stereochemistry are retained as submitted.")
-            st.caption("The original file and full batch report are saved on this workstation. Imported molecules retain their source row and validation provenance in the Database.")
+            st.caption("The source file and full report are saved on this workstation. Accepted replacements and their source rows are saved with the compounds.")
             review_confirmed = st.checkbox(
                 "I reviewed the report. Only valid unique structures will be imported; every source row will be retained in the import history.",
                 key="molecular-import-reviewed-" + import_instance + audit["batch_id"],
