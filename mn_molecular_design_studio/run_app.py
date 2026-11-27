@@ -7431,7 +7431,7 @@ def _render_job_details() -> None:
         if is_complex_preparation and str(job.get("status") or "").casefold() in {"completed", "succeeded"}:
             from mn_molecular_design_studio.dataset_preparation_ui import render_prepared_outputs
 
-            render_prepared_outputs(artifact_paths, run_id, project_id or "")
+            render_prepared_outputs(artifact_paths, run_id, project_id or "", user=CURRENT_USER)
         if analysis_tool == "tmol":
             from mn_molecular_design_studio.tmol_ui import render_results
             render_results(run_dir, run_id)

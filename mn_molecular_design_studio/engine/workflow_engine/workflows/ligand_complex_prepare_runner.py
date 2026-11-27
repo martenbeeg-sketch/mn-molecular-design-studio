@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import subprocess
@@ -315,6 +316,9 @@ def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
     (output_dir / "prepared_complex.pdb").write_text(complex_data, encoding="utf-8")
     (output_dir / "prepared_target.pdb").write_text(prepared_target_data, encoding="utf-8")
     report = {
+        "source_sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
+        "output_sha256": {name: hashlib.sha256((output_dir / name).read_bytes()).hexdigest()
+                          for name in ("prepared_complex.pdb", "prepared_target.pdb")},
         "source_import": {
             "run_id": import_job.run_id,
             "source_artifact": source_ref.to_dict(),

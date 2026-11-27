@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from mn_ligand.core.artifacts import ArtifactManifest, load_artifact_manifest
+from .artifacts import ArtifactManifest, load_artifact_manifest
 
 
 JOB_SCHEMA_VERSION = 1

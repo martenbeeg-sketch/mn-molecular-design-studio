@@ -644,6 +644,10 @@ def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True,
 
 
 def parse_archive(data: bytes) -> list[dict]:
+    from mn_molecular_design_studio.preparation_history import (
+        COORDINATE_SUFFIXES, MANIFEST, MAX_MANIFEST_BYTES, sha256, validate_history,
+    )
+
     result, total = [], 0
     try:
         archive_file = zipfile.ZipFile(io.BytesIO(data))
@@ -654,6 +658,9 @@ def parse_archive(data: bytes) -> list[dict]:
                    entry.filename.lower().endswith((".pdb", ".ent", ".cif", ".mmcif", ".sdf", ".mol"))]
         if not entries or len(entries) > 500:
             raise ValueError("A ZIP must contain between 1 and 500 structure files.")
+        manifests = [entry for entry in archive.infolist() if entry.filename == MANIFEST]
+        if manifests and (len(manifests) != 1 or len(entries) != 1 or manifests[0].file_size > MAX_MANIFEST_BYTES):
+            raise ValueError("A preparation bundle must contain one coordinate file and one preparation manifest.")
         for entry in entries:
             total += entry.file_size
             if total > MAX_BYTES:
@@ -662,6 +669,15 @@ def parse_archive(data: bytes) -> list[dict]:
                 result.extend(parse_structure(archive.read(entry), Path(entry.filename).name))
             except (zipfile.BadZipFile, RuntimeError) as exc:
                 raise ValueError("A structure in the archive could not be read.") from exc
+        if manifests:
+            if len(result) != 1 or len(result[0].get("files", [])) != 1:
+                raise ValueError("A preparation bundle must describe one saved structure.")
+            structure = result[0]["files"][0]
+            if Path(structure["name"]).suffix.lower() not in COORDINATE_SUFFIXES:
+                raise ValueError("A preparation bundle requires PDB or mmCIF coordinates.")
+            history = json.loads(archive.read(manifests[0]))
+            validate_history(history, sha256(structure["content"]))
+            structure["preparation_history"] = {**history, "imported_from_bundle": True}
     return result
 
 

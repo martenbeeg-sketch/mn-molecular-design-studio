@@ -4,7 +4,7 @@ import json
 from collections.abc import Iterator, Mapping
 from typing import Any
 
-from mn_ligand.core.jobs import JobRecord, display_job_code
+from .jobs import JobRecord, display_job_code
 
 
 LINEAGE_METADATA_KEYS = (

@@ -132,7 +132,18 @@ def _review_structure_chains(records, key):
     return [cropped_record(record, chains)]
 
 
-def _import_content(method):
+@st.cache_data(ttl=180, max_entries=16, show_spinner=False)
+def _archived_preparation_histories(candidates, roots):
+    from collections import defaultdict
+    from mn_molecular_design_studio.legacy_preparation_history import recover_histories
+
+    digests = defaultdict(set)
+    for size, digest in candidates:
+        digests[size].add(digest)
+    return recover_histories(digests, roots)
+
+
+def _import_content(method, *, recover_preparation=False):
     records = []
     audit = None
     source_content = None
@@ -144,6 +155,8 @@ def _import_content(method):
         for record in records:
             record["metadata"]["preparation_run_id"] = source["run_id"]
             record["files"][0].update(label="Prepared structure", preparation_run_id=source["run_id"])
+            if history := source.get("preparation_history"):
+                record["files"][0]["preparation_history"] = history
     elif method in {"Table", "Compound table"}:
         compounds = method == "Compound table"
         if not compounds:
@@ -226,10 +239,10 @@ def _import_content(method):
             records = imports.parse_sequences(text, kind=kind)
     elif method in {"Structure files", "Protein files"}:
         protein = method == "Protein files"
-        formats = ["pdb", "ent", "cif", "mmcif", "gz"]
+        formats = ["pdb", "ent", "cif", "mmcif", "gz", "zip"]
         if not protein:
-            formats.extend(["sdf", "mol", "zip"])
-        uploads = st.file_uploader("PDB or mmCIF files" if protein else "PDB, mmCIF, SDF, MOL, or ZIP",
+            formats.extend(["sdf", "mol"])
+        uploads = st.file_uploader("PDB, mmCIF, or preparation ZIP" if protein else "PDB, mmCIF, SDF, MOL, or ZIP",
             type=formats, accept_multiple_files=True, key="molecular-import-structures-" + method)
         include_ligands = st.checkbox("Include bound ligands", value=not protein, key="molecular-import-include-ligands-" + method)
         for upload in uploads:
@@ -238,6 +251,22 @@ def _import_content(method):
             if protein and any(not any(component["type"] == "protein" for component in row["components"]) for row in parsed):
                 raise ValueError(f"{upload.name} has no protein chain.")
             records.extend(parsed)
+        if records and recover_preparation:
+            from mn_molecular_design_studio.legacy_preparation_history import archive_roots
+            from mn_molecular_design_studio.preparation_history import COORDINATE_SUFFIXES, sha256
+
+            inputs = [(len(item["content"]), sha256(item["content"]), item)
+                      for record in records for item in record.get("files", [])
+                      if not item.get("preparation_history") and Path(item["name"]).suffix.lower() in COORDINATE_SUFFIXES]
+            roots = archive_roots()
+            if inputs and roots:
+                matches = _archived_preparation_histories(tuple(sorted({(size, digest) for size, digest, _ in inputs})), roots)
+                for _, digest, item in inputs:
+                    if digest in matches:
+                        item["preparation_history"] = matches[digest]
+        captured = sum(bool(item.get("preparation_history")) for record in records for item in record.get("files", []))
+        if captured:
+            st.caption(f"Preparation history found for {captured} structure(s).")
         records = _review_structure_chains(records, "molecular-import-upload-chains-")
     elif method == "SMILES":
         source = st.radio("Input", ["Paste SMILES", "SMI file", "SDF file"], horizontal=True, key="molecular-import-smiles-source")
@@ -440,7 +469,9 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
     review_confirmed = True
     block_duplicates = False
     try:
-        records, audit, source_content = _import_content(method)
+        records, audit, source_content = _import_content(
+            method, recover_preparation=dataset_mode and user.get("role") == "admin",
+        )
         if audit:
             records, audit = _review_smiles_corrections(method, audit, records, source_content, import_instance)
             destination_group = destination.get("group_id")

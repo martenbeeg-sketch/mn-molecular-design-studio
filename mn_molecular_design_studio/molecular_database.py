@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from mn_molecular_design_studio import molecule_imports as imports
+from mn_molecular_design_studio.preparation_history import validate_history
 from mn_molecular_design_studio.runtime import app_home
 from mn_molecular_design_studio.output_vocabulary import PREFIX, normalize_metrics, sql_common_metrics
 
@@ -32,6 +33,14 @@ _BROWSER_REVISION_SCHEMA_READY: set[tuple] = set()
 
 class ReviewConflictError(ValueError):
     """The human review changed since the editor's saved base revision."""
+
+
+def _set_preparation_history(connection, structure_id, history):
+    return connection.execute("""
+        UPDATE molecule_structures
+        SET context=json_set(context, '$.preparation_history', json(?))
+        WHERE id=? AND json_extract(context, '$.preparation_history') IS NULL
+    """, (_json(history), structure_id)).rowcount
 
 
 def _observation_identity(context):
@@ -596,12 +605,18 @@ class MolecularDatabase:
         for item in record.get("files") or []:
             path = Path(item["path"]) if item.get("path") else self._store_file(item["name"], item["content"])
             context = {**(origin or {}), **{key: value for key, value in item.items() if key not in {"path", "content", "name", "label"}}}
-            if path.is_file():
-                context.setdefault("content_sha256", hashlib.sha256(path.read_bytes()).hexdigest())
+            content_digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+            if content_digest:
+                context.setdefault("content_sha256", content_digest)
+            history = context.pop("preparation_history", None)
+            if history:
+                validate_history(history, content_digest)
             structure_id = _id("structure-", _json([molecule_id, group_id, str(path), context]))
             connection.execute("INSERT OR IGNORE INTO molecule_structures VALUES (?,?,?,?,?,?,?,?)", (
                 structure_id, molecule_id, group_id, str(path), str(item.get("label") or path.name),
                 path.suffix.lower().lstrip("."), _json(context), stamp))
+            if history:
+                _set_preparation_history(connection, structure_id, history)
         connection.execute("UPDATE molecule_groups SET updated_at=? WHERE id=?", (stamp, group_id))
         return molecule_id
 
@@ -929,6 +944,9 @@ class MolecularDatabase:
             validated_digest = str(item.get("validated_content_sha256") or "")
             if validated_digest and validated_digest != content_digest:
                 raise ValueError("The source structure changed after molecular validation.")
+            preparation_history = structure_context.get("preparation_history")
+            if preparation_history:
+                validate_history(preparation_history, content_digest)
             revision_fields = ("source_file_field", "representation_type",
                                "database_structure_label", "database_structure_policy", "binder_chains",
                                "target_chains", "pose_id", "pose_rank", "ligand_selection", "candidate_id",
@@ -959,16 +977,39 @@ class MolecularDatabase:
                     if (existing_context.get("candidate_id") and structure_context.get("candidate_id")
                             and existing_context.get("candidate_id") != structure_context.get("candidate_id")):
                         continue
+                    if preparation_history and not existing_context.get("preparation_history"):
+                        _set_preparation_history(connection, existing["id"], preparation_history)
                     connection.execute("UPDATE molecule_groups SET updated_at=? WHERE id=?", (created_at or _now(), group_id))
                     return str(existing["id"])
             structure_context["content_sha256"] = content_digest
-            structure_id = _id("structure-", _json([molecule_id, group_id, str(path), content_digest, structure_context]))
+            identity_context = {key: value for key, value in structure_context.items() if key != "preparation_history"}
+            structure_id = _id("structure-", _json([molecule_id, group_id, str(path), content_digest, identity_context]))
             stamp = created_at or _now()
             connection.execute("INSERT OR IGNORE INTO molecule_structures VALUES (?,?,?,?,?,?,?,?)", (
                 structure_id, molecule_id, group_id, str(path), str(item.get("label") or path.name),
                 path.suffix.lower().lstrip("."), _json(structure_context), stamp))
             connection.execute("UPDATE molecule_groups SET updated_at=? WHERE id=?", (stamp, group_id))
         return structure_id
+
+    def record_preparation_history(self, user, structure_id, history):
+        """Attach verified history to the existing representation ID."""
+        with self.connection() as connection:
+            row = connection.execute("SELECT * FROM molecule_structures WHERE id=?", (structure_id,)).fetchone()
+        if not row:
+            raise FileNotFoundError("The structure is unavailable.")
+        self.group(row["group_id"], user, write=True)
+        content = self._verified_structure_content(row, Path(row["path"]))
+        digest = hashlib.sha256(content).hexdigest()
+        validate_history(history, digest)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute("SELECT path, context FROM molecule_structures WHERE id=?", (structure_id,)).fetchone()
+            if not current or current["path"] != row["path"] or current["context"] != row["context"]:
+                raise ValueError("The saved structure changed. Reload it before attaching preparation history.")
+            if not _set_preparation_history(connection, structure_id, history):
+                return False
+            connection.execute("UPDATE molecule_groups SET updated_at=? WHERE id=?", (_now(), row["group_id"]))
+        return True
 
     def make_structure_portable(self, user, structure_id):
         """Keep a structure in the Database store so peer workstations can replicate it."""

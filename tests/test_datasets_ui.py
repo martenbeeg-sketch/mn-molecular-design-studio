@@ -288,10 +288,19 @@ def test_import_records_explicit_smiles_replacement_and_original(database, monke
 
 
 def test_completed_preparation_can_be_saved_in_datasets_without_reupload(database, monkeypatch, tmp_path):
+    import json
+
+    from mn_molecular_design_studio.preparation_history import sha256
     from test_molecular_database_policy import _pdb_acd
 
     prepared = tmp_path / "prepared_target.pdb"
     prepared.write_text(_pdb_acd(), encoding="utf-8")
+    digest = sha256(prepared.read_bytes())
+    report = tmp_path / "repair_report.json"
+    report.write_text(json.dumps({
+        "output_sha256": {prepared.name: digest},
+        "loop_remodelling": {"enabled": True, "chain": "A", "start": 2, "end": 2},
+    }), encoding="utf-8")
     app = AppTest.from_string(
         "import streamlit as st\n"
         "from pathlib import Path\n"
@@ -302,7 +311,7 @@ def test_completed_preparation_can_be_saved_in_datasets_without_reupload(databas
         "if st.session_state.get('page') == 'Datasets':\n"
         f"    render_datasets(user, [], database=ReadOnlyLibrary(Path({str(database.root)!r})))\n"
         "else:\n"
-        f"    render_prepared_outputs([({{}}, Path({str(prepared)!r}))], 'repair-1', '')\n"
+        f"    render_prepared_outputs([({{}}, Path({str(prepared)!r})), ({{}}, Path({str(report)!r}))], 'repair-1', '')\n"
     ).run()
     app.button(key="prepared-output-save-repair-1").click().run()
     assert not app.exception
@@ -312,4 +321,11 @@ def test_completed_preparation_can_be_saved_in_datasets_without_reupload(databas
     assert not app.exception and not app.error
     group_id = database.groups(USER)[0]["id"]
     saved = datasets.DatasetView(database, group_id).list_molecules(USER)["items"][0]
-    assert saved["structures"][0]["context"]["preparation_run_id"] == "repair-1"
+    context = saved["structures"][0]["context"]
+    assert context["preparation_run_id"] == "repair-1"
+    history = context["preparation_history"]
+    assert history["structure_sha256"] == digest
+    assert history["steps"] == [{
+        "label": "MODELLER existing-loop remodelling", "details": {"chain": "A", "start": 2, "end": 2},
+    }]
+    assert history["artifacts"][0]["report_sha256"] == sha256(report.read_bytes())

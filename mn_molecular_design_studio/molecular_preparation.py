@@ -43,6 +43,12 @@ def cropped_record(record, chains):
             files.append({"name": "cropped.cif", "content": buffer.getvalue().encode(), "label": "Cropped structure", "dimensions": 3})
         else:
             files.append({"name": "cropped.pdb", "content": buffer.getvalue().encode(), "label": "Cropped structure", "dimensions": 3})
+        from mn_molecular_design_studio.preparation_history import extend_history, sha256
+
+        files[0]["preparation_history"] = extend_history(
+            source.get("preparation_history"), sha256(data), sha256(files[0]["content"]),
+            [{"label": "Select chains", "details": {"chains": list(chains)}}],
+        )
     return {"name": record["name"] + " · " + "+".join(chains), "components": components,
             "metadata": record.get("metadata") or {}, "files": files}
 

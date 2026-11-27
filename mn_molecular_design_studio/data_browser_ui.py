@@ -246,8 +246,32 @@ def _render_structure(database, user, record, preferred):
             molstar_custom_component([StructureVisualization(pdb=_structure_text(path, context), color="chain-id",
                 representation_type=representation)], key="data-browser-molstar-native-" + chosen, height=viewer_height,
                 show_controls=False, show_structure_tools=False)
-        st.download_button("Download selected structure", path.read_bytes(), file_name=record["name"][:70] + path.suffix,
+        filename = record["name"][:70] + path.suffix
+        content = path.read_bytes()
+        st.download_button("Download selected structure", content, file_name=filename,
             key="data-browser-download-" + chosen)
+        if history := context.get("preparation_history"):
+            from mn_molecular_design_studio.preparation_history import portable_bundle, sha256, validate_history
+
+            validate_history(history, sha256(content))
+            with st.expander("Preparation history"):
+                st.caption(history.get("application") or "Source preparation")
+                if history.get("imported_from_bundle"):
+                    st.caption("Imported with a coordinate-matched preparation manifest.")
+                elif history.get("verification") == "archive_sha256":
+                    st.caption("Recovered from an exact coordinate match in the MN-Ligand archive.")
+                for step in history["steps"]:
+                    st.write(step["label"])
+                    if summary := step.get("summary"):
+                        st.caption(summary)
+                    if details := step.get("details"):
+                        render_result_details(st, details)
+                if artifacts := history.get("artifacts"):
+                    st.caption("Source runs · " + ", ".join(dict.fromkeys(
+                        item["run_id"] for item in artifacts if isinstance(item, dict) and item.get("run_id"))))
+            st.download_button("Download structure with history", lambda: portable_bundle(filename, content, history),
+                file_name=Path(filename).stem + "-preparation.zip", mime="application/zip",
+                key="data-browser-preparation-download-" + chosen)
     except (OSError, ValueError, PermissionError) as exc:
         st.warning("The saved coordinates could not be opened: " + str(exc))
         return
