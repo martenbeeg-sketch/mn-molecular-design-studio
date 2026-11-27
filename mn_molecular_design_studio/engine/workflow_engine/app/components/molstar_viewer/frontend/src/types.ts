@@ -20,6 +20,13 @@ export type SequenceSelection = {
 
 export type StreamlitComponentValue = {
     sequenceSelections: SequenceSelection[];
+    residuePick?: {
+        eventId: number;
+        chainId: string;
+        residueNumber: number;
+        insertionCode: string;
+        residueName: string;
+    };
 };
 
 export type ChainVisualization = {

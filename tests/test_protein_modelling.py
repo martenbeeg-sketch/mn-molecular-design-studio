@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -44,14 +45,16 @@ def test_dataset_gap_editor_queues_only_confirmed_input(gapped_pdb, monkeypatch)
         "    return {'job': {'run_id': 'test-modelling-job'}}\n"
         "content = source.read_bytes()\n"
         "history = extend_history(None, sha256(content), sha256(content), [{'label':'Trim structure'}])\n"
-        "render_protein_tools({'id':'a' * 32}, source, content, history, 'test', [{'id':'p1','name':'Project'}], ['p1'], capture)",
+        "render_protein_tools({'id':'a' * 32}, source, content, history, 'test', [{'id':'p1','name':'Project'}], ['p1'], capture, viewer_key='viewer')",
         default_timeout=30,
     ).run()
     assert not app.exception
     app.selectbox(key="test-operation").set_value("Rebuild missing residues or a loop").run()
     assert app.button(key="test-run-preparation").disabled
     gap = next(value for value in app.multiselect[0].options if "G20–P22" in value)
-    app.multiselect[0].set_value([gap]).run()
+    app.session_state["viewer"] = _pick(1, 20, "GLY")
+    app.run()
+    assert app.multiselect[0].value == [gap]
     assert app.text_input[0].value == "T"
     assert app.button(key="test-run-preparation").disabled
     app.checkbox[0].set_value(True).run()
@@ -62,6 +65,54 @@ def test_dataset_gap_editor_queues_only_confirmed_input(gapped_pdb, monkeypatch)
     assert parameters["modelling_options"] == {"gaps": [
         {"chain": "A", "left_resseq": 20, "right_resseq": 22, "sequence": "T", "confirmed": True}
     ]}
+
+
+def _pick(event, number, name, insertion=""):
+    return json.dumps({"residuePick": {
+        "eventId": event, "chainId": "A", "residueNumber": number,
+        "insertionCode": insertion, "residueName": name,
+    }})
+
+
+def test_viewer_picks_preserve_author_identity_and_require_confirmation_to_trim():
+    app = AppTest.from_string(
+        "import streamlit as st\nfrom pathlib import Path\n"
+        "from mn_molecular_design_studio.dataset_modelling_ui import render_protein_tools\n"
+        f"source = Path({str(PUBLIC_PDB)!r})\n"
+        "st.slider('Trim', 1, 46, (1, 46), key='test-A')\n"
+        "render_protein_tools({}, source, source.read_bytes(), {}, 'test', [{'id':'p1','name':'Project'}],"
+        " ['p1'], None, viewer_key='viewer')",
+    ).run()
+    app.selectbox(key="test-operation").set_value("Substitute amino acids").run()
+    app.session_state["viewer"] = _pick(1, 9, "ALA", insertion="A")
+    app.run()
+    assert app.multiselect(key="test-A-substitutions").value == []
+    app.session_state["viewer"] = _pick(2, 9, "ALA")
+    app.run()
+    assert app.multiselect(key="test-A-substitutions").value == ["9"]
+    app.run()
+    assert app.multiselect(key="test-A-substitutions").value == ["9"]
+    app.session_state["viewer"] = _pick(3, 9, "ALA")
+    app.run()
+    assert app.multiselect(key="test-A-substitutions").value == []
+
+    app.selectbox(key="test-operation").set_value("Remodel an existing loop").run()
+    app.session_state["viewer"] = _pick(4, 9, "ALA")
+    app.run()
+    app.session_state["viewer"] = _pick(5, 7, "ILE")
+    app.run()
+    assert app.selectbox(key="test-loop-A-start").value == "7"
+    assert app.selectbox(key="test-loop-A-end").value == "9"
+
+    app.selectbox(key="test-operation").set_value("Extend the C-terminus").run()
+    app.text_input(key="test-extension-sequence").set_value("G").run()
+    app.session_state["viewer"] = _pick(6, 9, "ALA")
+    app.run()
+    assert app.slider(key="test-A").value == (1, 46)
+    assert app.button(key="test-run-preparation").disabled
+    app.button(key="test-apply-attachment").click().run()
+    assert not app.exception
+    assert app.slider(key="test-A").value == (1, 9)
 
 
 def test_amino_acid_substitution_uses_an_exact_observed_residue(gapped_pdb):

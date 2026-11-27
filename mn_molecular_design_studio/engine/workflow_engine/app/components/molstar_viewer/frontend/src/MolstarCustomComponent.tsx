@@ -10,7 +10,10 @@ import { StateObjectSelector } from "molstar/lib/mol-state";
 import { Script } from "molstar/lib/mol-script/script";
 import { Bundle } from "molstar/lib/mol-model/structure/structure/element/bundle";
 import { Color } from "molstar/lib/mol-util/color";
-import { StructureSelection, Structure, StructureProperties } from "molstar/lib/mol-model/structure";
+import { StructureSelection, Structure, StructureProperties, Unit } from "molstar/lib/mol-model/structure";
+import { DefaultSelectLociBindings, SelectLoci } from "molstar/lib/mol-plugin/behavior/dynamic/representation";
+import { Binding } from "molstar/lib/mol-util/binding";
+import { ButtonsType, ModifiersKeys } from "molstar/lib/mol-util/input/input-observer";
 import { PluginConfig } from "molstar/lib/mol-plugin/config";
 import { PluginCommands } from "molstar/lib/mol-plugin/commands";
 import { parseResidueSelections } from "./residueSelection";
@@ -32,6 +35,7 @@ interface Props {
   showStructureTools?: boolean;
   minimalViewer?: boolean;
   selectionMode: boolean;
+  pickResidue?: boolean;
   contigs: ContigSegment[][];
   highlightedContig: ContigSegment & { structureIdx: number; } | null;
   updateStreamlitComponentValue: (value: StreamlitComponentValue) => void;
@@ -79,11 +83,17 @@ function MolstarCustomComponent(props: Props) {
     if (innerProps.loadingPlugin || innerProps.plugin) return; // plugin is already being loaded or loaded
     const wrapper = document.getElementById(props.divName)!;
     innerProps.loadingPlugin = true;
+    const defaultSpec = DefaultPluginUISpec();
     const plugin = await createPluginUI({
       target: wrapper,
       render: renderReact18,
       spec: {
-        ...DefaultPluginUISpec(),
+        ...defaultSpec,
+        behaviors: props.pickResidue ? defaultSpec.behaviors.map(behavior => behavior.transformer === SelectLoci
+          ? { ...behavior, defaultParams: { bindings: {
+            ...DefaultSelectLociBindings, clickToggle: Binding.Empty, clickToggleExtend: Binding.Empty,
+            clickDeselectAllOnEmpty: Binding.Empty,
+          } } } : behavior) : defaultSpec.behaviors,
         layout: {
           initial: {
             // showControls is actually about expanding the layout (showing the panels), not about showing the buttons
@@ -114,7 +124,7 @@ function MolstarCustomComponent(props: Props) {
           [PluginConfig.Viewport.ShowXR, false],                // we also do not need AR/VR
           [PluginConfig.Viewport.ShowControls, !props.minimalViewer],
           [PluginConfig.Viewport.ShowSettings, !props.minimalViewer],
-          [PluginConfig.Viewport.ShowSelectionMode, !props.minimalViewer],
+          [PluginConfig.Viewport.ShowSelectionMode, !props.minimalViewer && !props.pickResidue],
         ],
       }
     });
@@ -124,7 +134,27 @@ function MolstarCustomComponent(props: Props) {
     if (props.minimalViewer) plugin.canvas3d?.setProps({ renderer: { backgroundColor: Color(0xffffff) } });
 
     // Turn on selection mode if requested
-    if (props.selectionMode) {
+    if (props.pickResidue) {
+      plugin.selectionMode = true;
+      let eventId = 0;
+      plugin.behaviors.interaction.click.subscribe(({ current, button, modifiers }) => {
+        if (button !== ButtonsType.Flag.Primary || !ModifiersKeys.areNone(modifiers)) return;
+        const loci = current.loci;
+        if (!StructureElement.Loci.is(loci)) return;
+        const location = StructureElement.Loci.getFirstLocation(loci);
+        if (!location || !Unit.isAtomic(location.unit)) return;
+        props.updateStreamlitComponentValue({
+          sequenceSelections: [],
+          residuePick: {
+            eventId: ++eventId,
+            chainId: StructureProperties.chain.auth_asym_id(location),
+            residueNumber: StructureProperties.residue.auth_seq_id(location),
+            insertionCode: StructureProperties.residue.pdbx_PDB_ins_code(location),
+            residueName: StructureProperties.residue.label_comp_id(location),
+          },
+        });
+      });
+    } else if (props.selectionMode) {
       plugin.selectionMode = true;
 
       // When clicking the canvas, the selection is updated as well. We should reflect this in the component state as well.
@@ -242,9 +272,7 @@ function MolstarCustomComponent(props: Props) {
       innerProps.plugin.managers.structure.selection.fromLoci("add", loci);
     }
 
-    props.updateStreamlitComponentValue({
-      sequenceSelections: parsed
-    });
+    if (!props.pickResidue) props.updateStreamlitComponentValue({ sequenceSelections: parsed });
   };
 
   const removeLoadedData = async () => {

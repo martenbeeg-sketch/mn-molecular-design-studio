@@ -117,6 +117,7 @@ class StreamlitWrapper extends StreamlitComponentBase<State> {
         const showControls = this.props.args["showControls"];
         const showStructureTools = this.props.args["showStructureTools"] ?? true;
         const selectionMode = this.props.args["selectionMode"];
+        const pickResidue = this.props.args["pickResidue"] ?? false;
         const minimalViewer = this.props.args["minimalViewer"] ?? false;
         const forceReload = this.props.args["forceReload"] ?? false;
         const sequenceHighlightColor = this.props.args["sequenceHighlightColor"] ?? null;
@@ -143,7 +144,8 @@ class StreamlitWrapper extends StreamlitComponentBase<State> {
                         showStructureTools={showStructureTools}
                         minimalViewer={minimalViewer}
                         contigs={allContigsParsed} highlightedContig={this.state.highlightedContig}
-                        selectionMode={selectionMode} updateStreamlitComponentValue={this.updateStreamlitComponentValue}
+                        selectionMode={selectionMode} pickResidue={pickResidue}
+                        updateStreamlitComponentValue={this.updateStreamlitComponentValue}
                         forceReload={forceReload}
                         sequenceHighlightColor={sequenceHighlightColor}
                         sequenceHighlightIndices={sequenceHighlightIndices}

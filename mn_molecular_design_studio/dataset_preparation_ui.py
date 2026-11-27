@@ -15,18 +15,20 @@ from mn_molecular_design_studio.preparation_history import extend_history, repor
 
 
 COORDINATE_FORMATS = {"pdb", "ent", "cif", "mmcif"}
+MAX_INLINE_COORDINATE_BYTES = 50_000_000
 
 
-def render_coordinate_preview(data, *, key, height=350, show_ligands=False):
-    if len(data) > 50_000_000:
+def render_coordinate_preview(data, *, key, height=350, show_ligands=False, pick_residue=False, highlights=None):
+    if len(data) > MAX_INLINE_COORDINATE_BYTES:
         st.caption("These coordinates are too large for the inline viewer.")
         return
     from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import molstar_custom_component
     from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer.dataclasses import StructureVisualization
 
     molstar_custom_component([StructureVisualization(pdb=data.decode("utf-8", errors="replace"), color="chain-id",
-        representation_type="cartoon+ball-and-stick" if show_ligands else "cartoon")],
-        key=key, height=height, show_structure_tools=False)
+        representation_type="cartoon+ball-and-stick" if show_ligands else "cartoon",
+        highlighted_selections=highlights)],
+        key=key, height=height, show_structure_tools=False, pick_residue=pick_residue)
 
 
 def _dismiss_preparation():
@@ -84,16 +86,10 @@ def _render_preparation_options(view, user, record, structures, projects, prefer
         run_tools = submit and pdb and has_polymer and any(
             component["type"] == "protein" and component["chain"] in chosen for component in record["components"])
         if save or run_tools:
+            changed_sha = sha256(changed)
             settings = {"ranges": chosen, "remove_waters": remove_waters, "remove_nonpolymer": remove_nonpolymer}
             history = extend_history((structures[selected].get("context") or {}).get("preparation_history"),
-                sha256(data), sha256(changed), [{"label": "Trim structure", "details": settings}])
-        with preview:
-            if has_polymer:
-                st.caption("Selected chains and residue ranges")
-                render_coordinate_preview(changed, key=key + "-viewer", height=410,
-                    show_ligands=not remove_nonpolymer and any(component["type"] == "small_molecule" for component in record["components"]))
-            else:
-                st.info("Keep at least one polymer chain to preview and save a prepared variant.")
+                sha256(data), changed_sha, [{"label": "Trim structure", "details": settings}])
         if save:
             filename = Path(record["name"]).stem + "-prepared" + path.suffix
             prepared, = molecule_imports.parse_structure(changed, filename)
@@ -112,10 +108,23 @@ def _render_preparation_options(view, user, record, structures, projects, prefer
             st.session_state["molecular-database-flash"] = "Prepared structure saved."
             open_datasets(st.session_state, group_id=view.group_id, molecule_id=molecule_id)
             st.rerun()
+        viewer_key, tip, highlights = "", None, None
         if run_tools:
             from mn_molecular_design_studio.dataset_modelling_ui import render_protein_tools
 
-            render_protein_tools(user, path, changed, history, key, projects, preferred_projects, submit)
+            if len(changed) <= MAX_INLINE_COORDINATE_BYTES:
+                viewer_key = f"{key}-pick-{changed_sha}"
+            tip, highlights = render_protein_tools(user, path, changed, history, key, projects, preferred_projects,
+                                                    submit, viewer_key=viewer_key)
+        with preview:
+            if has_polymer:
+                pick_residue = bool(viewer_key and tip)
+                st.caption(tip if pick_residue else "Selected chains and residue ranges")
+                render_coordinate_preview(changed, key=viewer_key if pick_residue else key + "-viewer", height=410,
+                    pick_residue=pick_residue, highlights=highlights,
+                    show_ligands=not remove_nonpolymer and any(component["type"] == "small_molecule" for component in record["components"]))
+            else:
+                st.info("Keep at least one polymer chain to preview and save a prepared variant.")
     except (*ERRORS, UnicodeError, StopIteration) as exc:
         st.error(f"Could not prepare the structure: {exc}")
 

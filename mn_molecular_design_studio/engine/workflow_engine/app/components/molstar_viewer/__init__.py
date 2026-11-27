@@ -24,6 +24,7 @@ def molstar_custom_component(
     sequence_highlight_color: str | None = None,
     sequence_highlight_indices: list[int] | None = None,
     minimal_viewer: bool = False,
+    pick_residue: bool = False,
 ):
     """Create a new instance of "molstar_custom_component".
 
@@ -41,6 +42,8 @@ def molstar_custom_component(
         Show the right-side structure tools panel when controls are visible
     selection_mode: bool
         Turn on selection mode
+    pick_residue: bool
+        Report individual clicks with exact author chain, residue number and insertion code.
     download_filename : str or None, optional
         If provided, enables a download button for the structure's PDB files with this filename.
     html_filename : str or None, optional
@@ -73,6 +76,7 @@ def molstar_custom_component(
         showControls=show_controls,
         showStructureTools=show_structure_tools,
         selectionMode=selection_mode,
+        pickResidue=pick_residue,
         forceReload=force_reload,
         sequenceHighlightColor=sequence_highlight_color,
         sequenceHighlightIndices=sequence_highlight_indices or [],
