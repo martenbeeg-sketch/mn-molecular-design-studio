@@ -12,6 +12,8 @@ from urllib.request import Request, urlopen
 
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import register_example
+
 from mn_molecular_design_studio import docking_preparations, vina_inputs
 from mn_molecular_design_studio.docking_preparation_protocols import (
     DEFAULT_SCRUB_PROTOCOL, SCRUB_PROTOCOLS,
@@ -34,7 +36,7 @@ def _activate_preparation(record: dict, *, owner_id: str, project_id: str, workf
     previous = st.session_state.get("docking-active-preparation") or {}
     workflows = {workflow, previous.get("workflow", workflow)}
     for key in list(st.session_state):
-        if any(docking_preparations.state_key(key, value) for value in workflows):
+        if key.startswith("vina-target-dataset-") or any(docking_preparations.state_key(key, value) for value in workflows):
             st.session_state.pop(key, None)
         elif key.startswith("vina-sequence-event-") or key in {
             "vina-pending-placement", "vina-pocket-placement-node", "vina-last-target-upload",
@@ -108,7 +110,11 @@ def _default_co_crystallized_ligand(path: Path):
 
 
 def _load_example(owner_id: str, project_id: str = "", *, job_name_key: str = "ligand-vina-job-name", example_job_name: str = "autodock-vina-example") -> None:
+    for key in list(st.session_state):
+        if key.startswith("vina-target-dataset-"):
+            st.session_state.pop(key)
     target, compounds = vina_inputs.stage_example(owner_id, project_id=project_id)
+    register_example(target, owner_id)
     example_ligand, center, size = _default_co_crystallized_ligand(target)
     st.session_state.update({
         "vina-target-path": str(target), "vina-compound-input": compounds,
@@ -219,72 +225,36 @@ def _remove_structure() -> None:
     st.session_state["vina-input-epoch"] = st.session_state.get("vina-input-epoch", 0) + 1
 
 
-def _file_row(path: Path) -> None:
+def _file_row(path: Path, name: str = "") -> None:
     st.markdown(
-        f'<div class="vina-file"><span>{html.escape(path.name)}<small>{path.stat().st_size / 1024:.0f} KB</small></span>'
-        '<span class="vina-upload-complete">Upload complete<small>Ready to use</small></span></div>',
+        f'<div class="vina-file"><span>{html.escape(name or path.name)}<small>{path.stat().st_size / 1024:.0f} KB</small></span>'
+        '<span class="vina-upload-complete">Ready<small>Saved structure</small></span></div>',
         unsafe_allow_html=True,
     )
 
 
 def _render_target_input(owner_id: str, project_id: str = "") -> Path | None:
-    st.markdown('<p class="vina-label">Protein File</p>', unsafe_allow_html=True)
-    file_format = st.segmented_control("Protein format", ["PDB", "CIF"], default="PDB",
-                                       key="vina-protein-format", label_visibility="collapsed")
-    with st.container(horizontal=True, vertical_alignment="center"):
-        code = st.text_input("Enter PDB Code", placeholder="Enter PDB Code", key="vina-pdb-code",
-                             label_visibility="collapsed", width=190).strip().upper()
-        fetch = st.button("Fetch PDB", key="vina-fetch", disabled=not code, width=110)
-    if fetch:
-        try:
-            if len(code) != 4 or not code.isalnum():
-                raise ValueError("Enter a four-character PDB code.")
-            suffix = ".cif" if file_format == "CIF" else ".pdb"
-            try:
-                with urlopen(Request(f"https://files.rcsb.org/download/{code}{suffix}", headers={"User-Agent": "MN-Molecular-Design-Studio"}), timeout=30) as response:
-                    content = response.read(50_000_001)
-            except HTTPError as exc:
-                if suffix != ".pdb" or exc.code != 404:
-                    raise
-                suffix = ".cif"
-                with urlopen(f"https://files.rcsb.org/download/{code}.cif", timeout=30) as response:
-                    content = response.read(50_000_001)
-            if len(content) > 50_000_000:
-                raise ValueError("Protein files may be at most 50 MB.")
-            path = _target_storage_path(content, code.lower() + suffix, owner_id=owner_id, allow_non_protein=True)
-            _use_structure(str(path))
-            st.rerun()
-        except (OSError, ValueError, URLError) as exc:
-            st.error(f"Could not fetch {code}: {exc}")
-    with st.container(key="vina-protein-source"):
-        upload_col, saved_col = st.columns([12, 1.4], gap="small")
-        uploaded = upload_col.file_uploader("Protein file", label_visibility="collapsed",
-            type=["cif", "mmcif"] if file_format == "CIF" else ["pdb", "ent"],
-            key=f"vina-protein-upload-{st.session_state.get('vina-input-epoch', 0)}")
-        with saved_col.popover("Saved proteins", use_container_width=True):
-            selected = render_saved_protein_source(
-                owner_id=owner_id, project_id=project_id, key_prefix="vina",
-                formats=("cif", "mmcif") if file_format == "CIF" else ("pdb", "ent"),
-            )
-            if selected.path:
-                st.button("Use structure", key="vina-use-target", on_click=_use_structure, args=(str(selected.path),))
-        if uploaded is not None:
-            digest = hashlib.sha256(uploaded.getvalue()).hexdigest()
-            if digest != st.session_state.get("vina-last-target-upload"):
-                try:
-                    path = _target_storage_path(uploaded.getvalue(), uploaded.name, owner_id=owner_id, allow_non_protein=True)
-                    st.session_state["vina-target-path"] = str(path)
-                    st.session_state["vina-last-target-upload"] = digest
-                except (ValueError, OSError) as exc:
-                    st.error(str(exc))
-        raw_path = st.session_state.get("vina-target-path")
-        if raw_path:
-            path = Path(raw_path).resolve()
-            if path.is_file() and path.is_relative_to(user_input_root(owner_id)):
-                with upload_col:
-                    _file_row(path)
-                saved_col.button("Remove", help="Remove protein input", key="vina-remove-target", on_click=_remove_structure, use_container_width=True)
-                return path
+    from mn_molecular_design_studio.dataset_structure_input import select_dataset_files
+
+    file_format = st.segmented_control("Protein format", ["PDB", "CIF"], default="PDB", key="vina-protein-format")
+    selected = select_dataset_files("Receptor structure", key="vina-target-dataset", project_id=project_id,
+        formats=("cif", "mmcif") if file_format == "CIF" else ("pdb", "ent"))
+    raw_path = st.session_state.get("vina-target-path")
+    if selected:
+        if str(selected.path) != raw_path:
+            _use_structure(str(selected.path))
+        st.session_state["vina-target-dataset-active"] = str(selected.path)
+        _file_row(selected.path, selected.name)
+        return selected.path
+    if st.session_state.pop("vina-target-dataset-active", None) == raw_path and raw_path:
+        _remove_structure()
+        return None
+    if raw_path:
+        path = Path(raw_path).resolve()
+        if path.is_file() and path.is_relative_to(user_input_root(owner_id).resolve()):
+            _file_row(path)
+            st.button("Remove", key="vina-remove-target", on_click=_remove_structure)
+            return path
     return None
 
 

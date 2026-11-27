@@ -9,6 +9,8 @@ from typing import Any, Callable
 
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import select_dataset_files
+
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.docking_structure_check import render_receptor_check
 from mn_molecular_design_studio.engine.workflow_engine.workflows import ligand_tools
@@ -18,7 +20,7 @@ from mn_molecular_design_studio.target_editor import TargetSource
 def _save_target_upload(owner_id: str, name: str, content: bytes) -> Path:
     suffix = Path(name).suffix.lower()
     if suffix not in {".pdb", ".ent"}:
-        raise ValueError("Upload a PDB or ENT protein target structure.")
+        raise ValueError("Choose a PDB or ENT protein target structure.")
     digest = hashlib.sha256(content).hexdigest()[:20]
     target = user_input_root(owner_id) / "ligand_tools" / "targets" / f"target-{digest}.pdb"
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -232,18 +234,15 @@ def _render_complex_preparation_setup(
             if candidate.suffix.lower() not in {".pdb", ".ent"}:
                 raise ValueError("The preloaded structure is not a PDB file.")
             pending_path = candidate
-            st.info(f"Loaded from the docking tile: {candidate.name}. The source structure will be preserved.")
+            st.info(f"Preselected structure: {candidate.name}. The source structure will be preserved.")
         except (OSError, ValueError) as exc:
-            st.warning(f"The preloaded docking structure is unavailable: {exc}")
+            st.warning(f"The preselected structure is unavailable: {exc}")
             st.session_state.pop("ligand-complex-prepare-pending-source", None)
-    uploaded = st.file_uploader(
-        "Replace with a different complex (PDB)" if pending_path else "Protein–ligand complex (PDB) *",
-        type=["pdb", "ent"],
-        key=(
-            f"ligand-complex-prepare-input-{workflow_id}-"
-            + (hashlib.sha256(str(pending_path).encode()).hexdigest()[:10] if pending_path else "upload")
-        ),
-        help="Upload a coordinate-bearing complex. Ligand and cofactor records are retained in the complex output.",
+    uploaded = select_dataset_files(
+        "Choose a different structure" if pending_path else "Structure to prepare",
+        formats=("pdb", "ent"), project_id=project_id,
+        key=f"ligand-complex-prepare-input-{workflow_id}",
+        help="Ligands and cofactors are retained in the complex output.",
     )
     source_name = uploaded.name if uploaded is not None else (pending_path.name if pending_path else "")
     source_content = uploaded.getvalue() if uploaded is not None else None
@@ -495,7 +494,7 @@ def render_setup(
             if not readiness["ready"]:
                 st.warning(f"Studio's bundled RosettaLigand runner is unavailable at {readiness['source']}.")
         else:
-            st.caption("Upload a protein PDB, select a compound set, then define the docking box in Ångstroms. The target is prepared with Meeko and ligands are built from SMILES with RDKit.")
+            st.caption("Choose a saved protein structure and a compound set, then define the docking box in Ångstroms. The target is prepared with Meeko and ligands are built from SMILES with RDKit.")
         if is_gnina:
             st.caption("GNINA reports an empirical docking score and CNN rescoring metrics; CNN score ranks higher values first.")
         elif is_unidock:
@@ -536,7 +535,7 @@ def render_setup(
         elif generator_engine in {"conditar", "paopt"}:
             st.caption("This model uses local reference weights for the permissioned deployment; its container and model sources have redistribution restrictions.")
         elif needs_pocket:
-            st.caption("Upload the full target PDB and a pocket-only PDB used by the model to define its generation frame.")
+            st.caption("Select the full target PDB and a pocket-only PDB used by the model to define its generation frame.")
         else:
             st.caption("All generated compound tables and coordinates are saved as typed job artifacts for Database import and downstream pipelines.")
     elif is_md:
@@ -567,14 +566,10 @@ def render_setup(
     database_md = pending_md if is_md and pending_md.get("workflow") == workflow_id else None
     if database_md:
         st.info(f"Database bound pose: {database_md['name']}. The saved target and docked ligand coordinates are prefilled.")
-        if st.button("Use uploaded MD inputs instead", key=f"database-md-clear-{workflow_id}"):
+        if st.button("Choose other MD inputs", key=f"database-md-clear-{workflow_id}"):
             st.session_state.pop("database-pending-md-selection", None)
             st.rerun()
-    uploaded = st.file_uploader(
-        "Protein–ligand complex (PDB) *" if is_md else "Target protein structure (PDB) *",
-        type=["pdb", "ent"],
-        key=f"ligand-tool-target-{workflow_id}",
-    ) if not database_md else None
+    uploaded = select_dataset_files('Protein–ligand complex (PDB) *' if is_md else 'Target protein structure (PDB) *', formats=['pdb', 'ent'], key=f'ligand-tool-target-{workflow_id}') if not database_md else None
     if uploaded is not None and (is_autodock_gpu or is_nesso):
         try:
             checked_target = _save_target_upload(owner_id, uploaded.name, uploaded.getvalue())
@@ -615,11 +610,7 @@ def render_setup(
         type=["sdf"],
         key=f"ligand-tool-md-ligand-{workflow_id}",
     ) if is_md and not database_md else None
-    uploaded_pocket = st.file_uploader(
-        "Pocket-only structure (PDB) *" if needs_pocket else "Pocket-only structure (PDB, optional)",
-        type=["pdb", "ent"],
-        key=f"ligand-tool-pocket-{workflow_id}",
-    ) if (needs_pocket or generator_engine == "omtra") else None
+    uploaded_pocket = select_dataset_files('Pocket-only structure (PDB) *' if needs_pocket else 'Pocket-only structure (PDB, optional)', formats=['pdb', 'ent'], key=f'ligand-tool-pocket-{workflow_id}') if (needs_pocket or generator_engine == "omtra") else None
     uploaded_reference = st.file_uploader(
         "Reference ligand coordinates (SDF) *" if needs_reference else "Reference ligand coordinates (SDF)" if (is_rosetta or generator_engine == "omtra") else "Reference ligand coordinates (SDF)",
         type=["sdf"],

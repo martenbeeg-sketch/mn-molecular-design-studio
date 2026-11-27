@@ -11,6 +11,8 @@ import zipfile
 import pandas as pd
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import register_example, select_dataset_files
+
 from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import rfdiffusion3_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
@@ -129,7 +131,7 @@ def _render_setup_content(schema: dict, *, owner_id: str, header, project_select
             st.caption("Provide named RFdiffusion3 dialect-2 specifications. Input filenames must match the uploaded structures. Each specification receives the number of designs below.")
             config_file = st.file_uploader("JSON configuration", type=["json"], key=prefix+"-json-upload")
             text = st.text_area("Configuration JSON", value='{"unconditional": {"length": "100-150", "is_non_loopy": true}}', height=220, key=prefix+"-json")
-            uploaded = st.file_uploader("Referenced structures (optional)", type=["pdb", "ent", "cif", "mmcif", "zip"], accept_multiple_files=True, key=prefix+"-files")
+            uploaded = select_dataset_files('Referenced structures (optional)', formats=['pdb', 'ent', 'cif', 'mmcif'], multiple=True, key=prefix + '-files')
             try:
                 p.update(json_config=json.loads(config_file.getvalue() if config_file else text), input_files=[str(f) for f in store_json_structures(uploaded, owner_id)])
             except (ValueError, OSError, zipfile.BadZipFile) as exc:
@@ -140,13 +142,14 @@ def _render_setup_content(schema: dict, *, owner_id: str, header, project_select
                 destination = user_input_root(owner_id) / "structures" / source.name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, destination)
+                register_example(destination, owner_id)
                 st.session_state[prefix+"-fetched-target"] = str(destination)
                 st.session_state[prefix+"-fetched-target-name"] = source.stem
                 st.session_state.pop(prefix+"-target-upload", None)
                 st.rerun()
-            source = render_target_source(key_prefix=prefix, label="Target / motif structure", example_code="1BNA" if task == "nucleic_acid_binder" else "5O45", owner_id=owner_id,
+            source = render_target_source(key_prefix=prefix, label="Target / motif structure", owner_id=owner_id,
                                           allow_cif=True, allow_non_protein=True, allow_saved_targets=True, project_id=project or "",
-                                          upload_help="PDB or mmCIF. Protein, DNA/RNA and ligand-only structures are supported.", upload_label="Upload structure")
+                                          )
             info = None
             if source.path:
                 p["target_structure"] = str(source.path)

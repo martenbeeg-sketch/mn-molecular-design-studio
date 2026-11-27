@@ -734,6 +734,7 @@ class MolecularDatabase:
                 "source_id": str(row.get("source_id") or ""),
                 "validation_status": str(row.get("status") or ""),
                 "raw_smiles": str(row.get("raw_smiles") or ""),
+                **({"corrected_smiles": row["corrected_smiles"]} if row.get("corrected_smiles") else {}),
                 "canonical_smiles": canonical,
                 "warnings": row.get("warnings") or [],
                 "errors": row.get("errors") or [],
@@ -747,6 +748,8 @@ class MolecularDatabase:
                 )
             source_data = row.get("source_data") or {}
             descriptors = dict(row.get("descriptors") or {})
+            if row.get("corrected_smiles"):
+                descriptors["corrected_smiles"] = row["corrected_smiles"]
             descriptors["normalized_compound_id"] = row.get("compound_id") or ""
             descriptors["annotation_stripped_candidate"] = row.get("annotation_stripped_candidate") or ""
             descriptors["candidate_status"] = row.get("candidate_status") or ""

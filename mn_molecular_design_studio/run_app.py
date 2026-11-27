@@ -23,6 +23,8 @@ from urllib.request import Request, urlopen
 import pandas as pd
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import register_example, select_dataset_files
+
 if os.environ.get("MDS_READ_ONLY_PREVIEW") == "1":
     for module in ("binderscope_view", "binderscope_inspector", "binderscope_table", "data_browser_analyses",
                    "data_browser_table", "binderscope_ui", "data_browser_ui"):
@@ -1128,16 +1130,11 @@ def _render_bindcraft2_setup(schema: dict, *, generator_only: bool = False) -> N
                 key="bindcraft2-structure-format",
             )
             if structure_format == "pdb":
-                st.caption("Fetch by PDB accession or upload a PDB file.")
+                st.caption("Choose a saved target structure. New structures can be imported in Datasets.")
                 target_source = render_target_source(
                     key_prefix="bindcraft2",
                     label="Target",
-                    example_code="7JZU",
-                    upload_label="Drop a PDB file here or browse",
-                    upload_help="Upload a PDB (.pdb/.ent) structure, or fetch it by PDB accession above.",
                     upload_file_types=["pdb", "ent"],
-                    upload_expander_label="Upload a PDB file",
-                    upload_in_expander=True,
                     owner_id=str(CURRENT_USER["id"]), project_id=project_id or "",
                     allow_saved_targets=True, saved_formats=("pdb", "ent"),
                 )
@@ -1146,12 +1143,8 @@ def _render_bindcraft2_setup(schema: dict, *, generator_only: bool = False) -> N
                 target_source = render_target_source(
                     key_prefix="bindcraft2-cif",
                     label="Target",
-                    upload_label="Drop a CIF/mmCIF file here or browse",
-                    upload_help="Upload a CIF (.cif) or mmCIF (.mmcif) structure file.",
                     allow_cif=True,
-                    fetch_enabled=False,
                     upload_file_types=["cif", "mmcif"],
-                    upload_in_expander=False,
                     owner_id=str(CURRENT_USER["id"]), project_id=project_id or "",
                     allow_saved_targets=True, saved_formats=("cif", "mmcif"),
                 )
@@ -1360,12 +1353,6 @@ def _render_bindcraft2_setup(schema: dict, *, generator_only: bool = False) -> N
                 second_source = render_target_source(
                     key_prefix="bindcraft2-second",
                     label="Second target",
-                    example_code="1ABC",
-                    fetch_button_label="Fetch second target",
-                    fetch_button_key="bindcraft2-fetch-second-pdb",
-                    upload_label="Upload a second target PDB file",
-                    upload_help="Choose a PDB file or fetch it by accession above.",
-                    upload_in_expander=False,
                     fetched_path_key="bindcraft2-fetched-second-target",
                     fetched_name_key="bindcraft2-fetched-second-target-name",
                     owner_id=str(CURRENT_USER["id"]),
@@ -1389,7 +1376,7 @@ def _render_bindcraft2_setup(schema: dict, *, generator_only: bool = False) -> N
                     )
                     second_target_design_path = second_target.design_path
                 else:
-                    st.info("Upload a second target PDB or fetch one by accession to enable the additional target settings.")
+                    st.info("Choose a second saved target to enable the additional settings.")
 
                 second_goal_col, second_strength_col = st.columns([1.2, 1])
                 with second_goal_col:
@@ -1806,6 +1793,8 @@ def _load_boltzgen_mimosa_example(example_id: str) -> None:
     )
     target_path = Path(example["target_path"])
     source_path = Path(example["source_path"])
+    register_example(target_path, owner_id)
+    register_example(source_path, owner_id)
     target_chain = str(example["target_chain"])
     partner_chain = str(example["source_partner_chain"])
     source_target_chain = str(example["source_target_chain"])
@@ -1971,7 +1960,7 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False, mimosa
         "small_molecule": "Design a protein for a CCD ligand or SMILES input with protein-small_molecule.",
         "peptide": "Design a peptide binder with peptide-anything.",
         "cyclotide": "Design a cyclic peptide using BoltzGen's native cyclic sequence and disulfide constraints.",
-        "redesign": "Redesign selected residues in the uploaded protein with BoltzGen's native file.design feature.",
+        "redesign": "Redesign selected residues in the selected protein with BoltzGen's native file.design feature.",
         "yaml": "Edit a native BoltzGen design YAML and choose one of its four protocols.",
     }
     st.caption(task_descriptions[selected_task])
@@ -2003,6 +1992,7 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False, mimosa
                 example_path = example_root / f"7JZU-{hashlib.sha256(content).hexdigest()[:12]}.pdb"
                 if not example_path.exists():
                     example_path.write_bytes(content)
+                register_example(example_path, str(CURRENT_USER["id"]))
                 st.session_state["boltzgen-fetched-target"] = str(example_path)
                 st.session_state["boltzgen-fetched-target-name"] = "7JZU example"
                 st.session_state["boltzgen-pdb-code"] = "7JZU"
@@ -2046,20 +2036,11 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False, mimosa
             key="boltzgen-structure-format",
         )
         target_key_prefix = "boltzgen" if structure_format == "pdb" else "boltzgen-cif"
-        if st.segmented_control("Source", ["Saved protein inputs", "Use a file for this job"],
-                               default="Saved protein inputs", key="boltzgen-target-input-source") != "Use a file for this job":
-            target_source = target_editor.render_saved_protein_source(
-                owner_id=str(CURRENT_USER["id"]), project_id=project_id or "", key_prefix=target_key_prefix,
-                formats=("pdb", "ent") if structure_format == "pdb" else ("cif", "mmcif"),
-            )
-        else:
-            target_source = render_target_source(
-                key_prefix=target_key_prefix, label="Target", example_code="7JZU",
-                upload_label="Upload a PDB file" if structure_format == "pdb" else "Upload a CIF/mmCIF file",
-                allow_cif=structure_format == "cif", fetch_enabled=structure_format == "pdb",
-                upload_file_types=["pdb", "ent"] if structure_format == "pdb" else ["cif", "mmcif"],
-                upload_in_expander=False, owner_id=str(CURRENT_USER["id"]),
-            )
+        target_source = target_editor.render_target_source(
+            owner_id=str(CURRENT_USER["id"]), project_id=project_id or "", key_prefix=target_key_prefix,
+            label="Target", allow_saved_targets=True,
+            saved_formats=("pdb", "ent") if structure_format == "pdb" else ("cif", "mmcif"),
+        )
 
         target_input = render_target_editor(
             target_source,
@@ -2120,11 +2101,7 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False, mimosa
         if mimosa_condition != "unconstrained":
             st.subheader("Source interaction motif")
             st.caption("Choose amino acids from any protein partner chain in a source interaction complex. The selected residues form the geometric motif; the other chain is aligned to your design target.")
-            upload = st.file_uploader(
-                "Source interaction complex",
-                type=["pdb", "ent", "cif", "mmcif"],
-                key="boltzgen-mimosa-complex",
-            )
+            upload = select_dataset_files('Source interaction complex', formats=['pdb', 'ent', 'cif', 'mmcif'], key='boltzgen-mimosa-complex')
             from mn_molecular_design_studio.mimosa_ui import (
                 PAPER_INTERACTION_TEMPLATES,
                 fetch_paper_interaction_template,
@@ -2135,14 +2112,16 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False, mimosa
             paper_template = st.selectbox(
                 "Or use a paper interaction template",
                 ["custom", *PAPER_INTERACTION_TEMPLATES],
-                format_func=lambda value: "Upload my own" if value == "custom" else f"{value} · {PAPER_INTERACTION_TEMPLATES[value]}",
+                format_func=lambda value: "Choose a saved complex" if value == "custom" else f"{value} · {PAPER_INTERACTION_TEMPLATES[value]}",
                 key="boltzgen-mimosa-paper-template",
             )
             st.caption("These PDB entries are interaction templates from the paper; the nanobody scaffold remains the separate choice above.")
             if paper_template != "custom" and st.button("Load interaction template", key="boltzgen-mimosa-load-template"):
                 template_path = user_input_root(str(CURRENT_USER["id"])) / "structures" / "mimosa" / f"{paper_template}.cif"
                 try:
-                    loaded_path = fetch_paper_interaction_template(paper_template, template_path)
+                    loaded_path = register_example(
+                        fetch_paper_interaction_template(paper_template, template_path), str(CURRENT_USER["id"]),
+                    )
                     st.session_state["boltzgen-mimosa-loaded-source"] = str(loaded_path)
                     st.success(f"Loaded {paper_template} interaction complex.")
                 except (OSError, ValueError) as exc:
@@ -3102,7 +3081,6 @@ def _render_af2_initial_guess_setup(schema: dict) -> None:
                 target_pdb = render_target_source(
                     key_prefix=f"af2-ig-item-{index}-target",
                     label="Target structure",
-                    example_code="7QF4",
                     upload_file_types=["pdb"],
                     owner_id=owner_id,
                 )
@@ -3132,7 +3110,6 @@ def _render_af2_initial_guess_setup(schema: dict) -> None:
                     target_pdb = render_target_source(
                         key_prefix=f"af2-ig-item-{index}-target",
                         label="Target structure",
-                        example_code="7QF4",
                         upload_file_types=["pdb"],
                         owner_id=owner_id,
                     )
@@ -3143,7 +3120,6 @@ def _render_af2_initial_guess_setup(schema: dict) -> None:
                     partner_pdb = render_target_source(
                         key_prefix=f"af2-ig-item-{index}-partner",
                         label="Partner structure",
-                        example_code="8JYR",
                         upload_file_types=["pdb"],
                         owner_id=owner_id,
                     )
@@ -3162,7 +3138,6 @@ def _render_af2_initial_guess_setup(schema: dict) -> None:
                 complex_pdb = render_target_source(
                     key_prefix=f"af2-ig-item-{index}-complex",
                     label="Complex structure",
-                    example_code="8JYR",
                     upload_file_types=["pdb"],
                     owner_id=owner_id,
                 )
@@ -3567,7 +3542,7 @@ def _render_optimized_prediction_setup(engine_id: str) -> None:
             target_values = {}
             if profile["input_kind"] == "boltzgen":
                 st.caption("Upload the target structure and enter one binder protein chain below. MSAs are reused from reference files or fetched from ColabFold; a target A3M upload is optional.")
-                target_file = st.file_uploader("Target PDB structure", type=["pdb", "ent"], key=f"optimized-target-pdb-{engine_id}-{index}")
+                target_file = select_dataset_files('Target PDB structure', formats=['pdb', 'ent'], key=f'optimized-target-pdb-{engine_id}-{index}')
                 target_chain_id = st.text_input("Target chain ID", value="A", max_chars=1, key=f"optimized-target-chain-{engine_id}-{index}")
                 msa_file = st.file_uploader("Target chain A3M (optional)", type=["a3m", "txt"], key=f"optimized-target-msa-{engine_id}-{index}")
                 target_values = {
@@ -4163,14 +4138,10 @@ def _render_multi_engine_campaign() -> None:
     with project_col:
         project_id = _render_project_selector("pipeline")
     st.subheader("Target")
-    st.caption("Upload a PDB file or fetch a structure by PDB accession. Choose the target chains and optional hotspots below.")
+    st.caption("Choose a saved target, then select the target chains and any optional hotspots.")
     target_source = render_target_source(
         key_prefix="pipeline",
         label="Target",
-        example_code="7JZU",
-        upload_label="Drop a PDB file here or browse",
-        upload_help="PDB files only. CIF conversion is not part of the campaign workflow yet.",
-        upload_in_expander=True,
         owner_id=str(CURRENT_USER["id"]),
     )
     target_input = render_target_editor(target_source, key_prefix="pipeline", label="Target")
@@ -7454,18 +7425,13 @@ def _render_job_details() -> None:
 
     artifact_paths = _job_artifact_paths(details)
     candidates_path = run_dir / "artifacts/normalized_candidates/candidates.jsonl"
-    if is_complex_preparation and str(job.get("status") or "").casefold() in {"completed", "succeeded"}:
-        prepared_target = next(
-            (path for item, path in artifact_paths
-             if str(item.get("relative_path") or "").replace("\\", "/").endswith("artifacts/prepared/prepared_target.pdb")
-             or path.name == "prepared_target.pdb"),
-            None,
-        )
-        if prepared_target is not None:
-            st.caption("The prepared receptor is available in Job files. Import it in Datasets to reuse it.")
     is_generator_tool=str(job.get('tool')) in generator_input.TOOLS.values()
 
     with results_tab:
+        if is_complex_preparation and str(job.get("status") or "").casefold() in {"completed", "succeeded"}:
+            from mn_molecular_design_studio.dataset_preparation_ui import render_prepared_outputs
+
+            render_prepared_outputs(artifact_paths, run_id, project_id or "")
         if analysis_tool == "tmol":
             from mn_molecular_design_studio.tmol_ui import render_results
             render_results(run_dir, run_id)

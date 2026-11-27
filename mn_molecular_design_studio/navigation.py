@@ -109,7 +109,7 @@ def request_dataset_import(state, kind="", *, project_id="", return_to=""):
     state.update({"molecular-import-open": True, "molecular-import-step": 0,
                   "molecular-import-kind": kind})
     for key in ("molecular-import-destination", "molecular-import-group", "molecular-import-group-name",
-                "molecular-import-method", "molecular-import-project", "molecular-import-fetched"):
+                "molecular-import-method", "molecular-import-project", "molecular-import-fetched", "molecular-import-prepared"):
         state.pop(key, None)
     if return_to:
         state["dataset-import-return"] = return_to

@@ -45,3 +45,35 @@ def cropped_record(record, chains):
             files.append({"name": "cropped.pdb", "content": buffer.getvalue().encode(), "label": "Cropped structure", "dimensions": 3})
     return {"name": record["name"] + " · " + "+".join(chains), "components": components,
             "metadata": record.get("metadata") or {}, "files": files}
+
+
+def prepare_coordinate_subset(data, filename, ranges, *, remove_waters=True, remove_nonpolymer=False):
+    """Create a new coordinate file using chain and author residue-number ranges."""
+    from Bio.PDB import MMCIFIO, PDBIO, Select
+    from Bio.PDB.Polypeptide import is_aa, is_nucleic
+
+    from mn_molecular_design_studio.molecule_imports import read_coordinate_structure
+
+    cif = Path(filename).suffix.lower() in {".cif", ".mmcif"}
+    structure = read_coordinate_structure(data, filename)
+    if not ranges or any(lo > hi for lo, hi in ranges.values()):
+        raise ValueError("Select at least one chain with a valid residue range.")
+
+    class Subset(Select):
+        def accept_model(self, model):
+            return model.id == 0
+
+        def accept_residue(self, residue):
+            chain = residue.parent.id.strip() or "_"
+            bounds = ranges.get(chain)
+            if bounds is None or not bounds[0] <= residue.id[1] <= bounds[1]:
+                return False
+            if residue.resname.strip().upper() in {"HOH", "WAT", "DOD"}:
+                return not remove_waters
+            return not remove_nonpolymer or is_aa(residue) or is_nucleic(residue)
+
+    writer = MMCIFIO() if cif else PDBIO()
+    writer.set_structure(structure)
+    buffer = io.StringIO()
+    writer.save(buffer, Subset())
+    return buffer.getvalue().encode("utf-8")

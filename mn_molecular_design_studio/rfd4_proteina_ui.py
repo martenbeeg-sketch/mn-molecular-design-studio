@@ -7,6 +7,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import register_example, select_dataset_files
+
 from mn_molecular_design_studio import rfd4_proteina_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.target_editor import render_saved_protein_source, render_target_editor, render_target_source
@@ -53,6 +55,7 @@ def _load_example_inputs(example: str, owner_id: str) -> None:
         stored_target = user_input_root(owner_id) / "rfd4-proteina" / "PD-L1.pdb"
         stored_target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(example_target, stored_target)
+        register_example(stored_target, owner_id)
         from mn_molecular_design_studio.design_validation import read_structure, protein_chains
 
         residues_by_chain = protein_chains(read_structure(stored_target))
@@ -188,38 +191,20 @@ def _objects(label,key,kind='range'):
 
 
 def _source(owner_id,key='rfd4-target',label='Input Structure',multiple=False,project_id=""):
-    import re
-    from urllib.request import Request,urlopen
-    from types import SimpleNamespace
-    st.markdown(f'**{label}**')
-    if label=='Input Structure': st.caption('The target, motif or backbone to design against or around. PDB or mmCIF (.cif); use mmCIF with ligands or a motif, since a PDB cannot hold bond orders or charges.')
-    extension=_pills('File format',['PDB','CIF'],'PDB',key=key+'-format')
-    saved_path = None
-    if not multiple:
-        with st.expander("Saved protein inputs"):
-            selected = render_saved_protein_source(owner_id=owner_id, project_id=project_id or "", key_prefix=key,
-                formats=("cif", "mmcif") if extension == "CIF" else ("pdb", "ent"))
-            saved_path = selected.path
-    a,b=st.columns([3,1],vertical_alignment='bottom')
-    code=a.text_input('Enter PDB Code',key=key+'-pdb-code',placeholder='Enter PDB Code').strip().upper()
-    if b.button('Fetch PDB',disabled=not code,key=key+'-fetch',width='stretch'):
-        try:
-            if not re.fullmatch(r'[A-Z0-9]{4}',code): raise ValueError('Enter a four-character PDB code.')
-            suffix='cif' if extension=='CIF' else 'pdb'
-            with urlopen(Request(f'https://files.rcsb.org/download/{code}.{suffix}',headers={'User-Agent':'Molecular-Design-Studio'}),timeout=30) as response: data=response.read(50_000_001)
-            paths=inputs.store_structure_uploads([SimpleNamespace(name=code+'.'+suffix,getvalue=lambda:data)],owner_id)
-            st.session_state[key+'-fetched-target']=str(paths[0])
-        except (ValueError,OSError) as exc:st.error(str(exc))
-    uploaded=st.file_uploader(f'Drag & Drop or Browse your {extension.lower()} file',type=['pdb','ent'] if extension=='PDB' else ['cif','mmcif'],accept_multiple_files=multiple,key=key+'-target-upload',label_visibility='collapsed',max_upload_size=50)
-    files=(uploaded or []) if multiple else ([uploaded] if uploaded else [])
-    paths=[str(p) for p in inputs.store_structure_uploads(files,owner_id)]
-    if not paths:
-        fetched=st.session_state.get(key+'-fetched-target')
-        if saved_path:
-            paths = [str(saved_path)]
-        elif fetched and Path(fetched).is_file():
-            paths = [str(fetched)]
-            st.caption(Path(fetched).name)
+    extension = _pills("File format", ["PDB", "CIF"], "PDB", key=key + "-format")
+    formats = ("pdb", "ent") if extension == "PDB" else ("cif", "mmcif")
+    if multiple:
+        choices = select_dataset_files(label, formats=formats, multiple=True, key=key + "-datasets", project_id=project_id)
+        paths = [str(path) for path in inputs.store_structure_uploads(choices, owner_id)]
+    else:
+        source = render_saved_protein_source(owner_id=owner_id, project_id=project_id or "", key_prefix=key, formats=formats)
+        if source.path:
+            paths = [str(source.path)]
+        else:
+            chosen = select_dataset_files("Saved complex, motif or other structure", formats=formats,
+                                          key=key + "-complex", project_id=project_id)
+            fetched = st.session_state.get(key + "-fetched-target")
+            paths = [str(chosen.path)] if chosen else [fetched] if fetched and Path(fetched).is_file() else []
     if not multiple and paths:
         a,b=st.columns([1,1])
         trim=a.checkbox('Trim '+extension.lower(),key=key+'-trim')
@@ -440,7 +425,7 @@ def _render_content(schema:dict,*,owner_id,project_selector,submit,folding=False
         st.caption('Hotspot positions are 1-based positions in the pasted FASTA sequence. The native RFD4 protein-binder workflow and its configured Results are used.')
     elif task == inputs.CYCLIC_TASK:
         st.caption("Supply the receptor, ring bond and design conditions in one annotated mmCIF.")
-        upload = st.file_uploader("Annotated cyclic complex", type=["cif", "mmcif"], key="rfd4-cyclic-complex")
+        upload = select_dataset_files('Annotated cyclic complex', formats=['cif', 'mmcif'], key='rfd4-cyclic-complex')
         ready = False
         if upload:
             try:

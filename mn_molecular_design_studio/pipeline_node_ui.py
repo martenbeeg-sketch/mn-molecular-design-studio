@@ -9,6 +9,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import select_dataset_files
+
 from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
 
 
@@ -624,7 +626,7 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""
                                       format_func=choices.get, key=key + "-design-task")
         structure = "target_structure" if rfd3 else "target_pdb"
         if structure not in sources:
-            upload = st.file_uploader("Input structure", type=["pdb", "ent", "cif", "mmcif"], key=key + "-input-structure")
+            upload = select_dataset_files('Input structure', formats=['pdb', 'ent', 'cif', 'mmcif'], key=key + '-input-structure')
             if upload:
                 try:
                     values[structure] = str(_target_storage_path(upload.getvalue(), upload.name, owner_id=owner_id,
@@ -658,7 +660,7 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""
             values.setdefault("framework", "h-NbBCII10")
         managed = {"task", "mimosa_condition", "mimosa_enabled", "mimosa_complex"}
         if condition != "unconstrained":
-            upload = st.file_uploader("Source interaction complex", type=["pdb", "ent", "cif", "mmcif"], key=key + "-motif")
+            upload = select_dataset_files('Source interaction complex', formats=['pdb', 'ent', 'cif', 'mmcif'], key=key + '-motif')
             if upload:
                 try:
                     values["mimosa_complex"] = str(_target_storage_path(upload.getvalue(), upload.name, owner_id=owner_id))
@@ -702,8 +704,11 @@ def _render_tile_workflow_settings(tile, settings, node, graph, key, owner_id=""
                         value = settings.get(name, default)
                         if name in ligand_uploads:
                             label, extensions, save = ligand_uploads[name]
-                            upload = st.file_uploader(label + (" *" if required else ""), type=extensions,
-                                                      key=f"{key}-{name}-upload")
+                            if set(extensions) & {"pdb", "ent", "cif", "mmcif"}:
+                                upload = select_dataset_files(label, formats=extensions, key=f"{key}-{name}-dataset")
+                            else:
+                                upload = st.file_uploader(label + (" *" if required else ""), type=extensions,
+                                                          key=f"{key}-{name}-upload")
                             if upload:
                                 value = str(save(owner_id, upload.name, upload.getvalue()))
                             elif value:
@@ -1547,7 +1552,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id, project_id="",
                 if values["template_library"] == "upload":
                     from mn_molecular_design_studio.kejia_idr_input import template_chains
 
-                    upload = st.file_uploader("Template structure", type=["pdb", "ent", "cif", "mmcif"], key=key + "-template")
+                    upload = select_dataset_files('Template structure', formats=['pdb', 'ent', 'cif', 'mmcif'], key=key + '-template')
                     try:
                         if upload:
                             values["template_structure"] = str(_target_storage_path(upload.getvalue(), upload.name, owner_id=owner_id))

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import register_example
+
 from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import rfdiffusion_beta_pairing_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
@@ -64,6 +66,7 @@ def render_setup(schema: dict, *, owner_id: str, project_selector, submit) -> No
             destination.parent.mkdir(parents=True, exist_ok=True)
             if not destination.exists():
                 shutil.copy2(source, destination)
+                register_example(destination, owner_id)
             st.session_state[prefix + "-fetched-target"] = str(destination)
             st.session_state[prefix + "-fetched-target-name"] = "ALK2 paper example"
             st.session_state[_target_widget_keys(prefix, destination)["hotspots"]] = "B99-103"
@@ -71,12 +74,9 @@ def render_setup(schema: dict, *, owner_id: str, project_selector, submit) -> No
         source = render_target_source(
             key_prefix=prefix,
             label="Target",
-            example_code="2E9W",
             owner_id=owner_id,
             allow_cif=False, allow_saved_targets=True, project_id=project or "",
             saved_formats=("pdb", "ent"), upload_file_types=["pdb", "ent"],
-            upload_help="Choose one protein-chain PDB. The selected chain is renumbered contiguously in the job copy so gaps and insertion codes cannot shift the β-pairing tensors.",
-            upload_label="Upload a target PDB",
         )
         selected = None
         error: str | None = None

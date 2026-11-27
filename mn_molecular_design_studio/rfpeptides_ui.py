@@ -7,6 +7,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import register_example
+
 from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import rfpeptides_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
@@ -20,6 +22,7 @@ def _load_example_inputs(owner_id: str) -> None:
     destination = user_input_root(owner_id) / "rfpeptides" / "7zkr_GABARAP.pdb"
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(EXAMPLE_TARGET, destination)
+    register_example(destination, owner_id)
     st.session_state["rfpeptides-target-format"] = "PDB"
     st.session_state["rfpeptides-example-target-path"] = str(destination)
     st.session_state["rfpeptides-example-target-name"] = "7zkr_GABARAP"
@@ -92,12 +95,9 @@ def _render_setup_content(schema: dict, *, owner_id: str, project_selector, subm
         if previous_upload is not None and Path(previous_upload.name).suffix.lower() not in {f".{ext}" for ext in upload_extensions}:
             st.session_state.pop("rfpeptides-target-upload", None)
         source = render_target_source(
-            key_prefix="rfpeptides", label="Target", example_code="7ZKR", allow_cif=True,
+            key_prefix="rfpeptides", label="Target", allow_cif=True,
             upload_file_types=upload_extensions, allow_saved_targets=True, project_id=project or "",
-            saved_formats=tuple(upload_extensions), upload_expander_label=f"Upload a {target_format} file instead",
-            upload_label=f"Drop a {target_format} file here or browse",
-            upload_help=f"Protein target structure in {target_format} format.",
-            upload_in_expander=False,
+            saved_formats=tuple(upload_extensions),
             fetched_path_key="rfpeptides-example-target-path", fetched_name_key="rfpeptides-example-target-name",
             owner_id=owner_id,
         )

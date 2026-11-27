@@ -196,3 +196,120 @@ def test_protein_import_is_registered_and_automatic_reference_groups_are_hidden(
     assert database.group(automatic, USER)["name"] == "Automatic Protein Library"
     from mn_molecular_design_studio.target_editor import saved_protein_structure_options
     assert len(saved_protein_structure_options(database, USER)) == 1
+
+
+def test_structure_picker_uses_registered_inputs_and_keeps_the_original_bytes(database, monkeypatch, tmp_path):
+    from mn_molecular_design_studio import dataset_structure_input, molecule_imports
+    from test_molecular_database_policy import _pdb_acd
+
+    content = _pdb_acd().encode()
+    database.import_records(USER, molecule_imports.parse_structure(content, "intermediate.pdb"),
+                            name="Unregistered output", import_method="tool_output", origin={"type": "job"})
+    example = tmp_path / "public-example.pdb"
+    example.write_bytes(content)
+    monkeypatch.setenv("MDS_DATA_BROWSER_DATABASE_ROOT", str(database.root))
+    monkeypatch.setattr(dataset_structure_input, "MolecularDatabase", lambda: database)
+    app = AppTest.from_string(
+        "import streamlit as st\n"
+        "from mn_molecular_design_studio.dataset_structure_input import register_example, select_dataset_files\n"
+        f"st.session_state['_molecular_database_user'] = {USER!r}\n"
+        f"if st.button('Load example'): register_example({str(example)!r}, {USER['id']!r})\n"
+        "selection = select_dataset_files('Coordinates', key='coordinates')\n"
+        "if selection: st.session_state['input_bytes'] = selection.getvalue()\n"
+    ).run()
+    assert not app.exception and not app.get("file_uploader")
+    for _ in range(2):
+        app.button[0].click().run()
+        assert not app.exception
+    options = dataset_structure_input.options(database, USER)
+    assert len(options) == 1
+    assert options[0]["name"] == "public-example.pdb"
+    app.selectbox[0].set_value(options[0]["id"]).run()
+    assert not app.exception and app.session_state["input_bytes"] == content
+
+    app.button(key="coordinates-datasets").click().run()
+    assert app.session_state["page"] == "Datasets"
+    assert app.session_state["molecular-import-kind"] == "structure"
+
+
+def test_preparation_saves_a_separate_trim_with_original_residue_numbers(database, monkeypatch):
+    from mn_molecular_design_studio import dataset_preparation_ui, molecule_imports
+    from test_molecular_database_policy import _pdb_acd
+
+    expander = dataset_preparation_ui.st.expander
+    monkeypatch.setattr(dataset_preparation_ui.st, "expander", lambda label, **kwargs: expander(label, expanded=True, **kwargs))
+    content = _pdb_acd().encode()
+    imported = database.import_records(USER, datasets.input_records(molecule_imports.parse_structure(content, "target.pdb")),
+                                       name="Target inputs", origin=datasets.input_origin(USER))
+    group_id = imported["group_id"]
+    app = AppTest.from_string(
+        "from pathlib import Path\n"
+        "from mn_molecular_design_studio.data_browser import ReadOnlyLibrary\n"
+        "from mn_molecular_design_studio.datasets import DatasetView\n"
+        "from mn_molecular_design_studio.dataset_preparation_ui import render_preparation\n"
+        f"user = {USER!r}\n"
+        f"view = DatasetView(ReadOnlyLibrary(Path({str(database.root)!r})), {group_id!r})\n"
+        f"record = view.list_molecules(user, molecule_ids={imported['molecule_ids']!r}, limit=1)['items'][0]\n"
+        "render_preparation(view, user, record)\n"
+    ).run()
+    assert not app.exception
+    app.slider[0].set_value((2, 3)).run()
+    next(button for button in app.button if button.label == "Save prepared variant").click().run()
+    assert not app.exception
+    view = datasets.DatasetView(database, group_id)
+    original, cropped = sorted(view.list_molecules(USER)["items"], key=lambda row: row["name"])
+    source = original["structures"][0]
+    prepared = cropped["structures"][0]
+    assert view.structure_file(USER, source["id"]).read_bytes() == content
+    assert cropped["components"][0]["sequence"] == "CD"
+    assert prepared["context"]["derived_from_structure_id"] == source["id"]
+    assert "CYS A   2" in view.structure_file(USER, prepared["id"]).read_text()
+
+
+def test_import_records_explicit_smiles_replacement_and_original(database, monkeypatch):
+    app = _app(database, monkeypatch, inputs=True)
+    app.button(key="datasets-import-compound").click().run()
+    app.text_input(key="molecular-import-group-name").set_value("Corrected screening compounds").run()
+    app.button(key="molecular-import-next").click().run()
+    app.radio(key="molecular-import-method").set_value("SMILES").run()
+    app.text_area(key="molecular-import-smiles").set_value("C1CC incomplete\nCCO ethanol").run()
+    correction = next(item for item in app.text_area if item.label == "Replacement SMILES")
+    correction.set_value("1 C1CC1").run()
+    next(button for button in app.button if button.label == "Validate corrections").click().run()
+    assert not app.exception and not app.error
+    next(item for item in app.checkbox if item.label.startswith("I reviewed the report")).set_value(True).run()
+    app.button(key="molecular-import-commit").click().run()
+    assert not app.exception and not app.error
+    with database.connection() as connection:
+        import json
+
+        rows = [json.loads(row["provenance"]) for row in connection.execute("SELECT provenance FROM molecule_sources")]
+    assert any(row.get("raw_smiles") == "C1CC" and row.get("corrected_smiles") == "C1CC1" for row in rows)
+
+
+def test_completed_preparation_can_be_saved_in_datasets_without_reupload(database, monkeypatch, tmp_path):
+    from test_molecular_database_policy import _pdb_acd
+
+    prepared = tmp_path / "prepared_target.pdb"
+    prepared.write_text(_pdb_acd(), encoding="utf-8")
+    app = AppTest.from_string(
+        "import streamlit as st\n"
+        "from pathlib import Path\n"
+        "from mn_molecular_design_studio.data_browser import ReadOnlyLibrary\n"
+        "from mn_molecular_design_studio.dataset_preparation_ui import render_prepared_outputs\n"
+        "from mn_molecular_design_studio.datasets_ui import render_datasets\n"
+        f"user = {USER!r}\n"
+        "if st.session_state.get('page') == 'Datasets':\n"
+        f"    render_datasets(user, [], database=ReadOnlyLibrary(Path({str(database.root)!r})))\n"
+        "else:\n"
+        f"    render_prepared_outputs([({{}}, Path({str(prepared)!r}))], 'repair-1', '')\n"
+    ).run()
+    app.button(key="prepared-output-save-repair-1").click().run()
+    assert not app.exception
+    app.text_input(key="molecular-import-group-name").set_value("Repaired targets").run()
+    app.button(key="molecular-import-next").click().run()
+    app.button(key="molecular-import-commit").click().run()
+    assert not app.exception and not app.error
+    group_id = database.groups(USER)[0]["id"]
+    saved = datasets.DatasetView(database, group_id).list_molecules(USER)["items"][0]
+    assert saved["structures"][0]["context"]["preparation_run_id"] == "repair-1"

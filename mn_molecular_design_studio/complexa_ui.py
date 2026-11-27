@@ -9,6 +9,8 @@ import shutil
 import pandas as pd
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import register_example
+
 from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import complexa_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
@@ -85,6 +87,7 @@ def render_inputs(*, owner_id, key_prefix="complexa", generation_only=False, ini
             example=example_parameters(task)
             source=Path(example["target_pdb"]);destination=user_input_root(owner_id)/"structures"/source.name
             destination.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,destination)
+            register_example(destination, owner_id)
             st.session_state[prefix+"-fetched-target"]=str(destination)
             st.session_state[prefix+"-fetched-target-name"]=source.stem
             st.session_state.pop(prefix+"-target-upload",None)
@@ -92,9 +95,9 @@ def render_inputs(*, owner_id, key_prefix="complexa", generation_only=False, ini
             st.session_state[_target_widget_keys(prefix,destination)["hotspots"]]=example.get("hotspots","")
             st.session_state[prefix+"-motif-spec"]=example.get("motif_atom_spec","")
             st.rerun()
-        source=render_target_source(key_prefix=prefix,label="Target",example_code="5SDV" if task=="ligand_binder" else "1NZY" if task=="motif_ligand" else "7QF4",
-                                    allow_cif=True,allow_non_protein=task!="protein_binder",owner_id=owner_id,upload_in_expander=True,
-                                    upload_help="PDB or mmCIF. Include ligand coordinates for ligand-aware tasks.")
+        source=render_target_source(key_prefix=prefix,label="Target",
+                                    allow_cif=True,allow_non_protein=task!="protein_binder",owner_id=owner_id,
+                                    )
         if not source.path and fallback.get("target_pdb"):
             from mn_molecular_design_studio.target_editor import TargetSource
             path=resolve_stored_path(fallback["target_pdb"],must_exist=True)

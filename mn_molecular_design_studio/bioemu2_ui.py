@@ -6,6 +6,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import select_dataset_files
+
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.engine.workflow_engine.workflows.bioemu2 import BIOEMU2_MODES, validate_mode_inputs
 
@@ -26,9 +28,9 @@ BIOEMU2_EXAMPLES = {
 
 def _store_structures(uploads, owner_id: str) -> list[str]:
     if not uploads:
-        raise ValueError("Upload at least one starting complex structure.")
+        raise ValueError("Select at least one starting complex structure.")
     if len(uploads) > 32:
-        raise ValueError("Upload at most 32 target–design structures in one BioEmu-2 batch.")
+        raise ValueError("Select at most 32 target–design structures in one BioEmu-2 batch.")
     total_bytes = 0
     stored: list[str] = []
     seen_names: set[str] = set()
@@ -36,9 +38,9 @@ def _store_structures(uploads, owner_id: str) -> list[str]:
         name = Path(upload.name).name
         suffix = Path(name).suffix.lower()
         if suffix not in {".pdb", ".ent", ".cif", ".mmcif"}:
-            raise ValueError(f"Unsupported structure format for {name}. Upload PDB or mmCIF.")
+            raise ValueError(f"Unsupported structure format for {name}. Choose PDB or mmCIF.")
         if name.casefold() in seen_names:
-            raise ValueError("Uploaded structure filenames must be unique.")
+            raise ValueError("Selected structure filenames must be unique.")
         seen_names.add(name.casefold())
         content = upload.getvalue()
         total_bytes += len(content)
@@ -93,8 +95,7 @@ def render_pipeline_inputs(settings, *, connected, owner_id, key):
                 for field in ("structure_paths", "source_run_dir", "candidates_jsonl"):
                     values.pop(field, None)
             else:
-                uploads = st.file_uploader("Starting structures", type=["pdb", "ent", "cif", "mmcif"],
-                                           accept_multiple_files=True, key=key + "-bioemu2-structures")
+                uploads = select_dataset_files('Starting structures', formats=['pdb', 'ent', 'cif', 'mmcif'], multiple=True, key=key + '-bioemu2-structures')
                 if uploads:
                     values["structure_paths"] = _store_structures(uploads, owner_id)
                     values.pop("source_run_dir", None)
@@ -275,21 +276,19 @@ def render_setup(schema: dict, *, owner_id: str, user: dict, project_selector, s
     if mode == "propagate":
         source = st.pills(
             "Starting structures",
-            ["Project designs", "Molecular database", "Upload structures"],
+            ["Project designs", "Molecular database", "Saved structures"],
             selection_mode="single",
             default="Project designs",
             key="bioemu2-starting-structure-source",
         ) or "Project designs"
         with st.container(border=True):
             st.subheader("Target–design complexes")
-            if source == "Upload structures":
-                uploads = st.file_uploader(
-                    "Upload PDB or mmCIF structures",
-                    type=["pdb", "ent", "cif", "mmcif"],
-                    accept_multiple_files=True,
+            if source == "Saved structures":
+                uploads = select_dataset_files(
+                    "Starting complexes", multiple=True, project_id=project_id,
                     key="bioemu2-starting-structures",
-                    help="Upload one target–design complex per file. Every file is sampled independently within this single queued job. PDB inputs are converted to mmCIF inside the container.",
-                ) or []
+                    help="Select one target–design complex per file. Each is sampled independently within this job.",
+                )
                 has_structures = bool(uploads)
                 if uploads:
                     st.caption(f"{len(uploads)} starting complex(es)")

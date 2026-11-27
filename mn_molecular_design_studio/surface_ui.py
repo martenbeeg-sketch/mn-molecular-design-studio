@@ -137,16 +137,12 @@ def render_setup(schema: dict, *, owner_id: str, project_selector, submit) -> No
             st.write(config["about"])
 
         st.markdown('<div class="surface-section">TARGET STRUCTURE</div>', unsafe_allow_html=True)
-        st.caption("Fetch by PDB accession or upload a PDB file.")
+        st.caption("Choose a saved structure. Import new coordinate files in Datasets.")
         source = render_target_source(
             key_prefix=f"{slug}-target",
             label="Target",
-            example_code="7JZU",
             allow_cif=False,
             owner_id=owner_id,
-            upload_label="Drop a PDB file here or browse",
-            upload_help="Upload a PDB (.pdb/.ent) structure, or fetch it by PDB accession above.",
-            upload_expander_label="Upload a PDB file",
         )
 
         selected_chains: list[str] = []

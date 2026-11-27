@@ -10,6 +10,8 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import streamlit as st
+
+from mn_molecular_design_studio.dataset_structure_input import select_dataset_files
 import streamlit.components.v1 as components
 
 from mn_molecular_design_studio.pipeline_graph import (
@@ -432,7 +434,7 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
             from mn_molecular_design_studio import rfd4_proteina_input as inputs
 
             st.caption("Upload the annotated mmCIF with the receptor, peptide ring and design conditions.")
-            upload = st.file_uploader("Annotated cyclic complex", type=["cif", "mmcif"], key=key + "-cyclic-complex")
+            upload = select_dataset_files('Annotated cyclic complex', formats=['cif', 'mmcif'], key=key + '-cyclic-complex')
             try:
                 path = resolve_stored_path(params.get("target_pdb"), must_exist=True) if params.get("target_pdb") else None
                 if upload is not None:
@@ -450,8 +452,8 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
             return {node_id: values}
         path = resolve_stored_path(params.get("target_pdb"), must_exist=True) if params.get("target_pdb") else None
         source = render_target_source(
-            key_prefix=key, label="Target Structure", example_code="7QF4",
-            allow_cif=True, upload_in_expander=True, owner_id=owner_id,
+            key_prefix=key, label="Target Structure",
+            allow_cif=True, owner_id=owner_id,
             allow_saved_targets=True, project_id=project_id,
             initial_molecule_id=params.get("target_source_molecule_id", "") if not path else "",
             initial_structure_id=params.get("target_source_structure_id", ""),

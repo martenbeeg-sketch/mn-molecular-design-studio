@@ -79,9 +79,12 @@ def render_datasets(user, projects, *, database=None):
             st.session_state.pop("dataset-import-return", None)
             st.session_state.pop("molecular-import-open", None)
             st.rerun()
-    columns = st.columns(4)
-    for column, label, kind, icon in zip(columns, ("Import proteins", "Import compounds", "Import sequences", "Other formats"),
-            ("protein", "compound", "sequence", ""), (":material/biotech:", ":material/science:", ":material/notes:", ":material/upload:")):
+    columns = st.columns(5)
+    for column, label, kind, icon in zip(
+        columns, ("Import structures", "Import proteins", "Import compounds", "Import sequences", "Other formats"),
+        ("structure", "protein", "compound", "sequence", ""),
+        (":material/upload:", ":material/biotech:", ":material/science:", ":material/notes:", ":material/more_horiz:"),
+    ):
         if column.button(label, icon=icon, disabled=read_only, width="stretch", key=f"datasets-import{('-' + kind) if kind else ''}"):
             request_dataset_import(st.session_state, kind, project_id=st.session_state.get("datasets-project", ""))
     new_column, results_column, _ = st.columns([1, 2, 2])
@@ -207,6 +210,9 @@ def render_datasets(user, projects, *, database=None):
                 if record["structures"]:
                     from mn_molecular_design_studio.data_browser_ui import _render_structure
                     _render_structure(view, user, record, "")
+                    from mn_molecular_design_studio.dataset_preparation_ui import render_preparation
+
+                    render_preparation(view, user, record)
                 else:
                     st.caption("No coordinates are stored in this input dataset. This does not mean that no calculated structures exist elsewhere.")
                 if st.button("Open this member’s results in Data browser", key="datasets-member-results"):

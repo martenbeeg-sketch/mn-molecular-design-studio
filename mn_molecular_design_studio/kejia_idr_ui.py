@@ -7,6 +7,8 @@ import shutil
 
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import register_example, select_dataset_files
+
 from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import kejia_idr_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
@@ -81,7 +83,12 @@ def render_setup(schema: dict, *, owner_id: str, project_selector, submit) -> No
     if st.button("Load Tamarind example inputs", key="kejia-example"):
         st.session_state["kejia-sequence"] = inputs.EXAMPLE_SEQUENCE
         st.session_state["kejia-source"] = "upload"
-        st.session_state["kejia-example-template"] = str(inputs.example_template())
+        try:
+            template_path = register_example(inputs.example_template(), owner_id)
+        except (OSError, ValueError) as exc:
+            st.error(f"Could not load the example: {exc}")
+        else:
+            st.session_state["kejia-example-template"] = str(template_path)
         st.session_state["kejia-upload-revision"] = st.session_state.get("kejia-upload-revision", 0) + 1
         st.session_state["kejia-binder-chain"] = "A"
         st.session_state["kejia-peptide-chain"] = "B"
@@ -95,11 +102,12 @@ def render_setup(schema: dict, *, owner_id: str, project_selector, submit) -> No
             st.error(str(exc))
     counts = inputs.library_counts()
     library = st.selectbox("Template source", ["upload", *inputs.LIBRARIES], key="kejia-source",
-                           format_func=lambda value: "Upload a template" if value == "upload" else f"{value.title()} library · {counts[value]} templates")
+                           format_func=lambda value: "Choose a saved template" if value == "upload" else f"{value.title()} library · {counts[value]} templates")
     template, binder, peptide = None, "A", "B"
     if library == "upload":
-        upload = st.file_uploader("Template file", type=["pdb", "ent", "cif", "mmcif"], key=f"kejia-upload-{st.session_state.get('kejia-upload-revision', 0)}",
-                                  help="Exactly two protein chains: binder and peptide.")
+        revision = st.session_state.get("kejia-upload-revision", 0)
+        upload = select_dataset_files("Template structure", key=f"kejia-template-{revision}",
+                                      project_id=project, help="Exactly two protein chains: binder and peptide.")
         if upload:
             data = upload.getvalue()
             template = user_input_root(owner_id) / "kejia-idr" / hashlib.sha256(data).hexdigest()[:16] / Path(upload.name).name

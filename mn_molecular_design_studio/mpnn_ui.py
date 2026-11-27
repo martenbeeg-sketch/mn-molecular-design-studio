@@ -9,6 +9,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import register_example
+
 from mn_molecular_design_studio import mpnn_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.target_editor import TargetSource, render_target_source
@@ -53,6 +55,7 @@ def _load_example(label, prefix, owner):
     destination = user_input_root(owner) / "mpnn-examples" / source.name
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(source.read_bytes())
+    register_example(destination, owner)
     p["structure_path"] = str(destination)
     for key in list(st.session_state):
         if key.startswith(prefix + "-field-") or key.startswith(prefix + "-source-"):
@@ -64,9 +67,8 @@ def _structure_fields(p, prefix, owner, *, single_chain=False, allow_non_protein
     fmt = st.pills("Structure format", ["PDB", "CIF"], default="PDB", selection_mode="single", key=prefix + "-source-format", label_visibility="collapsed") or "PDB"
     st.caption("Protein structure file to be designed")
     source = render_target_source(key_prefix=prefix + "-source", label="Structure", owner_id=owner,
-        example_code="9F6O", allow_cif=True, allow_non_protein=allow_non_protein, upload_in_expander=False,
-        upload_label="Drag & drop or browse your structure file", upload_file_types=["pdb", "ent"] if fmt == "PDB" else ["cif", "mmcif"],
-        upload_help="Keep ligand and nucleic-acid atoms for LigandMPNN. The original structure is saved with the job.")
+        allow_cif=True, allow_non_protein=allow_non_protein,
+        upload_file_types=["pdb", "ent"] if fmt == "PDB" else ["cif", "mmcif"],)
     if not source.path and p.get("structure_path") and Path(p["structure_path"]).is_file():
         source = TargetSource(path=Path(p["structure_path"]), name=Path(p["structure_path"]).stem, owner_id=owner)
     if not source.path:
@@ -74,7 +76,7 @@ def _structure_fields(p, prefix, owner, *, single_chain=False, allow_non_protein
         st.caption("Load a structure and choose chains to enable residue selection.")
         if not abmpnn_only:
             p["designed_residues"] = st.text_input("Designed Residues", value=p["designed_residues"], disabled=True, key=prefix + "-field-unloaded-residues")
-        return p, "Upload a PDB/mmCIF structure or fetch a PDB accession."
+        return p, "Choose a saved structure from Datasets."
     p["structure_path"] = str(source.path)
     info = inputs.inventory(source.path)
     chains = [c for c, rows in info["chains"].items() if rows["kind"] == "protein"]

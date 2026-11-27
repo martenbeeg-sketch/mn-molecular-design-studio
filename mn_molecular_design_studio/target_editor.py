@@ -15,8 +15,6 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 import streamlit as st
 
@@ -530,17 +528,9 @@ def render_target_source(
     *,
     key_prefix: str,
     label: str,
-    example_code: str = "7JZU",
-    fetch_button_label: str = "Fetch PDB",
-    fetch_button_key: str | None = None,
-    upload_label: str = "Drop a PDB file here or browse",
-    upload_help: str = "PDB files only. CIF conversion is not part of this workflow yet.",
     allow_cif: bool = False,
     allow_non_protein: bool = False,
-    fetch_enabled: bool = True,
     upload_file_types: list[str] | None = None,
-    upload_expander_label: str | None = None,
-    upload_in_expander: bool = True,
     fetched_path_key: str | None = None,
     fetched_name_key: str | None = None,
     owner_id: str = "local",
@@ -550,112 +540,35 @@ def render_target_source(
     initial_molecule_id: str = "",
     initial_structure_id: str = "",
 ) -> TargetSource:
-    """Render reusable PDB accession and structure upload controls."""
-    if allow_saved_targets:
-        with st.expander("Select a saved target structure", expanded=True):
-            source = render_saved_protein_source(
+    """Choose a Dataset input or open an already staged workflow input."""
+    stored_path_key = fetched_path_key or f"{key_prefix}-fetched-target"
+    stored_name_key = fetched_name_key or f"{key_prefix}-fetched-target-name"
+    fetched = st.session_state.get(stored_path_key)
+    if allow_saved_targets and not allow_non_protein:
+        with st.expander("Select a saved target structure", expanded=not fetched):
+            selected = render_saved_protein_source(
                 owner_id=owner_id, project_id=project_id, key_prefix=key_prefix, formats=saved_formats,
                 initial_molecule_id=initial_molecule_id, initial_structure_id=initial_structure_id,
             )
-            if source.path:
-                return source
-
-    pdb_code = ""
-    fetch_clicked = False
-    if fetch_enabled:
-        code_col, fetch_col = st.columns([1.25, .65])
-        with code_col:
-            pdb_code = st.text_input(
-                f"{label} PDB code",
-                placeholder=f"Enter PDB code, e.g. {example_code}",
-                key=f"{key_prefix}-pdb-code",
-            ).strip().upper()
-        with fetch_col:
-            st.markdown("<div style='height:1.9rem'></div>", unsafe_allow_html=True)
-            fetch_clicked = st.button(
-                fetch_button_label,
-                key=fetch_button_key or f"{key_prefix}-fetch-pdb",
-                use_container_width=True,
-            )
-
-    stored_path_key = fetched_path_key or f"{key_prefix}-fetched-target"
-    stored_name_key = fetched_name_key or f"{key_prefix}-fetched-target-name"
-    converted_mmcif_key = f"{stored_path_key}-converted-from-mmcif"
-    upload_key = f"{key_prefix}-target-upload"
-    if fetch_clicked:
-        if not re.fullmatch(r"[A-Z0-9]{4}", pdb_code):
-            st.error(f"Enter a four-character PDB accession, such as {example_code}.")
-        else:
-            try:
-                request = Request(
-                    f"https://files.rcsb.org/download/{pdb_code}.pdb",
-                    headers={"User-Agent": "MN-Molecular-Design-Studio/0.1"},
-                )
-                try:
-                    with urlopen(request, timeout=30) as response:
-                        content = response.read(50_000_001)
-                    converted_from_mmcif = False
-                except HTTPError as exc:
-                    if exc.code != 404:
-                        raise
-                    cif_request = Request(
-                        f"https://files.rcsb.org/download/{pdb_code}.cif",
-                        headers={"User-Agent": "MN-Molecular-Design-Studio/0.1"},
-                    )
-                    with urlopen(cif_request, timeout=30) as response:
-                        cif_content = response.read(50_000_001)
-                    if len(cif_content) > 50_000_000:
-                        raise ValueError("The mmCIF file is larger than the 50 MB import limit.")
-                    content = _rcsb_mmcif_to_pdb(cif_content, allow_non_protein=allow_non_protein)
-                    converted_from_mmcif = True
-                if len(content) > 50_000_000:
-                    raise ValueError("The PDB file is larger than the 50 MB import limit.")
-                stored_path = _target_storage_path(content, f"{pdb_code}.pdb", owner_id=owner_id, allow_non_protein=allow_non_protein)
-                st.session_state.pop(upload_key, None)
-                st.session_state[stored_path_key] = str(stored_path)
-                st.session_state[stored_name_key] = pdb_code
-                st.session_state[converted_mmcif_key] = converted_from_mmcif
-            except (HTTPError, URLError, OSError, ValueError) as exc:
-                st.error(f"Could not fetch {pdb_code}: {exc}")
-
-    fetched_path = st.session_state.get(stored_path_key)
-    if fetched_path:
-        try:
-            Path(fetched_path).expanduser().resolve().relative_to(user_input_root(owner_id))
-        except (OSError, ValueError):
-            st.session_state.pop(stored_path_key, None)
-            st.session_state.pop(stored_name_key, None)
-            fetched_path = None
-    has_fetched_target = bool(fetched_path and Path(fetched_path).is_file())
-    uploader = st.file_uploader
-    structure_file_types = upload_file_types or (["pdb", "ent", "cif", "mmcif"] if allow_cif else ["pdb", "ent"])
-    upload_expander_label = upload_expander_label or (
-        "Upload a PDB or mmCIF file instead" if allow_cif else "Upload a PDB file instead"
-    )
-    if upload_in_expander:
-        with st.expander(upload_expander_label, expanded=not has_fetched_target):
-            uploaded = uploader(upload_label, type=structure_file_types, key=upload_key, help=upload_help)
+        if selected.path:
+            return selected
     else:
-        uploaded = uploader(upload_label, type=structure_file_types, key=upload_key, help=upload_help)
+        from mn_molecular_design_studio.dataset_structure_input import select_dataset_files
 
-    if uploaded is not None:
-        try:
-            return TargetSource(
-                _target_storage_path(uploaded.getvalue(), uploaded.name, owner_id=owner_id, allow_non_protein=allow_non_protein),
-                Path(uploaded.name).stem,
-                owner_id,
+        with st.expander(f"Select a saved {label.lower()} structure", expanded=not fetched):
+            selected = select_dataset_files(
+                f"{label} structure", key=f"{key_prefix}-dataset",
+                project_id=project_id, formats=upload_file_types or (("pdb", "ent", "cif", "mmcif") if allow_cif else ("pdb", "ent")),
             )
-        except (OSError, ValueError) as exc:
-            st.error(str(exc))
-            return TargetSource(owner_id=owner_id)
-    if fetched_path and Path(fetched_path).is_file():
-        path = Path(fetched_path)
-        if st.session_state.get(converted_mmcif_key):
-            st.info(
-                "RCSB provides this entry as mmCIF only. It was converted to PDB, "
-                "with long chain IDs mapped to PDB-compatible IDs."
-            )
-        return TargetSource(path, st.session_state.get(stored_name_key, path.stem), owner_id)
+        if selected:
+            return TargetSource(selected.path, Path(selected.name).stem, owner_id,
+                                molecule_id=selected.molecule_id, structure_id=selected.structure_id)
+    if fetched:
+        path = Path(fetched).expanduser().resolve()
+        if path.is_relative_to(user_input_root(owner_id).resolve()) and path.is_file():
+            return TargetSource(path, st.session_state.get(stored_name_key, path.stem), owner_id)
+        st.session_state.pop(stored_path_key, None)
+        st.session_state.pop(stored_name_key, None)
     return TargetSource(owner_id=owner_id)
 
 

@@ -5,6 +5,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import register_example
+
 from mn_molecular_design_studio import mpnn_input
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.target_editor import TargetSource, render_target_source
@@ -19,6 +21,7 @@ def _load_example(owner_id: str) -> None:
     destination = user_input_root(owner_id) / "sabr-examples" / source.name
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(source.read_bytes())
+    register_example(destination, owner_id)
     st.session_state["sabr-example-path"] = str(destination)
 
 
@@ -54,8 +57,7 @@ def render_setup(schema: dict, *, owner_id: str, project_selector, submit, searc
             st.button("Load 9F6O nanobody example", key="sabr-load-example", on_click=_load_example, args=(owner_id,))
             source = render_target_source(
                 key_prefix="sabr-source", label="Antibody structure", owner_id=owner_id,
-                example_code="9F6O", allow_cif=True, allow_non_protein=True,
-                upload_in_expander=False, upload_label="Upload PDB or mmCIF",
+                allow_cif=True, allow_non_protein=True,
                 upload_file_types=["pdb", "ent", "cif", "mmcif"],
             )
             if not source.path and st.session_state.get("sabr-example-path"):

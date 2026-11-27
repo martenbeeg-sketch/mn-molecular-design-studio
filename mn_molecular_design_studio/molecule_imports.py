@@ -294,6 +294,7 @@ def analyze_small_molecule_table(
     name_column: str = "",
     id_column: str = "",
     sheet_name: str = "",
+    corrections: dict[int, str] | None = None,
 ) -> dict:
     """Validate every row of a one-SMILES-per-row table and report exact duplicates.
 
@@ -311,11 +312,16 @@ def analyze_small_molecule_table(
         raise ValueError("A mapped SMILES, name, or ID column is missing from the table.")
     if not table.shape[0]:
         raise ValueError("The table contains no molecule rows.")
+    corrections = corrections or {}
+    if any(not isinstance(number, int) or not 1 <= number <= len(table) or not value.strip()
+           for number, value in corrections.items()):
+        raise ValueError("Each correction needs an existing row number and a replacement SMILES.")
 
     batch_id = hashlib.sha256(
         Path(filename).name.encode("utf-8") + b"\0" + data + b"\0" +
         json.dumps({"smiles_column": smiles_column, "name_column": name_column,
-                    "id_column": id_column, "sheet_name": sheet_name}, sort_keys=True).encode("utf-8")
+                    "id_column": id_column, "sheet_name": sheet_name,
+                    **({"corrections": corrections} if corrections else {})}, sort_keys=True).encode("utf-8")
     ).hexdigest()[:32]
     result_records = []
     report_rows = []
@@ -330,7 +336,8 @@ def analyze_small_molecule_table(
     excluded = {smiles_column}
     excluded.update(value for value in (name_column, id_column) if value)
     for row_number, source in enumerate(table.to_dict("records"), 1):
-        raw = str(source.get(smiles_column, "") or "").strip()
+        original = str(source.get(smiles_column, "") or "").strip()
+        raw = corrections.get(row_number, original).strip()
         source_id = str(source.get(id_column, "") or "").strip() if id_column else ""
         base_id = source_id or f"compound_{row_number:07d}"
         used_ids[base_id] = used_ids.get(base_id, 0) + 1
@@ -344,7 +351,8 @@ def analyze_small_molecule_table(
             "source_id": source_id,
             "compound_id": compound_id,
             "name": name,
-            "raw_smiles": raw,
+            "raw_smiles": original,
+            **({"corrected_smiles": raw} if row_number in corrections else {}),
             "canonical_smiles": "",
             "connectivity_smiles": "",
             "status": "invalid",
@@ -382,6 +390,8 @@ def analyze_small_molecule_table(
             row.update(canonical_smiles=canonical, connectivity_smiles=connectivity,
                        warnings=warnings, descriptors=descriptors, status="valid")
             counts["valid_rows"] += 1
+            if row_number in corrections:
+                row["warnings"].append("Validated the user-supplied replacement for this row.")
             if fragment_count > 1:
                 counts["multi_fragment_rows"] += 1
             if charge:
@@ -478,14 +488,15 @@ def analyze_small_molecule_table(
         "source_name": Path(filename).name,
         "source_sha256": hashlib.sha256(data).hexdigest(),
         "mapping": {"smiles_column": smiles_column, "name_column": name_column,
-                    "id_column": id_column, "sheet_name": sheet_name},
+                    "id_column": id_column, "sheet_name": sheet_name,
+                    **({"corrections": corrections} if corrections else {})},
         "summary": counts,
         "rows": report_rows,
         "records": result_records,
     }
 
 
-def analyze_smiles_text(text: str) -> dict:
+def analyze_smiles_text(text: str, *, corrections=None) -> dict:
     """Row-wise SMILES validation for pasted text or SMI files."""
     import pandas as pd
     if len(str(text).encode("utf-8")) > MAX_BYTES:
@@ -503,7 +514,7 @@ def analyze_smiles_text(text: str) -> dict:
     table_bytes = io.BytesIO()
     pd.DataFrame(lines).to_csv(table_bytes, index=False)
     return analyze_small_molecule_table(
-        table_bytes.getvalue(), "pasted-smiles.csv", smiles_column="SMILES", name_column="Name"
+        table_bytes.getvalue(), "pasted-smiles.csv", smiles_column="SMILES", name_column="Name", corrections=corrections
     )
 
 
@@ -530,9 +541,29 @@ def parse_sdf(data: bytes, filename: str = "molecules.sdf") -> list[dict]:
     return result
 
 
+def read_coordinate_structure(data: bytes, filename: str):
+    from Bio.PDB import MMCIFParser, PDBParser
+
+    suffix = Path(filename).suffix.lower()
+    if suffix in {".cif", ".mmcif"}:
+        class _OptionalAtomSiteFieldsMMCIFParser(MMCIFParser):
+            def _build_structure(self, structure_id):
+                # Generated mmCIFs may omit these optional atom-site fields.
+                # Occupancy's mmCIF default is 1.0; absent B factors are
+                # unknown, so retain that as NaN rather than inventing a value.
+                atom_count = len(self._mmcif_dict.get("_atom_site.id", []))
+                self._mmcif_dict.setdefault("_atom_site.occupancy", ["1.0"] * atom_count)
+                self._mmcif_dict.setdefault("_atom_site.B_iso_or_equiv", ["nan"] * atom_count)
+                return super()._build_structure(structure_id)
+
+        parser = _OptionalAtomSiteFieldsMMCIFParser(QUIET=True)
+    else:
+        parser = PDBParser(QUIET=True)
+    return parser.get_structure("molecule", io.StringIO(data.decode("utf-8")))
+
+
 def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True, chains: list[str] | None = None,
                     model_id: str | int | None = None, require_model_selection: bool = False) -> list[dict]:
-    from Bio.PDB import PDBParser, MMCIFParser
     try:
         from Bio.Data.PDBData import protein_letters_3to1_extended
     except ImportError:
@@ -553,22 +584,8 @@ def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True,
     suffix = Path(filename).suffix.lower()
     if suffix in {".sdf", ".mol"}:
         return parse_sdf(data, filename)
-    if suffix in {".cif", ".mmcif"}:
-        class _OptionalAtomSiteFieldsMMCIFParser(MMCIFParser):
-            def _build_structure(self, structure_id):
-                # Generated mmCIFs may omit these optional atom-site fields.
-                # Occupancy's mmCIF default is 1.0; absent B factors are
-                # unknown, so retain that as NaN rather than inventing a value.
-                atom_count = len(self._mmcif_dict.get("_atom_site.id", []))
-                self._mmcif_dict.setdefault("_atom_site.occupancy", ["1.0"] * atom_count)
-                self._mmcif_dict.setdefault("_atom_site.B_iso_or_equiv", ["nan"] * atom_count)
-                return super()._build_structure(structure_id)
-
-        parser = _OptionalAtomSiteFieldsMMCIFParser(QUIET=True)
-    else:
-        parser = PDBParser(QUIET=True)
     try:
-        structure = parser.get_structure("molecule", io.StringIO(data.decode("utf-8")))
+        structure = read_coordinate_structure(data, filename)
         models = list(structure.get_models())
         if not models:
             raise ValueError("No coordinate models were found.")
@@ -622,7 +639,8 @@ def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True,
         raise ValueError("No supported molecular chains were found in the structure.")
     components, _, _ = canonical_components(components)
     return [{"name": Path(filename).stem, "components": components, "metadata": {}, "model_id": str(model.id),
-             "files": [{"name": Path(filename).name, "content": data, "label": "Imported structure", "dimensions": 3}]}]
+             "files": [{"name": Path(filename).name, "source_filename": Path(filename).name,
+                        "content": data, "label": "Imported structure", "dimensions": 3}]}]
 
 
 def parse_archive(data: bytes) -> list[dict]:

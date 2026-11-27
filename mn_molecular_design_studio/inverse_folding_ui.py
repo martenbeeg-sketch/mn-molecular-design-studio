@@ -8,6 +8,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import register_example, select_dataset_files
+
 from mn_molecular_design_studio import inverse_folding_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.mpnn_ui import STYLE as MPNN_STYLE, _existing_results, _structure_fields
@@ -42,6 +44,7 @@ def _load_example(engine, prefix, owner):
     path = user_input_root(owner) / "inverse-folding/examples" / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(original.read_bytes())
+    register_example(path, owner)
     p = inputs.defaults(engine) | dict(structure_path=str(path), design_chains="A")
     if engine == "esm_if1":
         p["designed_residues"] = "A62-70"
@@ -54,8 +57,8 @@ def _load_example(engine, prefix, owner):
 
 
 def _provided_structures(owner, prefix, label, folder):
-    uploads = st.file_uploader(label, type=["pdb", "ent", "cif", "mmcif", "zip"], accept_multiple_files=True,
-        key=prefix + "-" + folder, help="PDB/mmCIF files, or a ZIP containing structure files.")
+    uploads = select_dataset_files(label, multiple=True, key=prefix + "-" + folder,
+                                   help="Choose structures from Datasets.")
     paths = []
     for upload in uploads or []:
         path = _save_upload(upload, owner, folder)

@@ -8,6 +8,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from mn_molecular_design_studio.dataset_structure_input import register_example, select_dataset_files
+
 from mn_molecular_design_studio.result_details_ui import render_result_details
 from mn_molecular_design_studio import rfantibody_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
@@ -45,6 +47,7 @@ def _load_example_inputs(owner_id: str) -> None:
     stored_target = user_input_root(owner_id) / "rfantibody" / "flu_HA.pdb"
     stored_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(target, stored_target)
+    register_example(stored_target, owner_id)
     st.session_state["rfab-task"] = "nanobody"
     st.session_state["rfab-framework"] = "h-NbBCII10"
     st.session_state["rfab-regions"] = ["H1", "H2", "H3"]
@@ -69,6 +72,8 @@ def _load_mimosa_paper_example(owner_id: str, example_id: str) -> None:
     )
     target_path = Path(example["target_path"])
     source_path = Path(example["source_path"])
+    register_example(target_path, owner_id)
+    register_example(source_path, owner_id)
     target_chain = str(example["target_chain"])
     partner_chain = str(example["source_partner_chain"])
     source_target_chain = str(example["source_target_chain"])
@@ -208,12 +213,9 @@ def _render_setup_content(schema: dict, *, owner_id: str, project_selector, subm
         if previous_upload is not None and Path(previous_upload.name).suffix.lower() not in {f".{ext}" for ext in upload_extensions}:
             st.session_state.pop("rfab-target-upload", None)
         source = render_target_source(
-            key_prefix="rfab", label="Target", example_code="7JZU", allow_cif=True,
+            key_prefix="rfab", label="Target", allow_cif=True,
             upload_file_types=upload_extensions, allow_saved_targets=True, project_id=project or "",
-            saved_formats=tuple(upload_extensions), upload_expander_label=f"Upload a {target_format} file instead",
-            upload_label=f"Drop a {target_format} file here or browse",
-            upload_help=f"Protein target structure in {target_format} format.",
-            upload_in_expander=False,
+            saved_formats=tuple(upload_extensions),
             fetched_path_key="rfab-example-target-path", fetched_name_key="rfab-example-target-name", owner_id=owner_id,
         )
         target_chains: list[str] = []
@@ -237,7 +239,7 @@ def _render_setup_content(schema: dict, *, owner_id: str, project_selector, subm
             st.markdown("#### Antigen Chain IDs")
             st.caption("Chain selection becomes available after loading a PDB or mmCIF structure.")
             st.markdown("#### Hotspot residues")
-            st.caption("Please upload a PDB file and select chains to enable residue selection.")
+            st.caption("Select a saved structure and its chains to choose residues.")
 
     custom_framework: Path | None = None
     heavy_chain = "H"
@@ -246,7 +248,7 @@ def _render_setup_content(schema: dict, *, owner_id: str, project_selector, subm
         with st.container(key="rfab-framework-card"):
             st.html('<div class="rfab-section">CUSTOM FRAMEWORK</div>')
             st.caption("Upload a Chothia-numbered framework PDB. RFantibody converts selected chains into its H/L/T format.")
-            framework_upload = st.file_uploader("Framework PDB", type=["pdb", "ent"], key="rfab-framework-upload")
+            framework_upload = select_dataset_files('Framework PDB', formats=['pdb', 'ent'], key='rfab-framework-upload')
             if framework_upload is not None:
                 try:
                     custom_framework = _save_custom_framework(framework_upload, owner_id)
@@ -316,11 +318,7 @@ def _render_setup_content(schema: dict, *, owner_id: str, project_selector, subm
         settings["mimosa_fk_lambda"] = 4.0
         settings["mimosa_resampling_interval"] = 3
         if settings["mimosa_enabled"]:
-            complex_upload = st.file_uploader(
-                "Source interaction complex", type=["pdb", "ent", "cif", "mmcif"],
-                key="rfab-mimosa-complex",
-                help="A known interaction structure, such as the complex whose motif you want the designed nanobody to mimic.",
-            )
+            complex_upload = select_dataset_files('Source interaction complex', formats=['pdb', 'ent', 'cif', 'mmcif'], key='rfab-mimosa-complex', help='A known interaction structure, such as the complex whose motif you want the designed nanobody to mimic.')
             from mn_molecular_design_studio.mimosa_ui import (
                 PAPER_INTERACTION_TEMPLATES,
                 fetch_paper_interaction_template,
@@ -331,14 +329,14 @@ def _render_setup_content(schema: dict, *, owner_id: str, project_selector, subm
             paper_template = st.selectbox(
                 "Or use a paper interaction template",
                 ["custom", *PAPER_INTERACTION_TEMPLATES],
-                format_func=lambda value: "Upload my own" if value == "custom" else f"{value} · {PAPER_INTERACTION_TEMPLATES[value]}",
+                format_func=lambda value: "Choose a saved complex" if value == "custom" else f"{value} · {PAPER_INTERACTION_TEMPLATES[value]}",
                 key="rfab-mimosa-paper-template",
             )
             st.caption("These PDB entries are interaction templates from the paper; load the design target separately above.")
             if paper_template != "custom" and st.button("Load interaction template", key="rfab-mimosa-load-template"):
                 template_path = user_input_root(owner_id) / "mimosa" / f"{paper_template}.cif"
                 try:
-                    loaded_path = fetch_paper_interaction_template(paper_template, template_path)
+                    loaded_path = register_example(fetch_paper_interaction_template(paper_template, template_path), owner_id)
                     st.session_state["rfab-mimosa-loaded-source"] = str(loaded_path)
                     st.success(f"Loaded {paper_template} interaction complex.")
                 except (OSError, ValueError) as exc:

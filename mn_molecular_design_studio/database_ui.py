@@ -136,7 +136,15 @@ def _import_content(method):
     records = []
     audit = None
     source_content = None
-    if method in {"Table", "Compound table"}:
+    if method == "Prepared structure":
+        source = st.session_state.get("molecular-import-prepared")
+        if not source:
+            raise ValueError("Open the completed preparation result to choose an output.")
+        records = imports.parse_structure(source["content"], source["name"])
+        for record in records:
+            record["metadata"]["preparation_run_id"] = source["run_id"]
+            record["files"][0].update(label="Prepared structure", preparation_run_id=source["run_id"])
+    elif method in {"Table", "Compound table"}:
         compounds = method == "Compound table"
         if not compounds:
             st.caption("Map protein, ligand, DNA or RNA columns to chains.")
@@ -264,12 +272,13 @@ def _import_content(method):
             if drawing.get("molblock"):
                 records[0]["files"] = [{"name": "drawing.mol", "content": drawing["molblock"].encode(), "label": "Drawing", "dimensions": 2}]
             st.code(records[0]["components"][0]["smiles"], language=None)
-    elif method in {"Fetch by identifier", "PDB accession"}:
-        cols = st.columns([3, 1]) if method == "PDB accession" else st.columns([1, 3, 1])
-        source = "PDB" if method == "PDB accession" else cols[0].selectbox(
+    elif method in {"Fetch by identifier", "PDB accession", "PDB coordinates"}:
+        pdb_only = method in {"PDB accession", "PDB coordinates"}
+        cols = st.columns([3, 1]) if pdb_only else st.columns([1, 3, 1])
+        source = "PDB" if pdb_only else cols[0].selectbox(
             "Database", ["PDB", "UniProt"], key="molecular-import-identifier-source")
         coordinate_format = "cif"
-        if method == "PDB accession":
+        if pdb_only:
             coordinate_format = st.radio("Coordinate format", ["pdb", "cif"], horizontal=True,
                 format_func={"pdb": "PDB", "cif": "mmCIF"}.get, key="molecular-import-pdb-format")
         identifier = cols[-2].text_input("Accession", placeholder="1IEP" if source == "PDB" else "P04637", key="molecular-import-identifier")
@@ -290,6 +299,42 @@ def _import_content(method):
     return records, audit, source_content
 
 
+def _review_smiles_corrections(method, audit, records, source_content, instance):
+    invalid = {row["row_number"]: row for row in audit["rows"] if row["status"] in {"invalid", "empty"}}
+    if not invalid:
+        return records, audit
+    key = f"dataset-smiles-corrections-{instance}-{audit['batch_id']}"
+    with st.expander("Correct invalid SMILES"):
+        st.caption("Enter one row number and replacement SMILES per line, then validate the corrections.")
+        st.dataframe([{"Row": number, "Input SMILES": row["raw_smiles"], "Candidate": row["annotation_stripped_candidate"]}
+                      for number, row in list(invalid.items())[:100]], hide_index=True, width="stretch")
+        text = st.text_area("Replacement SMILES", placeholder="12 CCO", key=key)
+        if st.button("Validate corrections", key=key + "-validate"):
+            corrections = {}
+            for line in text.splitlines():
+                if not line.strip():
+                    continue
+                parts = line.strip().split(maxsplit=1)
+                if len(parts) != 2 or not parts[0].isdigit() or int(parts[0]) not in invalid:
+                    raise ValueError("Enter an invalid or blank row number followed by the replacement SMILES.")
+                number = int(parts[0])
+                if number in corrections:
+                    raise ValueError(f"Row {number} appears more than once in the corrections.")
+                corrections[number] = parts[1]
+            st.session_state[key + "-validated"] = corrections
+        corrections = st.session_state.get(key + "-validated", {})
+        if not corrections or source_content is None:
+            return records, audit
+        if method == "SMILES":
+            revised = imports.analyze_smiles_text(source_content.decode("utf-8-sig"), corrections=corrections)
+            revised["source_name"] = audit["source_name"]
+            revised["source_sha256"] = audit["source_sha256"]
+        else:
+            revised = imports.analyze_small_molecule_table(source_content, audit["source_name"],
+                                                           **audit["mapping"], corrections=corrections)
+        return revised.pop("records"), revised
+
+
 def _import_report_frame(rows):
     return [{
         "Row": row["row_number"],
@@ -298,6 +343,7 @@ def _import_report_frame(rows):
         "Compound ID": row.get("compound_id") or "",
         "Name": row.get("name") or "",
         "Input SMILES": row.get("raw_smiles") or "",
+        "Replacement SMILES": row.get("corrected_smiles") or "",
         "Canonical isomeric SMILES": row.get("canonical_smiles") or "",
         "Annotation candidate (review only)": row.get("annotation_stripped_candidate") or "",
         "Candidate status": row.get("candidate_status") or "",
@@ -307,11 +353,11 @@ def _import_report_frame(rows):
         "Warnings": "; ".join(row.get("warnings") or []),
         "Errors": "; ".join(row.get("errors") or []),
         "Formula": (row.get("descriptors") or {}).get("formula", ""),
-        "Molecular weight": (row.get("descriptors") or {}).get("molecular_weight", ""),
+        "Molecular weight": (row.get("descriptors") or {}).get("molecular_weight"),
         "Exact mass": (row.get("descriptors") or {}).get("exact_mass", ""),
-        "Heavy atoms": (row.get("descriptors") or {}).get("heavy_atoms", ""),
-        "Formal charge": (row.get("descriptors") or {}).get("formal_charge", ""),
-        "Fragments": (row.get("descriptors") or {}).get("fragment_count", ""),
+        "Heavy atoms": (row.get("descriptors") or {}).get("heavy_atoms"),
+        "Formal charge": (row.get("descriptors") or {}).get("formal_charge"),
+        "Fragments": (row.get("descriptors") or {}).get("fragment_count"),
         "Disconnected components": json.dumps((row.get("descriptors") or {}).get("components", []), ensure_ascii=False),
         "HBD": (row.get("descriptors") or {}).get("hbd", ""),
         "HBA": (row.get("descriptors") or {}).get("hba", ""),
@@ -335,6 +381,8 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
     kind = st.session_state.get("molecular-import-kind", "") if dataset_mode else ""
     methods = {
         "protein": ["PDB accession", "Protein files"],
+        "structure": ["Structure files", "PDB coordinates"],
+        "prepared": ["Prepared structure"],
         "compound": ["Compound table", "SMILES", "Draw molecule"],
         "sequence": ["FASTA", "Paste sequences"],
     }.get(kind, ["Table", "FASTA", "Structure files", "Paste sequences", "SMILES", "Draw molecule", "Fetch by identifier"])
@@ -347,7 +395,9 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
             open_workflow_tool(st.session_state, "library.prepare")
             st.rerun(scope="app")
     if step == 0 and dataset_mode:
-        st.caption({"protein": "Import protein structures", "compound": "Import a compound library",
+        st.caption({"protein": "Import protein structures", "structure": "Import coordinate files",
+                    "prepared": "Save a preparation output for reuse",
+                    "compound": "Import a compound library",
                     "sequence": "Import sequences"}.get(kind, "Choose where to save your inputs."))
     if step == 0:
         groups = [row for row in database.groups(user, collection="library") if row["owner_id"] == user["id"] or user.get("role") == "admin"]
@@ -392,6 +442,7 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
     try:
         records, audit, source_content = _import_content(method)
         if audit:
+            records, audit = _review_smiles_corrections(method, audit, records, source_content, import_instance)
             destination_group = destination.get("group_id")
             existing = database.group_identity_map(user, destination_group) if destination_group else {}
             existing_fingerprints = set(existing)

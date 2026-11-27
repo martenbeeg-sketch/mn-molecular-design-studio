@@ -53,10 +53,15 @@ def public_parameters(engine,p):
 
 
 def _private_example(engine, example, owner_id):
+    from mn_molecular_design_studio.dataset_structure_input import register_example
+
     p=copy.deepcopy(example['parameters'])
     for key in ('target_pdb','scaffold_pdb','target_ss_file','target_adj_file','scaffold_ss_file','scaffold_adj_file'):
         if p.get(key):
-            source=Path(p[key]);content=source.read_bytes()
+            source=Path(p[key])
+            if key in {"target_pdb", "scaffold_pdb"}:
+                register_example(source, owner_id)
+            content=source.read_bytes()
             destination=user_input_root(owner_id)/'generator-examples'/engine/hashlib.sha256(content).hexdigest()[:12]/source.name
             destination.parent.mkdir(parents=True,exist_ok=True)
             if not destination.exists():destination.write_bytes(content)
@@ -173,9 +178,8 @@ def render_inputs(engine, *,owner_id,key_prefix,initial=None,connected_target=No
     with st.container(key=key_prefix+'-input-card'):
         if needs_structure:
             format_value=st.pills('Structure format',['PDB','CIF'],selection_mode='single',default='CIF' if Path(p.get('target_pdb') or '').suffix.lower() in {'.cif','.mmcif'} else 'PDB',key=prefix+'-format',label_visibility='collapsed') or 'PDB'
-            source=render_target_source(key_prefix=prefix,label='Target' if task in {'binder','fold'} else 'Input',example_code='1CRN' if engine=='pxdesign' else '1IEP' if engine=='genie3' else '5TPN',
-                owner_id=owner_id,allow_cif=True,allow_non_protein=task=='motif',upload_file_types=['pdb','ent'] if format_value=='PDB' else ['cif','mmcif'],
-                upload_help='Upload coordinates for the target or fixed motif. mmCIF is converted to a PDB-compatible copy when required.')
+            source=render_target_source(key_prefix=prefix,label='Target' if task in {'binder','fold'} else 'Input',
+                owner_id=owner_id,allow_cif=True,allow_non_protein=task=='motif',upload_file_types=['pdb','ent'] if format_value=='PDB' else ['cif','mmcif'],)
             if not source.path and p.get('target_pdb'):
                 resolved=resolve_stored_path(p['target_pdb'],must_exist=True)
                 if resolved:source=TargetSource(path=resolved,name=resolved.stem,owner_id=owner_id)
@@ -244,7 +248,7 @@ def render_inputs(engine, *,owner_id,key_prefix,initial=None,connected_target=No
             p['scaffold_preset']=st.pills('Binder fold',choices,format_func={'library':'Scaffold library','custom':'Upload / fetch binder','tim_barrel':'TIM barrel'}.get,selection_mode='single',
                 default=p['scaffold_preset'],key=prefix+'-scaffold-preset') or 'library'
             if p['scaffold_preset']=='custom':
-                scaffold=render_target_source(key_prefix=prefix+'-scaffold',label='Binder',owner_id=owner_id,allow_cif=True,upload_help='A protein structure defining the binder fold.')
+                scaffold=render_target_source(key_prefix=prefix+'-scaffold',label='Binder',owner_id=owner_id,allow_cif=True,)
                 p['scaffold_pdb']=str(scaffold.path) if scaffold.path else p.get('scaffold_pdb')
     with st.container(key=key_prefix+'-sampling-card'):
         st.html('<div class="gen-section">DESIGN SAMPLING</div>')

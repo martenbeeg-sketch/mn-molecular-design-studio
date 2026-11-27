@@ -46,8 +46,12 @@ def render_settings(settings, *, owner_id, key, connected=False, upload=True):
             values.pop(field, None)
         st.caption("Use the connected structures.")
     elif upload:
-        uploads = st.file_uploader("Molecular structures", type=[suffix[1:] for suffix in FORMATS],
-                                   accept_multiple_files=True, key=key + "-structures")
+        from mn_molecular_design_studio.dataset_structure_input import select_dataset_files
+
+        uploads = select_dataset_files("Saved molecular structures", formats=("pdb", "ent", "cif", "mmcif", "sdf"),
+                                       multiple=True, key=key + "-structures")
+        extra = st.file_uploader("Ligand MOL2 files", type=["mol2"], accept_multiple_files=True, key=key + "-mol2")
+        uploads.extend(extra or [])
         if uploads:
             values["structure_paths"] = _store_uploads(uploads, owner_id)
             values.pop("source_run_dir", None)
