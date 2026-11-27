@@ -85,7 +85,7 @@ with st.sidebar:
     render_workspace_navigation({"id": "admin", "role": "admin"})
 ''').run()
     assert [button.label for button in app.sidebar.button] == [
-        'All tools', 'Projects', 'Pipelines', 'My results', 'Datasets', 'Data browser', 'Users & access', 'Account',
+        'Projects', 'Datasets', 'Pipelines', 'All tools', 'My results', 'Data browser', 'Users & access', 'Account',
     ]
     assert len(app.sidebar.get('divider')) == 1
     app.button(key='nav-projects').click().run()

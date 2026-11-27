@@ -4,11 +4,11 @@ import streamlit as st
 
 
 WORKSPACE_PAGES = (
-    ("All tools", ":material/apps:", "All tools"),
     ("Projects", ":material/folder_open:", "Projects"),
-    ("Pipelines", ":material/account_tree:", "Pipelines"),
-    ("My results", ":material/query_stats:", "My runs"),
     ("Datasets", ":material/library_books:", "Datasets"),
+    ("Pipelines", ":material/account_tree:", "Pipelines"),
+    ("All tools", ":material/apps:", "All tools"),
+    ("My results", ":material/query_stats:", "My runs"),
     ("Data browser", ":material/folder_copy:", "Data Browser"),
 )
 
