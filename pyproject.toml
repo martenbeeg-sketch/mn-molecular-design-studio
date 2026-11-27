@@ -98,6 +98,7 @@ include = ["mn_molecular_design_studio*"]
   "components/molecule_table/*",
   "components/complex_analysis/*",
   "components/binderscope_inspector/*",
+  "components/dataset_splitter/*.js",
 ]
 
 [tool.pytest.ini_options]

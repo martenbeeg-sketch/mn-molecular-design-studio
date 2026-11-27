@@ -64,21 +64,68 @@ def dataset_tree(groups, *, by_project=False, projects=()):
     return sorted(buckets.values(), key=lambda node: node["label"].casefold()), choices
 
 
+_WIDTH_KEYS = ("datasets-folders-width", "datasets-details-width")
+_WIDTH_BOUNDS = ((12, 34), (16, 50))
+_DEFAULT_WIDTHS = dict(zip(_WIDTH_KEYS, (24, 28)))
+_SPLITTER_KEY = "datasets-width-dividers"
+_SPLITTER_JS = (Path(__file__).parent / "components/dataset_splitter/resize.js").read_text(encoding="utf-8")
+
+
+def _render_dataset_dividers(widths):
+    splitter = st.components.v2.component(
+        "studio_dataset_splitter",
+        html="<span hidden></span>",
+        isolate_styles=False,
+        css="""
+            .studio-dataset-split { position: relative; }
+            .studio-dataset-divider {
+                position: absolute; inset-block: 0; width: 16px; z-index: 2;
+                transform: translateX(-50%); cursor: col-resize; touch-action: none;
+            }
+            .studio-dataset-divider::before {
+                content: ""; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px;
+                background: var(--st-border-color, #d7dedb); border-radius: 2px;
+            }
+            .studio-dataset-divider::after {
+                content: ""; position: absolute; left: 4px; top: 1.5rem; width: 8px; height: 1.5rem;
+                background: var(--st-border-color, #b7c7bf); border-radius: 4px;
+            }
+            .studio-dataset-divider:is(:hover, :focus-visible, :active)::before,
+            .studio-dataset-divider:is(:hover, :focus-visible, :active)::after {
+                background: var(--st-primary-color, #287457);
+            }
+            .studio-dataset-dragging { cursor: col-resize; user-select: none; }
+        """,
+        js=_SPLITTER_JS,
+    )
+    splitter(key=_SPLITTER_KEY, data={"widths": widths, "bounds": _WIDTH_BOUNDS},
+             height=1, on_resize_change=_accept_dataset_resize)
+
+
+def _accept_dataset_resize():
+    widths = st.session_state[_SPLITTER_KEY].get("resize")
+    if isinstance(widths, list) and len(widths) == len(_WIDTH_KEYS):
+        for key, width, (low, high) in zip(_WIDTH_KEYS, widths, _WIDTH_BOUNDS):
+            if type(width) is int and low <= width <= high:
+                st.session_state[key] = width
+
+
 def _dataset_columns():
-    folders_key = "datasets-folders-width"
-    details_key = "datasets-details-width"
-    defaults = {folders_key: 24, details_key: 28}
-    preferences = st.session_state.get("datasets-column-widths", defaults)
+    preferences = st.session_state.get("datasets-column-widths", _DEFAULT_WIDTHS)
     for key, width in preferences.items():
         st.session_state.setdefault(key, width)
     with st.popover("Column widths", icon=":material/view_column:"):
-        folders = st.slider("Browse datasets", 12, 34, format="%d%%", key=folders_key)
-        details = st.slider("Member details", 16, 50, format="%d%%", key=details_key)
+        widths = [st.slider(label, low, high, format="%d%%", key=key) for label, key, (low, high) in
+                  zip(("Browse datasets", "Member details"), _WIDTH_KEYS, _WIDTH_BOUNDS)]
+        folders, details = widths
         members = 100 - folders - details
         st.caption(f"The member table uses the remaining {members}%.")
-        st.button("Reset widths", key="datasets-reset-widths", on_click=st.session_state.update, args=(defaults,))
-    st.session_state["datasets-column-widths"] = {folders_key: folders, details_key: details}
-    return st.columns([folders, members, details], gap="medium")
+        st.button("Reset widths", key="datasets-reset-widths", on_click=st.session_state.update, args=(_DEFAULT_WIDTHS,))
+    st.session_state["datasets-column-widths"] = dict(zip(_WIDTH_KEYS, widths))
+    with st.container(key="datasets-workspace", gap=None):
+        columns = st.columns([folders, members, details], gap="medium")
+        _render_dataset_dividers(widths)
+    return columns
 
 
 def render_datasets(user, projects, *, database=None):
