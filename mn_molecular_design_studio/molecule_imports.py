@@ -286,6 +286,20 @@ def _annotation_stripped_candidate(source_smiles: str) -> str:
     return ".".join(retained)
 
 
+def validated_compound_smiles(smiles):
+    from rdkit import Chem, rdBase
+
+    with rdBase.BlockLogs():
+        molecule = Chem.MolFromSmiles(smiles, sanitize=True)
+    if molecule is None:
+        raise ValueError("RDKit could not parse and sanitize the SMILES")
+    if molecule.GetNumHeavyAtoms() < 1:
+        raise ValueError("SMILES contains no heavy atoms")
+    if any(atom.GetAtomicNum() == 0 for atom in molecule.GetAtoms()):
+        raise ValueError("SMILES contains dummy or query atoms")
+    return molecule
+
+
 def analyze_small_molecule_table(
     data: bytes,
     filename: str,
@@ -376,14 +390,7 @@ def analyze_small_molecule_table(
             continue
 
         try:
-            with rdBase.BlockLogs():
-                molecule = Chem.MolFromSmiles(raw, sanitize=True)
-            if molecule is None:
-                raise ValueError("RDKit could not parse and sanitize the SMILES")
-            if molecule.GetNumHeavyAtoms() < 1:
-                raise ValueError("SMILES contains no heavy atoms")
-            if any(atom.GetAtomicNum() == 0 for atom in molecule.GetAtoms()):
-                raise ValueError("SMILES contains dummy or query atoms")
+            molecule = validated_compound_smiles(raw)
             canonical, connectivity, fragment_count, charge, warnings, descriptors = _small_molecule_analysis_row(molecule)
             if not canonical:
                 raise ValueError("RDKit could not generate canonical SMILES")

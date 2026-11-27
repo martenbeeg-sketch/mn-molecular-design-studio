@@ -30,13 +30,13 @@ def _library(database, *, user=USER, name="Research compounds", **kwargs):
     ], name=name, **kwargs)
 
 
-def _select_rows(app, marker, rows):
+def _select_rows(app, marker, rows, *, cells=()):
     table = next(frame for frame in app.dataframe if marker in frame.proto.id)
     states = app._tree.get_widget_states()
     state = next((state for state in states.widgets if state.id == table.proto.id), None)
     if state is None:
         state = states.widgets.add(id=table.proto.id)
-    state.string_value = json.dumps({"selection": {"rows": rows, "columns": [], "cells": []}})
+    state.string_value = json.dumps({"selection": {"rows": rows, "columns": [], "cells": cells}})
     app._run(states)
     assert not app.exception
 

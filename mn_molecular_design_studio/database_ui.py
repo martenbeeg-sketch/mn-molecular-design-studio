@@ -114,22 +114,51 @@ def _guess(columns, names):
     return next((column for column in columns if column.lower().replace(" ", "_") in names), "")
 
 
-def _review_structure_chains(records, key):
-    if len(records) != 1 or len(records[0]["components"]) <= 1:
-        return records
-    record = records[0]
-    labels = {row["chain"]: f"{row['chain']} · {TYPE_LABELS[row['type']]} · {len(row['sequence'])} residues"
-              if row.get("sequence") else f"{row['chain']} · {row.get('ccd') or 'Ligand'}"
-              for row in record["components"]}
-    source = (record.get("files") or [{}])[0]
-    digest = hashlib.sha256(source.get("content", b"")).hexdigest()[:12]
-    chains = st.multiselect("Chains to keep", list(labels), default=list(labels), format_func=labels.get, key=key + digest)
-    if not chains:
-        st.info("Choose at least one chain.")
-        return []
-    if set(chains) == set(labels):
-        return records
-    return [cropped_record(record, chains)]
+def _review_structure_chains(records, key, *, dataset_mode):
+    from mn_molecular_design_studio.dataset_preparation_ui import COORDINATE_FORMATS, render_coordinate_preview
+
+    sources = {index: record["files"][0] for index, record in enumerate(records) if record.get("files")
+               and Path(record["files"][0]["name"]).suffix.lower().lstrip(".") in COORDINATE_FORMATS}
+    if not sources:
+        return records, None, False
+    markers = {index: (index, hashlib.sha256(source["content"]).hexdigest(),
+                      tuple(row["chain"] for row in records[index]["components"])) for index, source in sources.items()}
+    selections = st.session_state.setdefault(key + "-selections", {})
+    with st.container(border=True):
+        preview, options = st.columns([5, 4])
+        with options:
+            if len(sources) > 1:
+                selected = st.selectbox("Structure to preview", list(sources),
+                                        format_func=lambda index: sources[index]["name"], key=key + "-record")
+            else:
+                selected = next(iter(sources))
+                st.caption(sources[selected]["name"])
+            labels = {row["chain"]: f"{row['chain']} · {TYPE_LABELS[row['type']]} · {len(row['sequence'])} residues"
+                      if row.get("sequence") else f"{row['chain']} · {row.get('ccd') or 'Ligand'}"
+                      for row in records[selected]["components"]}
+            marker = markers[selected]
+            defaults = [chain for chain in selections.get(marker, labels) if chain in labels]
+            keep = st.multiselect("Chains and ligands to keep", list(labels), default=defaults, format_func=labels.get,
+                                  key=f"{key}-{selected}-{marker[1][:12]}-chains")
+            if not keep:
+                st.info("Choose at least one chain or ligand for this structure.")
+                return [], None, True
+            selections[marker] = keep
+        reviewed = list(records)
+        for index, marker in markers.items():
+            original = {component["chain"] for component in records[index]["components"]}
+            chosen = [chain for chain in selections.get(marker, []) if chain in original]
+            if chosen and set(chosen) != original:
+                reviewed[index] = cropped_record(records[index], chosen)
+        focused = reviewed[selected]
+        with preview:
+            render_coordinate_preview(focused["files"][0]["content"], key=key + "-viewer",
+                show_ligands=any(component["type"] == "small_molecule" for component in focused["components"]))
+        with options:
+            prepare = dataset_mode and any(component.get("sequence") for component in focused["components"]) and st.button(
+                "Import and prepare", type="primary", key="molecular-import-prepare",
+                help="Save the import and open preparation for the structure shown here.")
+    return reviewed, selected if prepare else None, True
 
 
 @st.cache_data(ttl=180, max_entries=16, show_spinner=False)
@@ -267,7 +296,6 @@ def _import_content(method, *, recover_preparation=False):
         captured = sum(bool(item.get("preparation_history")) for record in records for item in record.get("files", []))
         if captured:
             st.caption(f"Preparation history found for {captured} structure(s).")
-        records = _review_structure_chains(records, "molecular-import-upload-chains-")
     elif method == "SMILES":
         source = st.radio("Input", ["Paste SMILES", "SMI file", "SDF file"], horizontal=True, key="molecular-import-smiles-source")
         if source == "Paste SMILES":
@@ -322,7 +350,6 @@ def _import_content(method, *, recover_preparation=False):
                 records = imports.parse_structure(fetched["content"], fetched["filename"], include_ligands=include_ligands)
                 if method == "PDB accession" and any(not any(c["type"] == "protein" for c in row["components"]) for row in records):
                     raise ValueError("This PDB entry has no protein chain.")
-                records = _review_structure_chains(records, "molecular-import-pdb-chains-")
             else:
                 records = imports.parse_sequences(fetched["content"].decode())
     return records, audit, source_content
@@ -335,46 +362,79 @@ def _matching_compound_reviews(source_content, mapping, rejected, roots):
     return archived_reviews(source_content, {"mapping": mapping, "rows": rejected}, roots)
 
 
-def _review_smiles_corrections(method, audit, records, source_content, instance, *, recover_archive=False):
+def _compound_review_state(method, audit, records, source_content, key, *, recover_archive=False):
     invalid = {row["row_number"]: row for row in audit["rows"] if row["status"] in {"invalid", "empty"}}
+    changes = st.session_state.setdefault(key + "-changes", {})
     if not invalid or source_content is None:
-        return records, audit
+        return records, audit, invalid, changes
     from mn_molecular_design_studio.compound_import_history import apply_reviews
-    from mn_molecular_design_studio.compound_import_history_ui import review_with_pubchem
 
-    key = f"dataset-smiles-corrections-{instance}-{audit['batch_id']}"
     recovered = {}
     if recover_archive and method != "SMILES":
         from mn_molecular_design_studio.legacy_preparation_history import archive_roots
 
         roots = archive_roots()
         if roots:
-            rejected = [{key: row[key] for key in ("row_number", "status", "source_id", "raw_smiles")} for row in invalid.values()]
+            rejected = [{field: row[field] for field in ("row_number", "status", "source_id", "raw_smiles")} for row in invalid.values()]
             recovered = _matching_compound_reviews(source_content, audit["mapping"], rejected, roots)
         if recovered:
             st.caption(f"Recovered {len(recovered):,} approved MN-Ligand reviews for this exact source file.")
-    approved = review_with_pubchem(invalid, key + "-pubchem")
-    with st.expander("Correct invalid SMILES"):
-        st.caption("Enter one row number and replacement SMILES per line, then validate the corrections.")
-        st.dataframe([{"Row": number, "Input SMILES": row["raw_smiles"], "Candidate": row["annotation_stripped_candidate"]}
-                      for number, row in list(invalid.items())[:100]], hide_index=True, width="stretch")
-        text = st.text_area("Replacement SMILES", placeholder="12 CCO", key=key)
-        if st.button("Validate corrections", key=key + "-validate"):
-            corrections = {}
-            for line in text.splitlines():
-                if not line.strip():
-                    continue
-                parts = line.strip().split(maxsplit=1)
-                if len(parts) != 2 or not parts[0].isdigit() or int(parts[0]) not in invalid:
-                    raise ValueError("Enter an invalid or blank row number followed by the replacement SMILES.")
-                number = int(parts[0])
-                if number in corrections:
-                    raise ValueError(f"Row {number} appears more than once in the corrections.")
-                corrections[number] = parts[1]
-            st.session_state[key + "-validated"] = corrections
-    revised = apply_reviews(source_content, audit, {**recovered, **approved}, manual=st.session_state.get(key + "-validated", {}),
-                            pasted=method == "SMILES")
-    return (revised.pop("records"), revised) if revised else (records, audit)
+    accepted = {number: review for number, review in changes.items() if review["method"] == "PubChem"}
+    manual = {number: review["smiles"] for number, review in changes.items() if review["method"] == "Manual replacement"}
+    revised = apply_reviews(source_content, audit, {**recovered, **accepted}, manual=manual, pasted=method == "SMILES")
+    if revised:
+        return revised.pop("records"), revised, invalid, changes
+    return records, audit, invalid, changes
+
+
+def _render_import_validation(audit, invalid, changes, *, key):
+    from mn_molecular_design_studio.compound_import_history_ui import render_compound_review
+
+    filters = ["Rows to correct", "All rows", "Duplicates", "Reviewed"] if invalid else ["All rows", "Duplicates"]
+    view = st.radio("Show rows", filters, horizontal=True, key=key + "-filter")
+    rows = audit["rows"]
+    active_key = key + "-active-row"
+    if view == "Rows to correct":
+        rows = [row for row in rows if row["status"] in {"invalid", "empty"}]
+    elif view == "Duplicates":
+        rows = [row for row in rows if row["status"] == "duplicate"]
+    elif view == "Reviewed":
+        rows = [row for row in rows if row.get("review")]
+    size = 100
+    if len(rows) > size:
+        page = st.number_input("Validation page", min_value=1, max_value=(len(rows) + size - 1)//size, step=1,
+                               key=key + "-page-" + view)
+        offset = (int(page) - 1) * size
+        rows = rows[offset:offset + size]
+    if rows:
+        display = [{"Row": row["row_number"], "Status": "Reviewed · " + row["status"] if row.get("review") else row["status"],
+                    "Name": row["name"], "Original SMILES": row["raw_smiles"],
+                    "Replacement": row.get("corrected_smiles", ""), "Issue": (row.get("errors") or [""])[0]} for row in rows]
+        if not any(row["Replacement"] for row in display):
+            for row in display:
+                row.pop("Replacement")
+        if invalid:
+            st.caption("Click an invalid or blank row to review and correct it.")
+        numbers = [row["row_number"] for row in rows]
+        row_set = hashlib.sha256(json.dumps(numbers).encode()).hexdigest()[:12]
+        active = st.session_state.get(active_key)
+        selection = [(numbers.index(active), "Name")] if active in numbers else []
+        selected = st.dataframe(display, hide_index=True, width="stretch", height=min(338, 36 + 36 * len(rows)),
+                                on_select="rerun" if invalid else "ignore", selection_mode="single-cell",
+                                selection_default={"selection": {"cells": selection}} if invalid else None,
+                                key=f"{key}-review-table-{view}-{row_set}")
+        if invalid and selected.selection.cells:
+            index, _ = selected.selection.cells[0]
+            if 0 <= index < len(rows):
+                st.session_state[active_key] = numbers[index]
+    else:
+        st.caption("No rows match this view.")
+    active = st.session_state.get(active_key)
+    if original := invalid.get(active):
+        effective = next(row for row in audit["rows"] if row["row_number"] == active)
+        render_compound_review(original, effective, changes, key=key)
+    elif active:
+        st.caption("This row already has a validated structure. Select an invalid or blank row to correct it.")
 
 
 def _import_report_frame(rows):
@@ -487,13 +547,19 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
     source_content = None
     review_confirmed = True
     block_duplicates = False
+    prepare_index = None
+    coordinate_preview = False
     try:
         records, audit, source_content = _import_content(
             method, recover_preparation=dataset_mode and user.get("role") == "admin",
         )
+        if method in {"Protein files", "Structure files", "PDB accession", "PDB coordinates", "Fetch by identifier"}:
+            records, prepare_index, coordinate_preview = _review_structure_chains(records,
+                f"import-structure-{import_instance}-{method}", dataset_mode=dataset_mode)
         if audit:
-            records, audit = _review_smiles_corrections(method, audit, records, source_content, import_instance,
-                                                        recover_archive=dataset_mode and user.get("role") == "admin")
+            review_key = f"compound-import-{import_instance}-{audit['batch_id']}"
+            records, audit, invalid, changes = _compound_review_state(method, audit, records, source_content, review_key,
+                recover_archive=dataset_mode and user.get("role") == "admin")
             destination_group = destination.get("group_id")
             existing = database.group_identity_map(user, destination_group) if destination_group else {}
             existing_fingerprints = set(existing)
@@ -529,23 +595,12 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
                 st.caption(f"{summary['charged_component_rows']:,} valid source row(s) contain at least one charged disconnected component.")
             if summary.get("existing_structure_matches"):
                 st.caption(f"{summary['existing_structure_matches']:,} unique structure(s) are already in this destination. Existing names and properties will be preserved; new properties will be added where they are blank.")
-            with st.expander("Review row validation and duplicates", expanded=bool(summary["invalid_rows"] or summary["duplicate_rows"])):
-                view = st.selectbox("Rows", ["All rows", "Problems and duplicates", "Invalid or blank only"], key="molecular-import-report-filter-" + import_instance + audit["batch_id"])
-                report_rows = audit["rows"]
-                if view == "Problems and duplicates":
-                    report_rows = [row for row in report_rows if row["status"] in {"invalid", "empty", "duplicate"} or row.get("warnings") or row.get("matched_existing")]
-                elif view == "Invalid or blank only":
-                    report_rows = [row for row in report_rows if row["status"] in {"invalid", "empty"}]
-                report_frame = _import_report_frame(report_rows)
-                st.dataframe(report_frame[:1000], hide_index=True, use_container_width=True)
-                if len(report_frame) > 1000:
-                    st.caption(f"Showing the first 1,000 of {len(report_frame):,} selected report rows. Download the full report below.")
-                st.download_button(
-                    "Download validation report CSV", _report_csv(audit["rows"]),
-        file_name=Path(audit["source_name"]).stem + "-validation.csv", mime="text/csv",
-                    key="molecular-import-report-download-" + import_instance + audit["batch_id"],
-                )
-                st.caption("Canonical SMILES are used for exact structure matching. Salts, formal charge, and stereochemistry are retained as submitted.")
+            _render_import_validation(audit, invalid, changes, key=review_key)
+            st.download_button(
+                "Download validation report CSV", lambda: _report_csv(audit["rows"]),
+                file_name=Path(audit["source_name"]).stem + "-validation.csv", mime="text/csv",
+                key="molecular-import-report-download-" + import_instance + audit["batch_id"],
+            )
             st.caption("The source file and full report are saved on this workstation. Accepted replacements and their source rows are saved with the compounds.")
             review_confirmed = st.checkbox(
                 "I reviewed the report. Only valid unique structures will be imported; every source row will be retained in the import history.",
@@ -560,7 +615,8 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
         fingerprints = {imports.canonical_components(row["components"])[1] for row in records}
         if records and not audit:
             st.caption(f"{len(records):,} rows · {len(fingerprints):,} unique molecules. Existing molecules retain their saved scores.")
-            st.dataframe([{"Name": row["name"], "Chains": ", ".join(component["chain"] for component in row["components"]), "Type": TYPE_LABELS[imports.canonical_components(row["components"])[2]]} for row in records[:10]], hide_index=True, use_container_width=True)
+            if not coordinate_preview or len(records) > 1:
+                st.dataframe([{"Name": row["name"], "Chains": ", ".join(component["chain"] for component in row["components"]), "Type": TYPE_LABELS[imports.canonical_components(row["components"])[2]]} for row in records[:10]], hide_index=True, width="stretch")
         elif audit and not records:
             st.warning("No valid structures are available to import. Correct the source or its column mapping and review the report again.")
     except (ValueError, OSError, UnicodeError) as exc:
@@ -577,7 +633,10 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
         _reset_import()
     can_commit = (bool(records) or bool(audit)) and review_confirmed and (not block_duplicates or not records)
     commit_label = "Save validation report" if audit and not records else "Import molecules"
-    if commit.button(commit_label, type="primary", disabled=not can_commit, key="molecular-import-commit"):
+    save_import = commit.button(commit_label, type="secondary" if coordinate_preview and dataset_mode else "primary",
+                                disabled=not can_commit, key="molecular-import-commit")
+    prepare = can_commit and prepare_index is not None
+    if save_import or prepare:
         try:
             if dataset_mode:
                 from mn_molecular_design_studio.datasets import input_records
@@ -599,7 +658,14 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
             st.session_state["database-selection"] = []
             if dataset_mode:
                 from mn_molecular_design_studio.navigation import open_datasets
-                open_datasets(st.session_state, group_id=result["group_id"])
+                molecule_id = ""
+                if prepare:
+                    selected = records[prepare_index]
+                    _, fingerprint, _ = imports.canonical_components(selected["components"])
+                    molecule_id = "mol-" + fingerprint[:32]
+                    st.session_state["datasets-prepare-request"] = {"group_id": result["group_id"],
+                        "molecule_id": molecule_id, "digest": hashlib.sha256(selected["files"][0]["content"]).hexdigest()}
+                open_datasets(st.session_state, group_id=result["group_id"], molecule_id=molecule_id)
                 st.session_state.pop("molecular-preselect-group", None)
                 st.session_state.pop("molecular-preselect-collection", None)
             _reset_import()

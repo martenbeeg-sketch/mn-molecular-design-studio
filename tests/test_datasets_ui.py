@@ -232,13 +232,37 @@ def test_structure_picker_uses_registered_inputs_and_keeps_the_original_bytes(da
     assert app.session_state["molecular-import-kind"] == "structure"
 
 
-def test_preparation_saves_a_separate_trim_with_original_residue_numbers(database, monkeypatch):
-    from mn_molecular_design_studio import dataset_preparation_ui, molecule_imports
+def test_pdb_import_opens_preparation_for_the_selected_chain(database, monkeypatch):
+    from mn_molecular_design_studio import molecule_imports
+    from test_molecular_database_policy import _pdb_efg_acd_complex
+
+    monkeypatch.setattr(molecule_imports, "fetch_identifier", lambda *args, **kwargs: ("example.pdb", _pdb_efg_acd_complex().encode()))
+    app = _app(database, monkeypatch, inputs=True)
+    app.button(key="datasets-import-protein").click().run()
+    app.text_input(key="molecular-import-group-name").set_value("Import and prepare fixture").run()
+    app.button(key="molecular-import-next").click().run()
+    app.text_input(key="molecular-import-identifier").set_value("1LYZ").run()
+    app.button(key="molecular-import-fetch").click().run()
+    chains = next(item for item in app.multiselect if item.label == "Chains and ligands to keep")
+    assert set(chains.value) == {"A", "B"}
+    chains.set_value(["A"]).run()
+    app.button(key="molecular-import-prepare").click().run()
+    assert not app.exception and not app.error
+    assert any(slider.label == "Chain A residue range" for slider in app.slider)
+    assert not any(slider.label == "Chain B residue range" for slider in app.slider)
+    request = app.session_state["datasets-prepare-request"]
+    record, = datasets.DatasetView(database, request["group_id"]).list_molecules(USER)["items"]
+    structure, = record["structures"]
+    assert structure["context"]["preparation_history"]["steps"][0]["details"]["chains"] == ["A"]
+
+
+def test_preparation_saves_a_separate_trim_with_original_residue_numbers(database):
+    from mn_molecular_design_studio import molecule_imports
     from test_molecular_database_policy import _pdb_acd
 
-    expander = dataset_preparation_ui.st.expander
-    monkeypatch.setattr(dataset_preparation_ui.st, "expander", lambda label, **kwargs: expander(label, expanded=True, **kwargs))
-    content = _pdb_acd().encode()
+    water = "HETATM   30  O   HOH A 230       8.000   8.000   8.000  1.00 20.00           O  "
+    ligand = "HETATM   31  C1  LIG B 300       9.000   9.000   9.000  1.00 20.00           C  "
+    content = (_pdb_acd().split("END")[0] + water + "\n" + ligand + "\nEND\n").encode()
     imported = database.import_records(USER, datasets.input_records(molecule_imports.parse_structure(content, "target.pdb")),
                                        name="Target inputs", origin=datasets.input_origin(USER))
     group_id = imported["group_id"]
@@ -253,7 +277,10 @@ def test_preparation_saves_a_separate_trim_with_original_residue_numbers(databas
         "render_preparation(view, user, record)\n"
     ).run()
     assert not app.exception
+    assert app.slider[0].proto.max == 3
+    assert len(app.slider) == 1
     app.slider[0].set_value((2, 3)).run()
+    next(item for item in app.checkbox if item.label == "Remove waters").set_value(False).run()
     next(button for button in app.button if button.label == "Save prepared variant").click().run()
     assert not app.exception
     view = datasets.DatasetView(database, group_id)
@@ -263,7 +290,9 @@ def test_preparation_saves_a_separate_trim_with_original_residue_numbers(databas
     assert view.structure_file(USER, source["id"]).read_bytes() == content
     assert cropped["components"][0]["sequence"] == "CD"
     assert prepared["context"]["derived_from_structure_id"] == source["id"]
-    assert "CYS A   2" in view.structure_file(USER, prepared["id"]).read_text()
+    changed = view.structure_file(USER, prepared["id"]).read_text()
+    assert "CYS A   2" in changed and "ALA A   1" not in changed
+    assert "HOH A 230" in changed and "LIG B 300" in changed
 
 
 def test_import_records_explicit_smiles_replacement_and_original(database, monkeypatch):
@@ -273,9 +302,11 @@ def test_import_records_explicit_smiles_replacement_and_original(database, monke
     app.button(key="molecular-import-next").click().run()
     app.radio(key="molecular-import-method").set_value("SMILES").run()
     app.text_area(key="molecular-import-smiles").set_value("C1CC incomplete\nCCO ethanol").run()
-    correction = next(item for item in app.text_area if item.label == "Replacement SMILES")
-    correction.set_value("1 C1CC1").run()
-    next(button for button in app.button if button.label == "Validate corrections").click().run()
+    assert not any(item.label == "Replacement SMILES" for item in app.text_input)
+    _select_rows(app, "-review-table-", [], cells=[(0, "Name")])
+    correction = next(item for item in app.text_input if item.label == "Replacement SMILES")
+    correction.set_value("C1CC1").run()
+    next(button for button in app.button if button.label == "Apply correction").click().run()
     assert not app.exception and not app.error
     next(item for item in app.checkbox if item.label.startswith("I reviewed the report")).set_value(True).run()
     app.button(key="molecular-import-commit").click().run()
@@ -299,6 +330,8 @@ def test_pubchem_component_review_is_saved_with_dataset_member(database, monkeyp
     app.button(key="molecular-import-next").click().run()
     app.radio(key="molecular-import-method").set_value("SMILES").run()
     app.text_area(key="molecular-import-smiles").set_value("C1CC fixture").run()
+    _select_rows(app, "-review-table-", [], cells=[(0, "Original SMILES")])
+    next(item for item in app.radio if item.label == "Replacement source").set_value("PubChem").run()
     next(item for item in app.button if item.label == "Search PubChem").click().run()
     next(item for item in app.selectbox if item.label == "PubChem structure").set_value(0).run()
     next(item for item in app.selectbox if item.label == "Component to import").set_value(0).run()

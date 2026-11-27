@@ -284,6 +284,7 @@ def _render_structure(database, user, record, preferred):
             render_openfold3_pae(model, pae, key=f"saved-pae-{chosen}")
         except (OSError, ValueError, RuntimeError) as exc:
             st.info(f"The saved OpenFold3 confidence could not be opened. {exc}")
+    return chosen
 
 
 def _render_details(database, user, cache, index, entry):

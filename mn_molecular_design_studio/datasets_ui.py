@@ -220,12 +220,15 @@ def render_datasets(user, projects, *, database=None, submit=None):
                     st.code(component.get("sequence") or component.get("smiles") or component.get("ccd", ""), wrap_lines=True)
                 if record["structures"]:
                     from mn_molecular_design_studio.data_browser_ui import _render_structure
-                    _render_structure(view, user, record, "")
-                    from mn_molecular_design_studio.dataset_preparation_ui import render_preparation
+                    from mn_molecular_design_studio.dataset_preparation_ui import COORDINATE_FORMATS
 
-                    render_preparation(view, user, record, projects=projects,
-                                       preferred_projects=([project] if project else datasets.project_references(group)),
-                                       submit=submit)
+                    chosen_structure = _render_structure(view, user, record, "")
+                    can_prepare = (any(structure["format"] in COORDINATE_FORMATS for structure in record["structures"])
+                                   and any(component.get("sequence") for component in record["components"]))
+                    if can_prepare and st.button("Prepare structure", key="dataset-prepare-" + record["id"],
+                                                disabled=read_only or group["read_only"]):
+                        st.session_state["datasets-prepare-request"] = {"group_id": selected, "molecule_id": record["id"],
+                                                                        "structure_id": chosen_structure}
                 else:
                     st.caption("No coordinates are stored in this input dataset. This does not mean that no calculated structures exist elsewhere.")
                 if st.button("Open this member’s results in Data browser", key="datasets-member-results"):
@@ -233,3 +236,18 @@ def render_datasets(user, projects, *, database=None, submit=None):
                     st.rerun()
                 with st.expander("Input annotations & identifiers"):
                     render_result_details(st, record["metadata"])
+    request = st.session_state.get("datasets-prepare-request")
+    if (request and request["group_id"] == selected and not read_only and not group["read_only"]
+            and not any(st.session_state.get(key) for key in ("molecular-import-open", "data-browser-management", "datasets-project-editor"))):
+        from mn_molecular_design_studio.dataset_preparation_ui import render_preparation_dialog
+
+        target = next(iter(view.list_molecules(user, molecule_ids=[request["molecule_id"]], limit=1)["items"]), None)
+        if target:
+            structure_id = request.get("structure_id") or next((row["id"] for row in target["structures"]
+                if (row.get("context") or {}).get("content_sha256") == request.get("digest")), "")
+            if request.get("digest") and not structure_id:
+                st.session_state.pop("datasets-prepare-request", None)
+                st.warning("The exact imported coordinates are unavailable for preparation.")
+                return
+            render_preparation_dialog(view, user, target, preferred_structure=structure_id, projects=projects,
+                preferred_projects=([project] if project else datasets.project_references(group)), submit=submit)

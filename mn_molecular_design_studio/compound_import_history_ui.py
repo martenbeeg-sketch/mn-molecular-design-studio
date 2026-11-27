@@ -7,66 +7,110 @@ from pathlib import Path
 import streamlit as st
 
 
-def review_with_pubchem(invalid, key):
+def _pubchem_replacement(row, key):
     from mn_molecular_design_studio.compound_import_history import pubchem_review
     from mn_molecular_design_studio.engine.workflow_engine.vendor.ligand_runtime.mn_ligand.workflows import compound_pubchem
 
-    approved = st.session_state.setdefault(key + "-approved", {})
-    with st.expander("Find a replacement in PubChem"):
-        number = st.selectbox("Source row", list(invalid), format_func=lambda value: f"{value} · {invalid[value]['name']}", key=key + "-row")
-        row = invalid[number]
-        st.code(row["raw_smiles"] or "Blank SMILES", language=None, wrap_lines=True)
-        fields = {label.casefold().strip(): str(value).strip() for label, value in (row.get("source_data") or {}).items()}
-        cas = fields.get("cas no.") or fields.get("cas number") or fields.get("cas") or ""
-        query_type = st.radio("Search by", ["CAS number", "Compound name"], index=0 if cas else 1,
-                              horizontal=True, key=f"{key}-mode-{number}")
-        search = st.text_input("PubChem query", value=cas if query_type == "CAS number" else row["name"],
-                               key=f"{key}-query-{number}-{query_type}").strip()
-        result_key = f"{key}-results-{number}"
-        if st.button("Search PubChem", key=key + "-search", disabled=not search):
-            try:
-                with st.spinner("Searching PubChem…"):
-                    hits = compound_pubchem.search_pubchem_candidates(search,
-                        query_type="cas" if query_type == "CAS number" else "name")
-                st.session_state[result_key] = hits
-                st.session_state.pop(result_key + "-candidate", None)
-                if not hits:
-                    st.info("PubChem returned no matching structures.")
-            except (ValueError, OSError) as exc:
-                st.error(str(exc))
-        if hits := st.session_state.get(result_key):
-            choice = st.selectbox("PubChem structure", range(len(hits)), index=None, key=result_key + "-candidate",
-                                  format_func=lambda index: f"CID {hits[index]['cid']} · {hits[index]['molecular_formula']}")
-            if choice is not None and choice < len(hits):
-                candidate = hits[choice]
-                st.code(candidate["smiles"], language=None, wrap_lines=True)
-                vendor_formula = fields.get("molecular formula") or fields.get("formula")
-                if vendor_formula:
-                    comparison = compound_pubchem.compare_molecular_formulas(vendor_formula, candidate["molecular_formula"])
-                    st.caption(comparison["message"])
-                    candidate = {**candidate, "vendor_formula": vendor_formula, "formula_comparison": comparison}
-                components = compound_pubchem.pubchem_component_options(candidate["smiles"])
-                selected = 0
-                if len(components) > 1 or components[0]["occurrences"] > 1:
-                    selected = st.selectbox("Component to import", range(len(components)), index=None,
-                        format_func=lambda index: f"{components[index]['formula']} · {components[index]['smiles']}",
-                        key=f"{result_key}-component-{candidate['cid']}")
-                if selected is not None:
-                    parent = compound_pubchem.selected_parent_candidate(candidate, components[selected])
-                    from mn_molecular_design_studio.cofolding_input import _smiles_preview
+    fields = {label.casefold().strip(): str(value).strip() for label, value in (row.get("source_data") or {}).items()}
+    cas = fields.get("cas no.") or fields.get("cas number") or fields.get("cas") or ""
+    query_type = st.radio("Search by", ["CAS number", "Compound name"], index=0 if cas else 1,
+                          horizontal=True, key=f"{key}-mode")
+    search = st.text_input("PubChem query", value=cas if query_type == "CAS number" else row["name"],
+                           key=f"{key}-query-{query_type}").strip()
+    result_key = f"{key}-results"
+    if st.button("Search PubChem", key=key + "-search", disabled=not search):
+        try:
+            with st.spinner("Searching PubChem…"):
+                hits = compound_pubchem.search_pubchem_candidates(search,
+                    query_type="cas" if query_type == "CAS number" else "name")
+            st.session_state[result_key] = hits
+            st.session_state.pop(result_key + "-candidate", None)
+            if not hits:
+                st.info("PubChem returned no matching structures.")
+        except (ValueError, OSError) as exc:
+            st.error(str(exc))
+    if hits := st.session_state.get(result_key):
+        choice = st.selectbox("PubChem structure", range(len(hits)), index=None, key=result_key + "-candidate",
+                              format_func=lambda index: f"CID {hits[index]['cid']} · {hits[index]['molecular_formula']}")
+        if choice is not None and choice < len(hits):
+            candidate = hits[choice]
+            st.code(candidate["smiles"], language=None, wrap_lines=True)
+            vendor_formula = fields.get("molecular formula") or fields.get("formula")
+            if vendor_formula:
+                comparison = compound_pubchem.compare_molecular_formulas(vendor_formula, candidate["molecular_formula"])
+                st.caption(comparison["message"])
+                candidate = {**candidate, "vendor_formula": vendor_formula, "formula_comparison": comparison}
+            components = compound_pubchem.pubchem_component_options(candidate["smiles"])
+            selected = 0
+            if len(components) > 1 or components[0]["occurrences"] > 1:
+                selected = st.selectbox("Component to import", range(len(components)), index=None,
+                    format_func=lambda index: f"{components[index]['formula']} · {components[index]['smiles']}",
+                    key=f"{result_key}-component-{candidate['cid']}")
+            if selected is not None:
+                parent = compound_pubchem.selected_parent_candidate(candidate, components[selected])
+                from mn_molecular_design_studio.cofolding_input import _smiles_preview
 
-                    if picture := _smiles_preview(parent["smiles"]):
-                        st.image(picture)
-                    if st.button("Accept selected structure", key=key + "-accept"):
-                        if len(components) > 1 or components[0]["occurrences"] > 1:
-                            parent["component_selection"] = "user-selected component"
-                        approved[number] = pubchem_review(parent, source="Studio", query=candidate.get("query"),
-                            query_type=candidate.get("query_type"), reviewed_at=datetime.now(timezone.utc).isoformat())
-        if number in approved:
-            st.caption(f"Accepted PubChem CID {approved[number]['candidate']['cid']} for this row.")
-            if st.button("Clear accepted structure", key=key + "-clear"):
-                approved.pop(number)
-    return approved
+                if picture := _smiles_preview(parent["smiles"]):
+                    st.image(picture)
+                if st.button("Accept selected structure", key=key + "-accept"):
+                    if len(components) > 1 or components[0]["occurrences"] > 1:
+                        parent["component_selection"] = "user-selected component"
+                    return pubchem_review(parent, source="Studio", query=candidate.get("query"),
+                        query_type=candidate.get("query_type"), reviewed_at=datetime.now(timezone.utc).isoformat())
+    return None
+
+
+def render_compound_review(original, effective, changes, *, key):
+    from mn_molecular_design_studio.cofolding_input import _smiles_preview
+    from mn_molecular_design_studio.molecule_imports import validated_compound_smiles
+
+    number = original["row_number"]
+    key = f"{key}-row-{number}"
+    st.markdown(f"**Review row {number:,}**")
+    with st.container(border=True):
+        source, replacement = st.columns(2)
+        with source:
+            st.markdown("**Original entry**")
+            st.text(original["name"])
+            if original["source_id"] and original["source_id"] != original["name"]:
+                st.caption(original["source_id"])
+            st.code(original["raw_smiles"] or "Blank SMILES", language=None, wrap_lines=True)
+            for issue in original["errors"]:
+                st.caption(issue)
+            if suggestion := original.get("annotation_stripped_candidate"):
+                st.caption("Candidate after removing vendor annotation")
+                st.code(suggestion, language=None, wrap_lines=True)
+            if review := effective.get("review"):
+                st.caption(f"Accepted replacement · {review['method']}")
+                st.code(effective["canonical_smiles"], language=None, wrap_lines=True)
+        with replacement:
+            st.markdown("**Replacement**")
+            mode = st.radio("Replacement source", ["Manual SMILES", "PubChem"], horizontal=True, key=key + "-method")
+            if mode == "PubChem":
+                accepted = _pubchem_replacement(original, key + "-pubchem")
+                if accepted:
+                    changes[number] = accepted
+                    st.rerun()
+            else:
+                smiles = st.text_input("Replacement SMILES", value=effective.get("corrected_smiles", ""),
+                                       key=key + "-smiles").strip()
+                valid = False
+                if smiles:
+                    try:
+                        validated_compound_smiles(smiles)
+                    except ValueError as exc:
+                        st.warning(str(exc))
+                    else:
+                        valid = True
+                        if picture := _smiles_preview(smiles):
+                            st.image(picture)
+                if st.button("Apply correction", disabled=not valid, key=key + "-apply"):
+                    changes[number] = {"method": "Manual replacement", "smiles": smiles}
+                    st.rerun()
+            if number in changes and st.button("Clear correction", key=key + "-clear"):
+                changes.pop(number)
+                st.session_state.pop(key + "-smiles", None)
+                st.rerun()
 
 
 def render_import_history(database, user, group, *, prefix):
