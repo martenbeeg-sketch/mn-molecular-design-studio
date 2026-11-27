@@ -553,12 +553,21 @@ def test_canvas_complex_results_scope_accepts_only_the_exact_project_job(api_dat
 
 def test_structure_preview_and_saved_camera_are_private(api_data):
     data, client = api_data, api_data["client"]
-    pdb = write_structure(data["root"] / "input.pdb").read_bytes()
+    pdb = b"REMARK 465     GLY A     5\n" + write_structure(data["root"] / "input.pdb").read_bytes()
     uploaded = client.post("/api/v1/files?filename=template.pdb", content=pdb, headers=headers(data, "student")).json()
     response = client.post("/api/v1/structures/preview", json={"file_id": uploaded["id"]}, headers=headers(data, "student"))
     assert response.status_code == 200, response.text
     assert set(response.json()["inventory"]["chains"]) == {"A", "B"}
     assert response.json()["receptor_check"]["residues"] == 8
+    coverage = response.json()["coordinate_coverage"]
+    assert coverage["segments"] == [{
+        "chain": "A", "first": "5", "last": "5", "count": 1, "position": "after_observed",
+        "kind": "unobserved", "source": "PDB REMARK 465",
+    }]
+    filtered = client.post("/api/v1/structures/preview", json={"file_id": uploaded["id"], "coverage_chains": ["B"]},
+                           headers=headers(data, "student")).json()
+    assert filtered["coordinate_coverage"]["segments"] == []
+    assert filtered["coordinate_coverage"]["chains"] == [{"chain": "B", "observed_count": 4}]
     assert client.post("/api/v1/structures/preview", json={"file_id": uploaded["id"]}).status_code == 404
     options = {"representation": "surface", "color": "chain-id", "background": "#112233", "camera_position": [1, 2, 3]}
     view = client.post("/api/v1/visualizations", json={"file_id": uploaded["id"], "options": options}, headers=headers(data, "student"))
@@ -567,6 +576,61 @@ def test_structure_preview_and_saved_camera_are_private(api_data):
     assert client.get(view.json()["file"]["download_url"]).status_code == 404
     assert client.post("/api/v1/visualizations", json={"file_id": uploaded["id"], "structure_id": "other"}).status_code == 422
     assert client.post("/api/v1/visualizations", json={"file_id": uploaded["id"], "options": {"camera_position": [1, 2]}}).status_code == 422
+
+
+def test_cif_coverage_preview_reaches_mcp_with_exact_author_positions(api_data):
+    import io
+    from Bio.PDB import MMCIFIO
+    from mcp import Client
+    from mn_molecular_design_studio.api_client import StudioClient
+    from mn_molecular_design_studio.mcp_server import create_server
+    from mn_molecular_design_studio.molecule_imports import read_coordinate_structure
+
+    data = api_data
+    pdb = write_structure(data["root"] / "coordinate-coverage.pdb").read_bytes()
+    structure = read_coordinate_structure(pdb, "fixture.pdb")
+    structure[0]["A"].detach_child((" ", 2, " "))
+    structure[0]["B"].detach_child((" ", 3, " "))
+    writer, buffer = MMCIFIO(), io.StringIO()
+    writer.set_structure(structure)
+    writer.save(buffer)
+    cif = buffer.getvalue() + """
+loop_
+_pdbx_unobs_or_zero_occ_residues.id
+_pdbx_unobs_or_zero_occ_residues.auth_asym_id
+_pdbx_unobs_or_zero_occ_residues.auth_seq_id
+_pdbx_unobs_or_zero_occ_residues.PDB_ins_code
+_pdbx_unobs_or_zero_occ_residues.PDB_model_num
+_pdbx_unobs_or_zero_occ_residues.polymer_flag
+_pdbx_unobs_or_zero_occ_residues.occupancy_flag
+1 A 2   . 1 Y 1
+2 A 2   A 1 Y 1
+3 A 5   . 1 Y 0
+4 A 100 . 2 Y 1
+5 A 200 . 1 N 1
+#
+"""
+    client = data["client"]
+    uploaded = client.post("/api/v1/files?filename=coverage.cif", content=cif.encode(),
+                           headers=headers(data, "student")).json()
+    studio = StudioClient("http://studio.test", token=data["student_token"], transport=httpx.ASGITransport(app=data["app"]))
+
+    async def check():
+        async with Client(create_server(studio)) as mcp:
+            reply = await mcp.call_tool("preview_structure", {"file_id": uploaded["id"], "coverage_chains": ["A"]})
+            assert not reply.is_error, reply.content
+            coverage = reply.structured_content["coordinate_coverage"]
+            assert coverage["chains"] == [{"chain": "A", "observed_count": 3}]
+            assert [(row["first"], row["kind"], row["position"]) for row in coverage["segments"]] == [
+                ("2", "unobserved", "internal"), ("2A", "unobserved", "internal"),
+                ("5", "zero_occupancy", "after_observed"),
+            ]
+            inferred = await mcp.call_tool("preview_structure", {"file_id": uploaded["id"], "coverage_chains": ["B"]})
+            assert not inferred.is_error, inferred.content
+            gap, = inferred.structured_content["coordinate_coverage"]["segments"]
+            assert (gap["first"], gap["count"], gap["kind"]) == ("3", None, "numbering_jump")
+
+    asyncio.run(check())
 
 
 def test_local_execution_actions_and_results_preserve_identity(api_data, monkeypatch):

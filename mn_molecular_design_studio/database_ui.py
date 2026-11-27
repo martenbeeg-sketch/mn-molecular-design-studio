@@ -114,6 +114,40 @@ def _guess(columns, names):
     return next((column for column in columns if column.lower().replace(" ", "_") in names), "")
 
 
+@st.cache_data(ttl=180, max_entries=16, show_spinner=False)
+def _coordinate_import_coverage(data, filename):
+    from mn_molecular_design_studio.coordinate_coverage import inspect_coordinate_coverage
+
+    return inspect_coordinate_coverage(data, filename)
+
+
+def _show_coordinate_import_coverage(source, kept_chains):
+    from mn_molecular_design_studio.coordinate_coverage import MAX_PREVIEW_BYTES, select_coverage_chains
+
+    if len(source["content"]) > MAX_PREVIEW_BYTES:
+        return
+    report = select_coverage_chains(_coordinate_import_coverage(source["content"], source["name"]), kept_chains)
+    if not report["chains"]:
+        return
+    st.markdown("**Coordinate coverage**")
+    if not report["segments"]:
+        st.caption("No annotated missing spans or numbering jumps in the selected chains.")
+        return
+    sources = sorted({row["source"] for row in report["segments"]})
+    st.caption("Author residue numbers · " + " · ".join(sources))
+    evidence = {"unobserved": "Unobserved", "zero_occupancy": "Zero occupancy", "numbering_jump": "Numbering jump"}
+    positions = {"internal": "Internal", "before_observed": "Before observed region",
+                 "after_observed": "After observed region", "undetermined": "Undetermined"}
+    st.dataframe([{
+        "Chain": row["chain"],
+        "Residues": row["first"] if row["first"] == row["last"] else f"{row['first']}–{row['last']}",
+        "Location": positions[row["position"]],
+        "Finding": evidence[row["kind"]],
+    } for row in report["segments"]], hide_index=True, width="stretch")
+    if any(row["kind"] == "numbering_jump" for row in report["segments"]):
+        st.caption("A numbering jump may reflect author numbering. Deposition annotations identify unobserved residues.")
+
+
 def _review_structure_chains(records, key, *, dataset_mode):
     from mn_molecular_design_studio.dataset_preparation_ui import COORDINATE_FORMATS, render_coordinate_preview
 
@@ -155,6 +189,7 @@ def _review_structure_chains(records, key, *, dataset_mode):
             render_coordinate_preview(focused["files"][0]["content"], key=key + "-viewer",
                 show_ligands=any(component["type"] == "small_molecule" for component in focused["components"]))
         with options:
+            _show_coordinate_import_coverage(sources[selected], keep)
             prepare = dataset_mode and any(component.get("sequence") for component in focused["components"]) and st.button(
                 "Import and prepare", type="primary", key="molecular-import-prepare",
                 help="Save the import and open preparation for the structure shown here.")

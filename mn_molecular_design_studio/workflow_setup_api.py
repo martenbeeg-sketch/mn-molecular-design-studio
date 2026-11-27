@@ -29,6 +29,7 @@ class PipelineDraft(Contract):
 
 class StructurePreview(Contract):
     file_id: str
+    coverage_chains: list[str] | None = Field(default=None, max_length=500)
 
 
 def install(app, current_user, *, validate_paths, resolve_job):
@@ -183,14 +184,20 @@ def install(app, current_user, *, validate_paths, resolve_job):
     def structure_preview(payload: StructurePreview, user=Depends(current_user)):
         from mn_molecular_design_studio.rfdiffusion3_input import inventory
         from mn_molecular_design_studio.docking_structure_check import inspect_receptor_pdb
+        from mn_molecular_design_studio.coordinate_coverage import (
+            MAX_PREVIEW_BYTES, inspect_coordinate_coverage, select_coverage_chains,
+        )
         path = call(api_files.resolve, user, payload.file_id)
         if path.suffix.lower() not in {".pdb", ".ent", ".cif", ".mmcif"}:
             raise HTTPException(422, "Choose a PDB or mmCIF structure.")
-        if path.stat().st_size > 50_000_000:
+        if path.stat().st_size > MAX_PREVIEW_BYTES:
             raise HTTPException(422, "Use a structure smaller than 50 MB for an interactive preview.")
+        content = call(path.read_bytes)
         result = {"inventory": call(inventory, path), "file": call(api_files.describe, user, payload.file_id)}
+        coverage = call(inspect_coordinate_coverage, content, path.name)
+        result["coordinate_coverage"] = select_coverage_chains(coverage, payload.coverage_chains)
         if path.suffix.lower() in {".pdb", ".ent"}:
-            result["receptor_check"] = call(inspect_receptor_pdb, path.read_text())
+            result["receptor_check"] = call(inspect_receptor_pdb, call(content.decode, "utf-8"))
         return result
 
     app.include_router(router)

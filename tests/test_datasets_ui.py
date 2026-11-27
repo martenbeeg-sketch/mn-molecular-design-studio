@@ -236,7 +236,9 @@ def test_pdb_import_opens_preparation_for_the_selected_chain(database, monkeypat
     from mn_molecular_design_studio import molecule_imports
     from test_molecular_database_policy import _pdb_efg_acd_complex
 
-    monkeypatch.setattr(molecule_imports, "fetch_identifier", lambda *args, **kwargs: ("example.pdb", _pdb_efg_acd_complex().encode()))
+    annotations = "REMARK 465     ALA A     4\nREMARK 465     CYS B     4\n"
+    monkeypatch.setattr(molecule_imports, "fetch_identifier",
+                        lambda *args, **kwargs: ("example.pdb", (annotations + _pdb_efg_acd_complex()).encode()))
     app = _app(database, monkeypatch, inputs=True)
     app.button(key="datasets-import-protein").click().run()
     app.text_input(key="molecular-import-group-name").set_value("Import and prepare fixture").run()
@@ -246,6 +248,10 @@ def test_pdb_import_opens_preparation_for_the_selected_chain(database, monkeypat
     chains = next(item for item in app.multiselect if item.label == "Chains and ligands to keep")
     assert set(chains.value) == {"A", "B"}
     chains.set_value(["A"]).run()
+    report = next(frame.value for frame in app.dataframe if "Finding" in frame.value.columns)
+    assert report.to_dict("records") == [{"Chain": "A", "Residues": "4", "Location": "After observed region",
+                                           "Finding": "Unobserved"}]
+    assert not database.groups(USER)
     app.button(key="molecular-import-prepare").click().run()
     assert not app.exception and not app.error
     assert any(slider.label == "Chain A residue range" for slider in app.slider)

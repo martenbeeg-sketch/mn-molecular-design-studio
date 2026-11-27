@@ -549,6 +549,11 @@ def parse_sdf(data: bytes, filename: str = "molecules.sdf") -> list[dict]:
 
 
 def read_coordinate_structure(data: bytes, filename: str):
+    return read_coordinate_file(data, filename)[0]
+
+
+def read_coordinate_file(data: bytes, filename: str):
+    """Read coordinates and their deposited annotations together."""
     from Bio.PDB import MMCIFParser, PDBParser
 
     suffix = Path(filename).suffix.lower()
@@ -566,7 +571,8 @@ def read_coordinate_structure(data: bytes, filename: str):
         parser = _OptionalAtomSiteFieldsMMCIFParser(QUIET=True)
     else:
         parser = PDBParser(QUIET=True)
-    return parser.get_structure("molecule", io.StringIO(data.decode("utf-8")))
+    structure = parser.get_structure("molecule", io.StringIO(data.decode("utf-8")))
+    return structure, parser._mmcif_dict if suffix in {".cif", ".mmcif"} else structure.header
 
 
 def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True, chains: list[str] | None = None,

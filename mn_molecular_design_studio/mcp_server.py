@@ -137,9 +137,12 @@ def create_server(client=None):
         return await call(ctx, "POST", f"/api/v1/workflows/{segment(workflow_id)}/examples/{segment(example_id)}", body={})
 
     @server.tool(annotations=read)
-    async def preview_structure(file_id: str, ctx: Context) -> dict[str, Any]:
-        """Inspect an uploaded structure's chains, residues and ligands, plus the quick PDB receptor checks."""
-        return await call(ctx, "POST", "/api/v1/structures/preview", body={"file_id": file_id})
+    async def preview_structure(file_id: str, ctx: Context, coverage_chains: list[str] | None = None) -> dict[str, Any]:
+        """Inspect an uploaded structure, including missing spans and numbering jumps for the requested author chains."""
+        payload: dict[str, Any] = {"file_id": file_id}
+        if coverage_chains is not None:
+            payload["coverage_chains"] = coverage_chains
+        return await call(ctx, "POST", "/api/v1/structures/preview", body=payload)
 
     @server.tool(annotations=read)
     async def list_workstations(ctx: Context) -> dict[str, Any]:
