@@ -25,6 +25,7 @@ from mn_molecular_design_studio.data_browser_table import (
 from mn_molecular_design_studio.binderscope_table import NUMBER_FORMATS, PREFIX, VIEWER_COLUMN, inspector_choices, inspector_label
 from mn_molecular_design_studio.database_actions_ui import read_only_workspace, render_library_actions, render_selection_actions
 from mn_molecular_design_studio.navigation import database_destination
+from mn_molecular_design_studio.resizable_panes_ui import resizable_columns
 
 
 def _cache(database):
@@ -56,29 +57,39 @@ def _change_workspace():
 
 
 def _workspace():
-    controls, pin_control, folder_control = st.columns([3, 1, 1], vertical_alignment="bottom")
+    controls, pin_control, tools = st.columns([3, 1.5, 2.5], vertical_alignment="bottom")
     with controls:
         layout = st.segmented_control("Workspace", ["Split", "Table", "Structure"], default="Split",
             key="data-browser-layout", on_change=_change_workspace,
-            help="Split keeps the original layout. Table or Structure expands that pane without changing the selected data.") or "Split"
+            help="Split shows the table and structure together. Table or Structure gives that pane more room.") or "Split"
     with pin_control:
         st.session_state.setdefault("data-browser-pin-folders", True)
         pinned = st.toggle("Pin folders", key="data-browser-pin-folders",
             help="Keep the folder tree beside the content, or unpin it to open it as an overlay.")
-    weights = {"folders": .27, "table": .43, "details": .30}
-    if layout != "Split":
-        weights.update(table=.73, details=.73)
-    names = (["folders"] if pinned else []) + (["table", "details"] if layout == "Split" else
-        ["table"] if layout == "Table" else ["details"])
-    containers = st.columns([weights[name] for name in names], gap="medium") if len(names) > 1 else [st.container()]
-    panes = dict(zip(names, containers))
+    with tools:
+        toolbar = st.container(horizontal=True, horizontal_alignment="right", gap="small")
+    if not pinned:
+        navigation = toolbar.popover("Folders", icon=":material/folder_open:",
+            help="Browse or refine folders without leaving this focused workspace.")
+
+    if layout == "Split" and pinned:
+        navigation, table, details = resizable_columns("data-browser-split", (27, 43, 30), toolbar=toolbar, adjustable={
+            0: ("folders", "Folders", (12, 34)),
+            2: ("details", "Structure and details", (16, 50)),
+        })
+        return layout, navigation, table, details
+    if layout == "Split":
+        table, details = resizable_columns("data-browser-split-unpinned", (59, 41), toolbar=toolbar, adjustable={
+            1: ("details", "Structure and details", (20, 75)),
+        })
+        return layout, navigation, table, details
     if pinned:
-        navigation = panes["folders"]
+        navigation, pane = resizable_columns(f"data-browser-{layout.lower()}-pinned", (27, 73), toolbar=toolbar, adjustable={
+            0: ("folders", "Folders", (12, 55)),
+        })
     else:
-        with folder_control:
-            navigation = st.popover("Folders", icon=":material/folder_open:", width="stretch",
-                help="Browse or refine folders without leaving this focused workspace.")
-    return layout, navigation, panes.get("table", panes.get("details")), panes.get("details")
+        pane = st.container()
+    return layout, navigation, pane, pane if layout == "Structure" else None
 
 
 def _page_selection(signature, page, visible):

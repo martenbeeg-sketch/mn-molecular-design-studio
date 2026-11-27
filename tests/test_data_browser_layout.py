@@ -23,18 +23,25 @@ def test_workspace_can_focus_either_pane_or_unpin_only_folders():
     assert app.session_state["data-browser-layout"] == "Split"
     assert app.session_state["data-browser-pin-folders"]
     assert len(app.columns) == 6
+    app.slider(key="data-browser-split-details-width").set_value(46).run()
+    assert [round(column.proto.weight * 100) for column in app.columns[-3:]] == [27, 27, 46]
     app.toggle[0].set_value(False).run()
     assert len(app.columns) == 5
-    assert len(app.get("popover")) == 1
+    assert len(app.get("popover")) == 2
     for mode in ("Table", "Structure"):
         _layout(app, mode)
         assert not app.session_state["data-browser-pin-folders"]
         assert len(app.columns) == 3
+        assert not app.slider
         app.toggle[0].set_value(True).run()
         assert len(app.columns) == 5
+        assert app.slider(key=f"data-browser-{mode.lower()}-pinned-folders-width").value == 27
     _layout(app, "Split")
     assert app.session_state["data-browser-pin-folders"]
     assert len(app.columns) == 6
+    assert app.slider(key="data-browser-split-details-width").value == 46
+    app.button(key="data-browser-split-reset-widths").click().run()
+    assert app.slider(key="data-browser-split-details-width").value == 30
     _layout(app, None)
     assert app.session_state["data-browser-layout"] == "Split"
     assert app.session_state["data-browser-pin-folders"]

@@ -1,27 +1,29 @@
 export default function ({data, parentElement, setTriggerValue}) {
-    const workspace = parentElement.closest('.st-key-datasets-workspace');
+    const workspace = parentElement.closest(`.st-key-${data.workspace}`);
     const row = workspace?.querySelector('[data-testid="stHorizontalBlock"]');
     const columns = row && [...row.children].filter(child => child.dataset.testid === 'stColumn');
-    if (columns?.length !== 3) return;
+    if (columns?.length !== data.widths.length) return;
 
-    const focused = [...row.querySelectorAll(':scope > .studio-dataset-divider')].indexOf(document.activeElement);
-    row.studioDatasetDividerCleanup?.();
-    row.classList.add('studio-dataset-split');
-    const [folders, details] = data.widths;
-    const weights = [folders, 100 - folders - details, details];
+    const focused = [...row.querySelectorAll(':scope > .studio-pane-divider')].indexOf(document.activeElement);
+    row.studioPaneDividerCleanup?.();
+    row.classList.add('studio-pane-split');
+    const weights = [...data.widths];
+    // Each divider changes the pane on its side of the flexible column.
+    const dividerPanes = Object.keys(data.controls).map(Number);
     let drag;
     let pending = false;
-    const handles = ['Resize dataset folders', 'Resize member details'].map((label, index) => {
+    const handles = dividerPanes.map(pane => {
+        const {label, limits} = data.controls[pane];
         const handle = document.createElement('div');
-        handle.className = 'studio-dataset-divider';
+        handle.className = 'studio-pane-divider';
         handle.tabIndex = 0;
-        handle.title = label;
+        handle.title = `Resize ${label.toLowerCase()}`;
         handle.setAttribute('role', 'separator');
-        handle.setAttribute('aria-label', label);
+        handle.setAttribute('aria-label', handle.title);
         handle.setAttribute('aria-orientation', 'vertical');
-        handle.setAttribute('aria-valuemin', data.bounds[index][0]);
-        handle.setAttribute('aria-valuemax', data.bounds[index][1]);
-        handle.setAttribute('aria-valuenow', data.widths[index]);
+        handle.setAttribute('aria-valuemin', limits[0]);
+        handle.setAttribute('aria-valuemax', limits[1]);
+        handle.setAttribute('aria-valuenow', data.widths[pane]);
         row.appendChild(handle);
         return handle;
     });
@@ -38,10 +40,11 @@ export default function ({data, parentElement, setTriggerValue}) {
     }
 
     function preview(index, delta) {
-        const [minimum, maximum] = data.bounds[index];
-        const value = Math.max(minimum, Math.min(maximum, data.widths[index] + delta));
-        weights[index === 0 ? 0 : 2] = value;
-        weights[1] = 100 - weights[0] - weights[2];
+        const pane = dividerPanes[index];
+        const [minimum, maximum] = data.controls[pane].limits;
+        const value = Math.max(minimum, Math.min(maximum, data.widths[pane] + delta));
+        weights[pane] = value;
+        weights[data.flexible] = data.widths[data.flexible] + data.widths[pane] - value;
         const gap = getComputedStyle(row).columnGap;
         columns.forEach((column, pane) => {
             // Streamlit's native columns distribute the unused gap via flex-grow.
@@ -55,10 +58,10 @@ export default function ({data, parentElement, setTriggerValue}) {
         columns.forEach(column => column.style.removeProperty('flex-basis'));
     }
 
-    function commit() {
-        if (weights[0] !== folders || weights[2] !== details) {
+    function commit(pane) {
+        if (weights[pane] !== data.widths[pane]) {
             pending = true;
-            setTriggerValue('resize', [weights[0], weights[2]]);
+            setTriggerValue('resize', [pane, weights[pane]]);
         } else {
             clearPreview();
             positionHandles();
@@ -66,15 +69,15 @@ export default function ({data, parentElement, setTriggerValue}) {
     }
 
     handles.forEach((handle, index) => {
-        // Moving the right divider right makes the details pane narrower.
-        const direction = index === 0 ? 1 : -1;
+        const pane = dividerPanes[index];
+        const direction = pane < data.flexible ? 1 : -1;
         handle.onpointerdown = event => {
             if (event.button !== 0 || drag || pending) return;
             event.preventDefault();
             handle.focus({preventScroll: true});
             handle.setPointerCapture(event.pointerId);
             drag = {handle, x: event.clientX, width: row.clientWidth};
-            row.classList.add('studio-dataset-dragging');
+            row.classList.add('studio-pane-dragging');
         };
         handle.onpointermove = event => {
             if (drag?.handle === handle) {
@@ -85,17 +88,16 @@ export default function ({data, parentElement, setTriggerValue}) {
             if (drag?.handle !== handle) return;
             handle.onpointermove(event);
             drag = undefined;
-            row.classList.remove('studio-dataset-dragging');
-            commit();
+            row.classList.remove('studio-pane-dragging');
+            commit(pane);
         };
         handle.onlostpointercapture = () => {
             if (drag?.handle !== handle) return;
             drag = undefined;
-            row.classList.remove('studio-dataset-dragging');
-            weights[0] = folders;
-            weights[1] = 100 - folders - details;
-            weights[2] = details;
-            handle.setAttribute('aria-valuenow', data.widths[index]);
+            row.classList.remove('studio-pane-dragging');
+            weights[pane] = data.widths[pane];
+            weights[data.flexible] = data.widths[data.flexible];
+            handle.setAttribute('aria-valuenow', data.widths[pane]);
             clearPreview();
             positionHandles();
         };
@@ -103,7 +105,7 @@ export default function ({data, parentElement, setTriggerValue}) {
             if (pending || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')) return;
             event.preventDefault();
             preview(index, direction * (event.key === 'ArrowRight' ? 1 : -1));
-            commit();
+            commit(pane);
         };
     });
 
@@ -115,15 +117,15 @@ export default function ({data, parentElement, setTriggerValue}) {
     const cleanup = () => {
         observer.disconnect();
         handles.forEach(handle => handle.remove());
-        row.classList.remove('studio-dataset-split', 'studio-dataset-dragging');
+        row.classList.remove('studio-pane-split', 'studio-pane-dragging');
         clearPreview();
     };
     // A component update can re-run this initializer on the same Streamlit row.
-    row.studioDatasetDividerCleanup = cleanup;
+    row.studioPaneDividerCleanup = cleanup;
     return () => {
-        if (row.studioDatasetDividerCleanup === cleanup) {
+        if (row.studioPaneDividerCleanup === cleanup) {
             cleanup();
-            delete row.studioDatasetDividerCleanup;
+            delete row.studioPaneDividerCleanup;
         }
     };
 }
