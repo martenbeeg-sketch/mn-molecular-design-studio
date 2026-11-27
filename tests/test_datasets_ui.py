@@ -172,3 +172,27 @@ def test_input_ligand_preview_does_not_borrow_a_calculated_receptor(database, mo
     app = _app(database, monkeypatch, inputs=True, state={"datasets-focus-molecule": imported["molecule_ids"][0]})
     assert not app.exception
     assert rendered and all(item.representation_type != "cartoon" for item in rendered)
+
+
+def test_protein_import_is_registered_and_automatic_reference_groups_are_hidden(database, monkeypatch):
+    from test_molecular_database_policy import _pdb_acd
+
+    automatic = database.create_group(USER, "Automatic Protein Library", import_method="tool_inputs",
+        origin={"type": "job", "collection_kind": "reference"})
+    monkeypatch.setattr("mn_molecular_design_studio.molecule_imports.fetch_identifier",
+        lambda identifier, source, *, structure_format: (identifier.lower() + ".pdb", _pdb_acd().encode()))
+    app = _app(database, monkeypatch, inputs=True)
+    app.button(key="datasets-import-protein").click().run()
+    app.text_input(key="molecular-import-group-name").set_value("Imported protein").run()
+    app.button(key="molecular-import-next").click().run()
+    assert app.radio(key="molecular-import-method").value == "PDB accession"
+    app.text_input(key="molecular-import-identifier").set_value("1LYZ").run()
+    app.button(key="molecular-import-fetch").click().run()
+    assert not app.button(key="molecular-import-commit").disabled
+    app.button(key="molecular-import-commit").click().run()
+    assert not app.exception
+    groups = datasets.catalog(database, USER)
+    assert len(groups) == 1 and groups[0]["name"] == "Imported protein"
+    assert database.group(automatic, USER)["name"] == "Automatic Protein Library"
+    from mn_molecular_design_studio.target_editor import saved_protein_structure_options
+    assert len(saved_protein_structure_options(database, USER)) == 1

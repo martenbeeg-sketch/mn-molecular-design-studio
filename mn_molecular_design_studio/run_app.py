@@ -1138,7 +1138,8 @@ def _render_bindcraft2_setup(schema: dict, *, generator_only: bool = False) -> N
                     upload_file_types=["pdb", "ent"],
                     upload_expander_label="Upload a PDB file",
                     upload_in_expander=True,
-                    owner_id=str(CURRENT_USER["id"]),
+                    owner_id=str(CURRENT_USER["id"]), project_id=project_id or "",
+                    allow_saved_targets=True, saved_formats=("pdb", "ent"),
                 )
             else:
                 st.caption("CIF/mmCIF structures are provided by upload; accession fetch is available in PDB mode.")
@@ -1151,7 +1152,8 @@ def _render_bindcraft2_setup(schema: dict, *, generator_only: bool = False) -> N
                     fetch_enabled=False,
                     upload_file_types=["cif", "mmcif"],
                     upload_in_expander=False,
-                    owner_id=str(CURRENT_USER["id"]),
+                    owner_id=str(CURRENT_USER["id"]), project_id=project_id or "",
+                    allow_saved_targets=True, saved_formats=("cif", "mmcif"),
                 )
             target_input = render_target_editor(
                 target_source,
@@ -2043,106 +2045,21 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False, mimosa
             horizontal=True,
             key="boltzgen-structure-format",
         )
-        target_source_view = st.session_state.get("boltzgen-target-source-view", "my_files")
-        source_buttons = st.columns([1, 1, 5], gap="small", vertical_alignment="center")
-        with source_buttons[0]:
-            if st.button(
-                "My files",
-                key="boltzgen-source-my-files",
-                type="primary" if target_source_view == "my_files" else "secondary",
-                use_container_width=True,
-            ):
-                st.session_state["boltzgen-target-source-view"] = "my_files"
-                st.rerun()
-        with source_buttons[1]:
-            if st.button(
-                "My proteins",
-                key="boltzgen-source-my-proteins",
-                type="primary" if target_source_view == "my_proteins" else "secondary",
-                use_container_width=True,
-            ):
-                st.session_state["boltzgen-target-source-view"] = "my_proteins"
-                st.rerun()
-
-        saved_proteins: list[Path] = []
-        structures_root = user_input_root(str(CURRENT_USER["id"])) / "structures"
-        try:
-            resolved_structures_root = structures_root.resolve()
-            saved_proteins = []
-            for candidate_path in structures_root.iterdir():
-                if not candidate_path.is_file() or candidate_path.suffix.lower() not in {".pdb", ".ent", ".cif", ".mmcif"}:
-                    continue
-                resolved_path = candidate_path.resolve()
-                try:
-                    resolved_path.relative_to(resolved_structures_root)
-                except ValueError:
-                    continue
-                saved_proteins.append(resolved_path)
-            saved_proteins = sorted(
-                saved_proteins,
-                key=lambda path: path.stat().st_mtime,
-                reverse=True,
+        target_key_prefix = "boltzgen" if structure_format == "pdb" else "boltzgen-cif"
+        if st.segmented_control("Source", ["Saved protein inputs", "Use a file for this job"],
+                               default="Saved protein inputs", key="boltzgen-target-input-source") != "Use a file for this job":
+            target_source = target_editor.render_saved_protein_source(
+                owner_id=str(CURRENT_USER["id"]), project_id=project_id or "", key_prefix=target_key_prefix,
+                formats=("pdb", "ent") if structure_format == "pdb" else ("cif", "mmcif"),
             )
-        except OSError:
-            saved_proteins = []
-
-        if structure_format == "pdb":
-            if target_source_view == "my_proteins":
-                saved_pdb = [path for path in saved_proteins if path.suffix.lower() in {".pdb", ".ent"}]
-                if saved_pdb:
-                    selected_saved = st.selectbox(
-                        "Saved protein structures",
-                        options=[str(path) for path in saved_pdb],
-                        format_func=lambda raw: Path(raw).name,
-                        key="boltzgen-saved-protein-pdb",
-                        help="Structures you previously uploaded or fetched in this account.",
-                    )
-                    selected_path = Path(selected_saved)
-                    target_source = TargetSource(selected_path, selected_path.stem, str(CURRENT_USER["id"]))
-                else:
-                    target_source = TargetSource(owner_id=str(CURRENT_USER["id"]))
-                    st.info("No saved protein structures yet. Choose My files to fetch or upload a target.")
-            else:
-                st.caption("Fetch a structure by PDB accession or upload a PDB file.")
-                target_source = render_target_source(
-                    key_prefix="boltzgen",
-                    label="Target",
-                    example_code="7JZU",
-                    upload_label="Drop a PDB file here or browse",
-                    upload_help="Upload a PDB (.pdb/.ent) structure or fetch it by PDB accession.",
-                    upload_file_types=["pdb", "ent"],
-                    owner_id=str(CURRENT_USER["id"]),
-                )
-            target_key_prefix = "boltzgen"
         else:
-            if target_source_view == "my_proteins":
-                saved_cif = [path for path in saved_proteins if path.suffix.lower() in {".cif", ".mmcif"}]
-                if saved_cif:
-                    selected_saved = st.selectbox(
-                        "Saved mmCIF protein structures",
-                        options=[str(path) for path in saved_cif],
-                        format_func=lambda raw: Path(raw).name,
-                        key="boltzgen-saved-protein-cif",
-                    )
-                    selected_path = Path(selected_saved)
-                    target_source = TargetSource(selected_path, selected_path.stem, str(CURRENT_USER["id"]))
-                else:
-                    target_source = TargetSource(owner_id=str(CURRENT_USER["id"]))
-                    st.info("No saved mmCIF protein structures yet. Choose My files to upload a target.")
-            else:
-                st.caption("Upload a CIF/mmCIF structure. Chain and hotspot selections use the author IDs in the file.")
-                target_source = render_target_source(
-                    key_prefix="boltzgen-cif",
-                    label="Target",
-                    upload_label="Drop a CIF/mmCIF file here or browse",
-                    upload_help="Upload a CIF (.cif) or mmCIF (.mmcif) protein structure.",
-                    allow_cif=True,
-                    fetch_enabled=False,
-                    upload_file_types=["cif", "mmcif"],
-                    upload_in_expander=False,
-                    owner_id=str(CURRENT_USER["id"]),
-                )
-            target_key_prefix = "boltzgen-cif"
+            target_source = render_target_source(
+                key_prefix=target_key_prefix, label="Target", example_code="7JZU",
+                upload_label="Upload a PDB file" if structure_format == "pdb" else "Upload a CIF/mmCIF file",
+                allow_cif=structure_format == "cif", fetch_enabled=structure_format == "pdb",
+                upload_file_types=["pdb", "ent"] if structure_format == "pdb" else ["cif", "mmcif"],
+                upload_in_expander=False, owner_id=str(CURRENT_USER["id"]),
+            )
 
         target_input = render_target_editor(
             target_source,
@@ -7545,18 +7462,7 @@ def _render_job_details() -> None:
             None,
         )
         if prepared_target is not None:
-            try:
-                prep_params = input_payload.get("params") if isinstance(input_payload.get("params"), dict) else {}
-                source_name = Path(str(prep_params.get("source_pdb") or "")).stem or title
-                saved_target = target_editor._target_storage_path(
-                    prepared_target.read_bytes(),
-                    f"{source_name}-prepared-target.pdb",
-                    owner_id=str(CURRENT_USER["id"]),
-                    allow_non_protein=True,
-                )
-                st.success(f"Prepared receptor saved to My proteins as {saved_target.name}.")
-            except (OSError, ValueError) as exc:
-                st.warning(f"Could not add the prepared receptor to My proteins: {exc}")
+            st.caption("The prepared receptor is available in Job files. Import it in Datasets to reuse it.")
     is_generator_tool=str(job.get('tool')) in generator_input.TOOLS.values()
 
     with results_tab:

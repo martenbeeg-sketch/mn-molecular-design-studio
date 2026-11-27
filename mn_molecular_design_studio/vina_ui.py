@@ -18,7 +18,7 @@ from mn_molecular_design_studio.docking_preparation_protocols import (
 )
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.hotspot_sequence import render_hotspot_sequence
-from mn_molecular_design_studio.target_editor import TargetSource, _target_storage_path
+from mn_molecular_design_studio.target_editor import TargetSource, _target_storage_path, render_saved_protein_source
 from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import (
     StructureVisualization, molstar_custom_component,
 )
@@ -227,7 +227,7 @@ def _file_row(path: Path) -> None:
     )
 
 
-def _render_target_input(owner_id: str) -> Path | None:
+def _render_target_input(owner_id: str, project_id: str = "") -> Path | None:
     st.markdown('<p class="vina-label">Protein File</p>', unsafe_allow_html=True)
     file_format = st.segmented_control("Protein format", ["PDB", "CIF"], default="PDB",
                                        key="vina-protein-format", label_visibility="collapsed")
@@ -261,13 +261,13 @@ def _render_target_input(owner_id: str) -> Path | None:
         uploaded = upload_col.file_uploader("Protein file", label_visibility="collapsed",
             type=["cif", "mmcif"] if file_format == "CIF" else ["pdb", "ent"],
             key=f"vina-protein-upload-{st.session_state.get('vina-input-epoch', 0)}")
-        with saved_col.popover("My proteins", use_container_width=True):
-            saved = sorted(user_input_root(owner_id).rglob("*.pdb"), key=lambda p: p.stat().st_mtime, reverse=True)[:100]
-            if saved:
-                chosen = st.selectbox("Saved protein inputs", saved, format_func=lambda p: p.name, key="vina-saved-target")
-                st.button("Use structure", key="vina-use-target", on_click=_use_structure, args=(str(chosen),))
-            else:
-                st.caption("Uploaded and fetched proteins will appear here.")
+        with saved_col.popover("Saved proteins", use_container_width=True):
+            selected = render_saved_protein_source(
+                owner_id=owner_id, project_id=project_id, key_prefix="vina",
+                formats=("cif", "mmcif") if file_format == "CIF" else ("pdb", "ent"),
+            )
+            if selected.path:
+                st.button("Use structure", key="vina-use-target", on_click=_use_structure, args=(str(selected.path),))
         if uploaded is not None:
             digest = hashlib.sha256(uploaded.getvalue()).hexdigest()
             if digest != st.session_state.get("vina-last-target-upload"):
@@ -1038,7 +1038,7 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
         for chain, text in st.session_state.pop("vina-pending-residue-text", {}).items():
             st.session_state[f"vina-residue-text-{chain}"] = text
         job_name = name_col.text_input("Job Name", value=default_job_name, key=job_name_key).strip() or default_job_name
-        source_path = _render_target_input(owner_id)
+        source_path = _render_target_input(owner_id, project_id or "")
         target_path = None
         target_text = ""
         if source_path:

@@ -93,8 +93,8 @@ def _render_setup_content(schema: dict, *, owner_id: str, project_selector, subm
             st.session_state.pop("rfpeptides-target-upload", None)
         source = render_target_source(
             key_prefix="rfpeptides", label="Target", example_code="7ZKR", allow_cif=True,
-            upload_file_types=upload_extensions,
-            upload_expander_label=f"Upload a {target_format} file instead",
+            upload_file_types=upload_extensions, allow_saved_targets=True, project_id=project or "",
+            saved_formats=tuple(upload_extensions), upload_expander_label=f"Upload a {target_format} file instead",
             upload_label=f"Drop a {target_format} file here or browse",
             upload_help=f"Protein target structure in {target_format} format.",
             upload_in_expander=False,

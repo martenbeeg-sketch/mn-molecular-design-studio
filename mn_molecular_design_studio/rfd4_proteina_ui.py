@@ -9,7 +9,7 @@ import streamlit as st
 
 from mn_molecular_design_studio import rfd4_proteina_input as inputs
 from mn_molecular_design_studio.auth import user_input_root
-from mn_molecular_design_studio.target_editor import render_target_editor, render_target_source
+from mn_molecular_design_studio.target_editor import render_saved_protein_source, render_target_editor, render_target_source
 from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import (
     StructureVisualization,
     molstar_custom_component,
@@ -187,13 +187,19 @@ def _objects(label,key,kind='range'):
     return values
 
 
-def _source(owner_id,key='rfd4-target',label='Input Structure',multiple=False):
+def _source(owner_id,key='rfd4-target',label='Input Structure',multiple=False,project_id=""):
     import re
     from urllib.request import Request,urlopen
     from types import SimpleNamespace
     st.markdown(f'**{label}**')
     if label=='Input Structure': st.caption('The target, motif or backbone to design against or around. PDB or mmCIF (.cif); use mmCIF with ligands or a motif, since a PDB cannot hold bond orders or charges.')
     extension=_pills('File format',['PDB','CIF'],'PDB',key=key+'-format')
+    saved_path = None
+    if not multiple:
+        with st.expander("Saved protein inputs"):
+            selected = render_saved_protein_source(owner_id=owner_id, project_id=project_id or "", key_prefix=key,
+                formats=("cif", "mmcif") if extension == "CIF" else ("pdb", "ent"))
+            saved_path = selected.path
     a,b=st.columns([3,1],vertical_alignment='bottom')
     code=a.text_input('Enter PDB Code',key=key+'-pdb-code',placeholder='Enter PDB Code').strip().upper()
     if b.button('Fetch PDB',disabled=not code,key=key+'-fetch',width='stretch'):
@@ -209,7 +215,11 @@ def _source(owner_id,key='rfd4-target',label='Input Structure',multiple=False):
     paths=[str(p) for p in inputs.store_structure_uploads(files,owner_id)]
     if not paths:
         fetched=st.session_state.get(key+'-fetched-target')
-        if fetched and Path(fetched).is_file():paths=[str(fetched)]; st.caption(Path(fetched).name)
+        if saved_path:
+            paths = [str(saved_path)]
+        elif fetched and Path(fetched).is_file():
+            paths = [str(fetched)]
+            st.caption(Path(fetched).name)
     if not multiple and paths:
         a,b=st.columns([1,1])
         trim=a.checkbox('Trim '+extension.lower(),key=key+'-trim')
@@ -453,7 +463,8 @@ def _render_content(schema:dict,*,owner_id,project_selector,submit,folding=False
         st.caption('Use paired brackets for stems, . for unpaired positions, and ? for unspecified positions. Lengths above 256 are beyond the reported training range.')
     elif task!='unconditional':
         multiple=task in ('score_structures','custom_conditions')
-        files=_source(owner_id,label='Structures to Score' if task=='score_structures' else 'Input Structure',multiple=multiple)
+        files=_source(owner_id,label='Structures to Score' if task=='score_structures' else 'Input Structure',
+                      multiple=multiple,project_id=project_id or "")
         ready=bool(files);path=files[0] if files else None;chains=_chain_choices(path)
         if multiple:p['input_files']=files
         else:p['target_structure']=path

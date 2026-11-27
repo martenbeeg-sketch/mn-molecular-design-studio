@@ -807,6 +807,12 @@ class MolecularDatabase:
         from mn_molecular_design_studio.molecule_schema import validate_record
         if (not records and not import_audit) or len(records) > imports.MAX_ROWS:
             raise ValueError("Import between 1 and 100,000 molecules, or save a validation report.")
+        if import_method == "user_uploads":
+            imports.check_compound_import_size(sum(
+                bool(record["components"]) and all(str(component.get("type", "")).lower() == "small_molecule"
+                                                   for component in record["components"])
+                for record in records
+            ))
         for record in records:
             imports.canonical_components(record["components"])
         if group_id:

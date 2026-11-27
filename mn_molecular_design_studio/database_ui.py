@@ -114,12 +114,32 @@ def _guess(columns, names):
     return next((column for column in columns if column.lower().replace(" ", "_") in names), "")
 
 
+def _review_structure_chains(records, key):
+    if len(records) != 1 or len(records[0]["components"]) <= 1:
+        return records
+    record = records[0]
+    labels = {row["chain"]: f"{row['chain']} · {TYPE_LABELS[row['type']]} · {len(row['sequence'])} residues"
+              if row.get("sequence") else f"{row['chain']} · {row.get('ccd') or 'Ligand'}"
+              for row in record["components"]}
+    source = (record.get("files") or [{}])[0]
+    digest = hashlib.sha256(source.get("content", b"")).hexdigest()[:12]
+    chains = st.multiselect("Chains to keep", list(labels), default=list(labels), format_func=labels.get, key=key + digest)
+    if not chains:
+        st.info("Choose at least one chain.")
+        return []
+    if set(chains) == set(labels):
+        return records
+    return [cropped_record(record, chains)]
+
+
 def _import_content(method):
     records = []
     audit = None
     source_content = None
-    if method == "Table":
-        st.caption("One row per molecule. Map protein, ligand, DNA, or RNA columns to chains; other columns become molecular properties.")
+    if method in {"Table", "Compound table"}:
+        compounds = method == "Compound table"
+        if not compounds:
+            st.caption("Map protein, ligand, DNA or RNA columns to chains.")
         upload = st.file_uploader("CSV, TSV, or Excel file", type=["csv", "tsv", "xlsx", "xlsm", "xls", "txt"], key="molecular-import-table")
         if upload is None:
             return [], None, None
@@ -129,7 +149,7 @@ def _import_content(method):
         sheet_name = sheets[0] if sheets else ""
         if len(sheets) > 1:
             sheet_name = st.selectbox("Worksheet", list(sheets), key="molecular-import-sheet-" + signature)
-        table = imports.read_table(upload_content, upload.name, sheet_name=sheet_name)
+        table = imports.read_table(upload_content, upload.name, sheet_name=sheet_name, compounds=compounds)
         columns = list(table.columns)
         id_guess = _guess(columns, {"compound_id", "pubchem_cid", "catalog_id", "catalog_number", "catalog_no", "vendor_id", "zinc_id", "candidate_id", "design_id", "id"})
         name_guess = _guess(columns, {"compound_name", "preferred_name", "common_name", "molecule_name", "name", "molecule"})
@@ -150,6 +170,15 @@ def _import_content(method):
             format_func=lambda value: value or "Use ID as name, or generate a name",
             key="molecular-import-name-column",
         )
+        if compounds:
+            guessed = _guess(columns, {"smiles", "canonical_smiles", "isomeric_smiles", "structure"})
+            smiles_column = st.selectbox("SMILES column", ["", *columns], index=columns.index(guessed) + 1 if guessed else 0,
+                format_func=lambda value: value or "Choose a column", key="molecular-import-smiles-column-" + signature)
+            if not smiles_column:
+                return [], None, None
+            audit = imports.analyze_small_molecule_table(upload_content, upload.name, smiles_column=smiles_column,
+                name_column=name_column, id_column=id_column, sheet_name=sheet_name)
+            return audit.pop("records"), audit, upload_content
         defaults = [column for column in columns if column.lower().replace(" ", "_") in {"sequence", "protein_sequence", "binder_sequence", "target_sequence", "smiles", "canonical_smiles", "isomeric_smiles", "dna", "rna", "heavy", "light", "vh", "vl"}]
         chain_columns = st.multiselect("Molecular chain columns", columns, default=defaults, key="molecular-import-chains-" + signature)
         mapping = {}
@@ -187,20 +216,21 @@ def _import_content(method):
         st.caption("Each FASTA record or plain-text line becomes a molecule. Separate chains of one molecule with colons.")
         if text.strip():
             records = imports.parse_sequences(text, kind=kind)
-    elif method == "Structure files":
-        uploads = st.file_uploader("PDB, mmCIF, SDF, MOL, or ZIP", type=["pdb", "ent", "cif", "mmcif", "sdf", "mol", "zip", "gz"], accept_multiple_files=True, key="molecular-import-structures")
-        include_ligands = st.checkbox("Include bound ligands", value=True, key="molecular-import-include-ligands")
+    elif method in {"Structure files", "Protein files"}:
+        protein = method == "Protein files"
+        formats = ["pdb", "ent", "cif", "mmcif", "gz"]
+        if not protein:
+            formats.extend(["sdf", "mol", "zip"])
+        uploads = st.file_uploader("PDB or mmCIF files" if protein else "PDB, mmCIF, SDF, MOL, or ZIP",
+            type=formats, accept_multiple_files=True, key="molecular-import-structures-" + method)
+        include_ligands = st.checkbox("Include bound ligands", value=not protein, key="molecular-import-include-ligands-" + method)
         for upload in uploads:
-            records.extend(imports.parse_archive(upload.getvalue()) if upload.name.lower().endswith(".zip") else imports.parse_structure(upload.getvalue(), upload.name, include_ligands=include_ligands))
-        if len(records) == 1 and len(records[0]["components"]) > 1:
-            components = records[0]["components"]
-            choices = [row["chain"] for row in components]
-            chains = st.multiselect("Chains to import", choices, default=choices, key="molecular-import-structure-chains", format_func=lambda chain: next(f"{chain} · {TYPE_LABELS[row['type']]} · {len(row.get('sequence') or '')} residues" if row.get("sequence") else f"{chain} · {row.get('ccd') or 'Ligand'}" for row in components if row["chain"] == chain))
-            records[0]["components"] = [row for row in components if row["chain"] in chains]
-            # A chain subset is materialized below, so the imported coordinates
-            # must agree with its chain composition.
-            if set(chains) != set(choices):
-                records[0] = cropped_record(records[0], chains)
+            parsed = imports.parse_archive(upload.getvalue()) if upload.name.lower().endswith(".zip") else imports.parse_structure(
+                upload.getvalue(), upload.name, include_ligands=include_ligands)
+            if protein and any(not any(component["type"] == "protein" for component in row["components"]) for row in parsed):
+                raise ValueError(f"{upload.name} has no protein chain.")
+            records.extend(parsed)
+        records = _review_structure_chains(records, "molecular-import-upload-chains-")
     elif method == "SMILES":
         source = st.radio("Input", ["Paste SMILES", "SMI file", "SDF file"], horizontal=True, key="molecular-import-smiles-source")
         if source == "Paste SMILES":
@@ -234,16 +264,29 @@ def _import_content(method):
             if drawing.get("molblock"):
                 records[0]["files"] = [{"name": "drawing.mol", "content": drawing["molblock"].encode(), "label": "Drawing", "dimensions": 2}]
             st.code(records[0]["components"][0]["smiles"], language=None)
-    elif method == "Fetch by identifier":
-        cols = st.columns([1, 3, 1])
-        source = cols[0].selectbox("Database", ["PDB", "UniProt"], key="molecular-import-identifier-source")
-        identifier = cols[1].text_input("Accession", placeholder="1IEP" if source == "PDB" else "P04637", key="molecular-import-identifier")
-        if cols[2].button("Fetch", key="molecular-import-fetch", disabled=not identifier.strip()):
-            filename, content = imports.fetch_identifier(identifier, source)
-            st.session_state["molecular-import-fetched"] = {"key": (source, identifier.strip()), "filename": filename, "content": content}
+    elif method in {"Fetch by identifier", "PDB accession"}:
+        cols = st.columns([3, 1]) if method == "PDB accession" else st.columns([1, 3, 1])
+        source = "PDB" if method == "PDB accession" else cols[0].selectbox(
+            "Database", ["PDB", "UniProt"], key="molecular-import-identifier-source")
+        coordinate_format = "cif"
+        if method == "PDB accession":
+            coordinate_format = st.radio("Coordinate format", ["pdb", "cif"], horizontal=True,
+                format_func={"pdb": "PDB", "cif": "mmCIF"}.get, key="molecular-import-pdb-format")
+        identifier = cols[-2].text_input("Accession", placeholder="1IEP" if source == "PDB" else "P04637", key="molecular-import-identifier")
+        fetch_key = (source, identifier.strip(), coordinate_format)
+        if cols[-1].button("Fetch", key="molecular-import-fetch", disabled=not identifier.strip()):
+            filename, content = imports.fetch_identifier(identifier, source, structure_format=coordinate_format)
+            st.session_state["molecular-import-fetched"] = {"key": fetch_key, "filename": filename, "content": content}
         fetched = st.session_state.get("molecular-import-fetched")
-        if fetched and fetched["key"] == (source, identifier.strip()):
-            records = imports.parse_structure(fetched["content"], fetched["filename"]) if source == "PDB" else imports.parse_sequences(fetched["content"].decode())
+        if fetched and fetched["key"] == fetch_key:
+            if source == "PDB":
+                include_ligands = st.checkbox("Include bound ligands", value=method != "PDB accession", key="molecular-import-pdb-ligands")
+                records = imports.parse_structure(fetched["content"], fetched["filename"], include_ligands=include_ligands)
+                if method == "PDB accession" and any(not any(c["type"] == "protein" for c in row["components"]) for row in records):
+                    raise ValueError("This PDB entry has no protein chain.")
+                records = _review_structure_chains(records, "molecular-import-pdb-chains-")
+            else:
+                records = imports.parse_sequences(fetched["content"].decode())
     return records, audit, source_content
 
 
@@ -289,13 +332,28 @@ def _report_csv(rows):
 def render_import_dialog(user, projects, *, database=None, dataset_mode=False, default_reference_project=""):
     database = database if database is not None else MolecularDatabase()
     step = st.session_state.get("molecular-import-step", 0)
-    st.caption(("Dataset" if dataset_mode else "Group") + ("  ›  What are you importing?" if step == 0 else "  ›  Import molecules"))
+    kind = st.session_state.get("molecular-import-kind", "") if dataset_mode else ""
+    methods = {
+        "protein": ["PDB accession", "Protein files"],
+        "compound": ["Compound table", "SMILES", "Draw molecule"],
+        "sequence": ["FASTA", "Paste sequences"],
+    }.get(kind, ["Table", "FASTA", "Structure files", "Paste sequences", "SMILES", "Draw molecule", "Fetch by identifier"])
+    if kind == "compound":
+        st.caption(f"SQL imports support up to {imports.MAX_COMPOUND_ROWS:,} compound rows per import.")
+        if st.button("Open Library preparation for larger files", key="molecular-import-large-library"):
+            from mn_molecular_design_studio.navigation import open_workflow_tool
+
+            st.session_state.pop("molecular-import-open", None)
+            open_workflow_tool(st.session_state, "library.prepare")
+            st.rerun(scope="app")
+    if step == 0 and dataset_mode:
+        st.caption({"protein": "Import protein structures", "compound": "Import a compound library",
+                    "sequence": "Import sequences"}.get(kind, "Choose where to save your inputs."))
     if step == 0:
         groups = [row for row in database.groups(user, collection="library") if row["owner_id"] == user["id"] or user.get("role") == "admin"]
         if dataset_mode:
             from mn_molecular_design_studio.datasets import display_labels, is_dataset
             groups = [row for row in groups if is_dataset(row) and not row["read_only"]]
-            st.info("Reusable inputs, independent of a project. Importing does not create a design acceptance decision or a completed calculation.")
         labels = display_labels(groups, projects) if dataset_mode else {row["id"]: row["name"] for row in groups}
         if st.session_state.get("molecular-import-group") not in {"", *(row["id"] for row in groups)}:
             st.session_state["molecular-import-group"] = ""
@@ -304,8 +362,6 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
         project = _projects(projects, "molecular-import-project", default=default_reference_project,
             label="Project reference (optional)" if dataset_mode else "Project",
             empty_label="No project — reusable library" if dataset_mode else "None") if not group_id else next(row["project_id"] for row in groups if row["id"] == group_id)
-        if dataset_mode:
-            st.caption("Project references organise reuse; they do not transfer ownership or grant access. You can link more projects later.")
         left, right = st.columns([1, 1])
         if left.button("Cancel", key="molecular-import-cancel-0"):
             _reset_import()
@@ -327,7 +383,7 @@ def render_import_dialog(user, projects, *, database=None, dataset_mode=False, d
     destination = st.session_state["molecular-import-destination"]
     import_instance = st.session_state.setdefault("molecular-import-instance", uuid.uuid4().hex)
     st.markdown(f"**{html.escape(destination['name'])}**")
-    method = st.radio("What are you importing?", ["Table", "FASTA", "Structure files", "Paste sequences", "SMILES", "Draw molecule", "Fetch by identifier"], horizontal=True, key="molecular-import-method")
+    method = st.radio("Source", methods, horizontal=True, key="molecular-import-method")
     records = []
     audit = None
     source_content = None
@@ -854,12 +910,12 @@ def _render_evaluation_measurements(result, *, compact=False):
 @st.dialog("Create molecule group", width="small", on_dismiss=_dismiss_library_dialog)
 def render_group_dialog(user, projects, ids, default_project="", *, database=None, dataset_mode=False):
     database = database if database is not None else MolecularDatabase()
-    st.caption(f"{len(ids):,} selected molecules. " + ("Reusable identity membership only; original models and calculations remain in Data browser. "
-        "Import reference structure files when you want stored input coordinates." if dataset_mode else "Their existing structures and scores stay linked."))
-    name = st.text_input("Group name", key="molecular-group-name")
+    if ids:
+        st.caption(f"{len(ids):,} selected molecules")
+    name = st.text_input("Dataset name" if dataset_mode else "Group name", key="molecular-group-name")
     project = _projects(projects, "molecular-group-project", default=default_project,
         label="Project reference (optional)" if dataset_mode else "Project")
-    if st.button("Create group", type="primary", disabled=not name.strip(), key="molecular-group-save"):
+    if st.button("Create dataset" if dataset_mode else "Create group", type="primary", disabled=not name.strip(), key="molecular-group-save"):
         try:
             if dataset_mode:
                 from mn_molecular_design_studio.datasets import create_dataset

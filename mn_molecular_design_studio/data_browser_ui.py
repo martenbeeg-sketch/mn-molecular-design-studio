@@ -386,6 +386,8 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
     if destination and dataset_request and destination.get("group_id") == dataset_request["group_id"]:
         st.session_state["data-browser-dataset-context"] = dataset_request
     st.title("Data browser")
+    if st.session_state.pop("dataset-reuse-request", False):
+        st.info("Select the molecules you want to reuse. Then open Data actions and choose Save as reusable dataset.")
     st.caption("Saved scientific outcomes, structures and attached analyses. Reusable input libraries are managed in Datasets.")
     from mn_molecular_design_studio.entity_properties_ui import render_notice
     render_notice()

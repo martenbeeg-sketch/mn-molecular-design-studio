@@ -83,3 +83,24 @@ def test_append_requires_explicit_project_edit_and_members_are_input_only(preser
     assert client.get(f"/api/v1/molecules/datasets/{result['group_id']}/members", headers=headers(case)).status_code == 404
     generic = client.get("/api/v1/molecules", headers=headers(case), params={"group_id": group, "query": "ethanol"})
     assert len(generic.json()["items"][0]["observations"]) == 1
+
+
+def test_compound_import_cap_rejects_input_before_creating_a_dataset(preserved_api, monkeypatch):
+    from mn_molecular_design_studio import molecule_imports
+
+    case = preserved_api
+    database = case["database"]
+    groups_before = {group["id"] for group in database.groups(case["actor"], collection="all")}
+    monkeypatch.setattr(molecule_imports, "MAX_COMPOUND_ROWS", 1)
+    payload = {"name": "Oversized compound import", "reusable_dataset": True, "method": "smiles",
+               "text": "CCO ethanol\nCCN ethylamine"}
+    response = case["client"].post("/api/v1/molecules/imports", headers=headers(case), json=payload)
+    assert response.status_code == 422
+    assert "Library preparation" in response.json()["detail"]
+    payload.update(method="records", text="", records=[
+        {"name": "First", "components": [{"type": "small_molecule", "chain": "L", "smiles": "CCO"}]},
+        {"name": "Second", "components": [{"type": "small_molecule", "chain": "L", "smiles": "CCN"}]},
+    ])
+    response = case["client"].post("/api/v1/molecules/imports", headers=headers(case), json=payload)
+    assert response.status_code == 422
+    assert {group["id"] for group in database.groups(case["actor"], collection="all")} == groups_before

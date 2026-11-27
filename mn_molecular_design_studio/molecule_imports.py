@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 MAX_ROWS = 100_000
+MAX_COMPOUND_ROWS = 10_000
 MAX_BYTES = 100 * 1024 * 1024
 KINDS = ("protein", "small_molecule", "dna", "rna")
 ALPHABETS = {
@@ -94,33 +95,40 @@ def parse_sequences(text: str, *, kind: str = "protein") -> list[dict]:
     return result
 
 
+def check_compound_import_size(count: int) -> None:
+    if count > MAX_COMPOUND_ROWS:
+        raise ValueError(f"SQL compound imports support up to {MAX_COMPOUND_ROWS:,} rows per import. "
+                         "Use Library preparation for larger files.")
+
+
 def parse_smiles(text: str) -> list[dict]:
     rows = []
     for line in str(text).splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
+        check_compound_import_size(len(rows) + 1)
         values = line.strip().split(maxsplit=1)
         rows.append({"name": values[1] if len(values) > 1 else f"Compound {len(rows)+1}",
                      "components": [canonical_component({"type": "small_molecule", "chain": "L", "smiles": values[0]})],
                      "metadata": {}})
     if not rows:
         raise ValueError("Enter at least one SMILES string.")
-    if len(rows) > MAX_ROWS:
-        raise ValueError("An import can contain at most 100,000 molecules.")
     return rows
 
 
-def read_table(data: bytes, filename: str, *, sheet_name: str = "", string_values=False):
+def read_table(data: bytes, filename: str, *, sheet_name: str = "", string_values=False, compounds=False):
     import pandas as pd
     if len(data) > MAX_BYTES:
         raise ValueError("The table exceeds 100 MB.")
+    limit = MAX_COMPOUND_ROWS if compounds else MAX_ROWS
+    options = {"nrows": limit + 1, "keep_default_na": False, "dtype": str if string_values else None}
     suffix = Path(filename).suffix.lower()
     if suffix in {".xlsx", ".xls", ".xlsm"}:
-        table = pd.read_excel(io.BytesIO(data), sheet_name=sheet_name or 0, keep_default_na=False,
-                              dtype=str if string_values else None)
+        table = pd.read_excel(io.BytesIO(data), sheet_name=sheet_name or 0, **options)
     else:
-        table = pd.read_csv(io.BytesIO(data), sep="\t" if suffix in {".tsv", ".txt"} else ",",
-                            keep_default_na=False, dtype=str if string_values else None)
+        table = pd.read_csv(io.BytesIO(data), sep="\t" if suffix in {".tsv", ".txt"} else ",", **options)
+    if compounds:
+        check_compound_import_size(len(table))
     table.columns = [str(value) for value in table.columns]
     if len(set(table.columns)) != len(table.columns):
         raise ValueError("Table columns must have unique names.")
@@ -151,7 +159,8 @@ def parse_table(
     id_column: str = "",
     sheet_name: str = "",
 ) -> list[dict]:
-    table = read_table(data, filename, sheet_name=sheet_name)
+    compounds = bool(chain_columns) and all(spec.get("type") == "small_molecule" for spec in chain_columns.values())
+    table = read_table(data, filename, sheet_name=sheet_name, compounds=compounds)
     if not chain_columns:
         raise ValueError("Map at least one chain column.")
     if (
@@ -296,7 +305,7 @@ def analyze_small_molecule_table(
     """
     from rdkit import Chem, rdBase
 
-    table = read_table(data, filename, sheet_name=sheet_name, string_values=True)
+    table = read_table(data, filename, sheet_name=sheet_name, string_values=True, compounds=True)
     columns = set(table.columns)
     if smiles_column not in columns or (name_column and name_column not in columns) or (id_column and id_column not in columns):
         raise ValueError("A mapped SMILES, name, or ID column is missing from the table.")
@@ -488,8 +497,7 @@ def analyze_smiles_text(text: str) -> dict:
             continue
         values = line.split(maxsplit=1)
         lines.append({"SMILES": values[0], "Name": values[1] if len(values) > 1 else ""})
-        if len(lines) > MAX_ROWS:
-            raise ValueError("An import can contain at most 100,000 molecules.")
+        check_compound_import_size(len(lines))
     if not lines:
         raise ValueError("Enter at least one SMILES string.")
     table_bytes = io.BytesIO()
@@ -506,6 +514,7 @@ def parse_sdf(data: bytes, filename: str = "molecules.sdf") -> list[dict]:
     supplier = Chem.ForwardSDMolSupplier(io.BytesIO(data), removeHs=False)
     result = []
     for index, molecule in enumerate(supplier, 1):
+        check_compound_import_size(index)
         if molecule is None:
             raise ValueError(f"Could not read molecule {index} in {filename}.")
         name = molecule.GetProp("_Name").strip() if molecule.HasProp("_Name") else ""
@@ -516,8 +525,6 @@ def parse_sdf(data: bytes, filename: str = "molecules.sdf") -> list[dict]:
                        "metadata": molecule.GetPropsAsDict(),
                        "files": [{"name": f"molecule-{index}.sdf", "content": block.encode(), "label": "Imported structure",
                                   "dimensions": 3 if molecule.GetNumConformers() and molecule.GetConformer().Is3D() else 2}]})
-        if len(result) > MAX_ROWS:
-            raise ValueError("An import can contain at most 100,000 molecules.")
     if not result:
         raise ValueError("No molecules were found in this file.")
     return result
@@ -640,10 +647,13 @@ def parse_archive(data: bytes) -> list[dict]:
     return result
 
 
-def fetch_identifier(identifier: str, source: str) -> tuple[str, bytes]:
+def fetch_identifier(identifier: str, source: str, *, structure_format="cif") -> tuple[str, bytes]:
     identifier = identifier.strip().upper()
     if source == "PDB" and re.fullmatch(r"[0-9][A-Z0-9]{3}", identifier):
-        filename, url = f"{identifier.lower()}.cif", f"https://files.rcsb.org/download/{identifier}.cif"
+        if structure_format not in {"pdb", "cif"}:
+            raise ValueError("Choose PDB or mmCIF coordinates.")
+        filename = f"{identifier.lower()}.{structure_format}"
+        url = f"https://files.rcsb.org/download/{identifier}.{structure_format}"
     elif source == "UniProt" and re.fullmatch(r"[A-Z0-9]{6,10}(?:-[0-9]+)?", identifier):
         filename, url = f"{identifier}.fasta", f"https://rest.uniprot.org/uniprotkb/{identifier}.fasta"
     else:

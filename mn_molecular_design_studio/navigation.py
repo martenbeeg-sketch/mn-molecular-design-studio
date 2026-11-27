@@ -103,6 +103,18 @@ def open_datasets(state, *, project_id="", group_id="", molecule_id=""):
     state.pop("datasets-page-selection", None)
 
 
+def request_dataset_import(state, kind="", *, project_id="", return_to=""):
+    if state.get("page") != "Datasets":
+        open_datasets(state, project_id=project_id)
+    state.update({"molecular-import-open": True, "molecular-import-step": 0,
+                  "molecular-import-kind": kind})
+    for key in ("molecular-import-destination", "molecular-import-group", "molecular-import-group-name",
+                "molecular-import-method", "molecular-import-project", "molecular-import-fetched"):
+        state.pop(key, None)
+    if return_to:
+        state["dataset-import-return"] = return_to
+
+
 def open_dataset_results(state, group_id, molecule_id=""):
     state.update({"page": "Data Browser", "molecular-preselect-group": group_id,
         "molecular-preselect-molecule": molecule_id, "molecular-preselect-collection": "library",

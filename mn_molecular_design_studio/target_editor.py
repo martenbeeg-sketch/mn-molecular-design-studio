@@ -354,7 +354,7 @@ def _saved_protein_inputs(database, user, *, project_id="", query="", sequences=
                          ('target','receptor','modeled_target','sequence_defined_target')) AS used_as_target
             FROM molecule_members mm JOIN molecules m ON m.id=mm.molecule_id
             LEFT JOIN molecule_structures s ON s.molecule_id=mm.molecule_id AND s.group_id=mm.group_id
-            WHERE m.type='protein' AND mm.group_id IN (SELECT value FROM json_each(?))
+            WHERE m.type IN ('protein','complex') AND mm.group_id IN (SELECT value FROM json_each(?))
             ORDER BY mm.added_at DESC, s.id
             """, (json.dumps(list(groups)),),
         ).fetchall()
@@ -370,10 +370,13 @@ def _saved_protein_inputs(database, user, *, project_id="", query="", sequences=
         if (not proteins or roles & {"binder", "designed_binder", "design", "partner"}
                 or metadata.get("generating_engine") or metadata.get("output_kind")):
             continue
-        imported = group["import_method"] in {"user_uploads", "agent_inputs"} or is_input_dataset(group)
-        target = bool(row["used_as_target"] or roles & {"target", "receptor"} or metadata.get("target_identity_type"))
+        imported = group["import_method"] == "user_uploads" or is_input_dataset(group)
+        target = bool(row["used_as_target"] or roles & {"target", "receptor"}
+                      or metadata.get("target_identity_type") == "sequence_only")
         context = json.loads(row["context"]) if row["context"] else {}
         recorded_input = context.get("input_role") in {"target", "receptor"}
+        if not imported and len(proteins) != len(components):
+            continue
         if not (imported or target or recorded_input):
             continue
         sequence_only = (metadata.get("target_identity_type") == "sequence_only"
@@ -393,7 +396,8 @@ def _saved_protein_inputs(database, user, *, project_id="", query="", sequences=
         if not all(term in searchable.casefold() for term in query.casefold().split()):
             continue
         if sequences:
-            if not (sequence_only or (imported and not source_path)) or not all(chain_sequences):
+            if (len(proteins) != len(components) or not (sequence_only or (imported and not source_path))
+                    or not all(chain_sequences)):
                 continue
             identity = tuple(chain_sequences)
             label = f"{name} · {' + '.join(str(len(value)) for value in identity)} aa · {group_label}"
@@ -462,6 +466,66 @@ def render_saved_target_sequence(*, owner_id, project_id, key, destination_key=N
             st.code(options[selected]["sequence"], language=None)
 
 
+def render_import_protein_link(*, project_id, key):
+    from mn_molecular_design_studio.database_actions_ui import read_only_workspace
+    from mn_molecular_design_studio.navigation import request_dataset_import
+
+    if st.button("Import protein in Datasets", key=key, disabled=read_only_workspace()):
+        request_dataset_import(st.session_state, "protein", project_id=project_id or "",
+                               return_to=st.session_state.get("page", ""))
+        st.rerun(scope="app")
+
+
+def render_saved_protein_source(*, owner_id, project_id, key_prefix, formats=(),
+                                initial_molecule_id="", initial_structure_id=""):
+    """Choose a registered input and materialize its verified coordinates."""
+    render_import_protein_link(project_id=project_id, key=f"{key_prefix}-import-protein")
+    query = st.text_input(
+        "Search saved protein targets",
+        placeholder="Search by target name or sequence",
+        key=f"{key_prefix}-saved-target-search",
+    ).strip()
+    saved_options = _saved_target_options(owner_id, project_id, query)
+    option_by_id = {item["structure_id"]: item for item in saved_options if not formats or item["format"] in formats}
+    choices = [""] + list(option_by_id)
+    query_key = hashlib.sha1(query.casefold().encode()).hexdigest()[:10]
+    choice_key = f"{key_prefix}-saved-target-choice-{query_key}"
+    if choice_key not in st.session_state or st.session_state[choice_key] not in choices:
+        preferred = str(initial_structure_id or "")
+        if not preferred:
+            preferred = next((item["structure_id"] for item in option_by_id.values()
+                              if item["molecule_id"] == str(initial_molecule_id or "")), "")
+        st.session_state[choice_key] = preferred if preferred in option_by_id else ""
+    selected_structure_id = st.selectbox(
+        "Saved protein structure", choices,
+        format_func=lambda value: "Choose a saved structure" if not value else option_by_id[value]["label"],
+        key=choice_key,
+    )
+    if not option_by_id:
+        st.caption("No saved protein inputs match.")
+    if selected_structure_id:
+        selected = option_by_id[selected_structure_id]
+        materialized_key = f"{key_prefix}-saved-target-materialized-{selected_structure_id}"
+        materialized_path = Path(str(st.session_state.get(materialized_key) or ""))
+        if not materialized_path.is_file():
+            user = st.session_state.get("_molecular_database_user")
+            try:
+                from mn_molecular_design_studio.molecular_database import MolecularDatabase
+                materialized_path = Path(MolecularDatabase().structure_file(
+                    user, selected_structure_id, materialize=True,
+                ))
+                st.session_state[materialized_key] = str(materialized_path)
+            except (OSError, ValueError, PermissionError, sqlite3.Error) as exc:
+                st.error(f"Could not open this saved target structure: {exc}")
+                return TargetSource(owner_id=owner_id)
+        return TargetSource(
+            materialized_path, selected["name"], owner_id,
+            molecule_id=selected["molecule_id"], structure_id=selected_structure_id,
+        )
+
+    return TargetSource(owner_id=owner_id)
+
+
 def render_target_source(
     *,
     key_prefix: str,
@@ -481,6 +545,7 @@ def render_target_source(
     fetched_name_key: str | None = None,
     owner_id: str = "local",
     allow_saved_targets: bool = False,
+    saved_formats: tuple[str, ...] = (),
     project_id: str = "",
     initial_molecule_id: str = "",
     initial_structure_id: str = "",
@@ -488,50 +553,12 @@ def render_target_source(
     """Render reusable PDB accession and structure upload controls."""
     if allow_saved_targets:
         with st.expander("Select a saved target structure", expanded=True):
-            st.caption("Choose a registered project target or a reusable input structure.")
-            query = st.text_input(
-                "Search saved protein targets",
-                placeholder="Search by target name or sequence",
-                key=f"{key_prefix}-saved-target-search",
-            ).strip()
-            saved_options = _saved_target_options(owner_id, project_id, query)
-            option_by_id = {item["structure_id"]: item for item in saved_options}
-            choices = [""] + list(option_by_id)
-            query_key = hashlib.sha1(query.casefold().encode()).hexdigest()[:10]
-            choice_key = f"{key_prefix}-saved-target-choice-{query_key}"
-            if choice_key not in st.session_state:
-                preferred = str(initial_structure_id or "")
-                if not preferred:
-                    preferred = next((item["structure_id"] for item in saved_options
-                                      if item["molecule_id"] == str(initial_molecule_id or "")), "")
-                st.session_state[choice_key] = preferred if preferred in option_by_id else ""
-            selected_structure_id = st.selectbox(
-                "Saved protein structure", choices,
-                format_func=lambda value: "Choose a saved structure" if not value else option_by_id[value]["label"],
-                key=choice_key,
+            source = render_saved_protein_source(
+                owner_id=owner_id, project_id=project_id, key_prefix=key_prefix, formats=saved_formats,
+                initial_molecule_id=initial_molecule_id, initial_structure_id=initial_structure_id,
             )
-            if not saved_options:
-                st.caption("No saved protein structures match this search. You can still fetch a PDB or upload a structure below.")
-            if selected_structure_id:
-                selected = option_by_id[selected_structure_id]
-                materialized_key = f"{key_prefix}-saved-target-materialized-{selected_structure_id}"
-                materialized_path = Path(str(st.session_state.get(materialized_key) or ""))
-                if not materialized_path.is_file():
-                    user = st.session_state.get("_molecular_database_user")
-                    try:
-                        from mn_molecular_design_studio.molecular_database import MolecularDatabase
-                        materialized_path = Path(MolecularDatabase().structure_file(
-                            user, selected_structure_id, materialize=True,
-                        ))
-                        st.session_state[materialized_key] = str(materialized_path)
-                    except (OSError, ValueError, PermissionError, sqlite3.Error) as exc:
-                        st.error(f"Could not open this saved target structure: {exc}")
-                        return TargetSource(owner_id=owner_id)
-                st.caption("Using a local copy of the saved target structure.")
-                return TargetSource(
-                    materialized_path, selected["name"], owner_id,
-                    molecule_id=selected["molecule_id"], structure_id=selected_structure_id,
-                )
+            if source.path:
+                return source
 
     pdb_code = ""
     fetch_clicked = False

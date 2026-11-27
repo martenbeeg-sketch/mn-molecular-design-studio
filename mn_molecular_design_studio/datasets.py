@@ -25,7 +25,7 @@ def is_dataset(group):
     from mn_molecular_design_studio.scientific_browser_tree import is_dataset as legacy_dataset
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
     kind = group.get("collection_kind") or MolecularDatabase._collection_kind(group)
-    return is_input_dataset(group) or kind == "reference" or legacy_dataset({**group, "collection_kind": kind})
+    return is_input_dataset(group) or legacy_dataset({**group, "collection_kind": kind})
 
 
 def project_references(group):

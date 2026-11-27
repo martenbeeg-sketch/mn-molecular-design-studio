@@ -73,8 +73,8 @@ def render_setup(schema: dict, *, owner_id: str, project_selector, submit) -> No
             label="Target",
             example_code="2E9W",
             owner_id=owner_id,
-            allow_cif=False,
-            upload_file_types=["pdb", "ent"],
+            allow_cif=False, allow_saved_targets=True, project_id=project or "",
+            saved_formats=("pdb", "ent"), upload_file_types=["pdb", "ent"],
             upload_help="Choose one protein-chain PDB. The selected chain is renumbered contiguously in the job copy so gaps and insertion codes cannot shift the β-pairing tensors.",
             upload_label="Upload a target PDB",
         )

@@ -145,7 +145,8 @@ def _render_setup_content(schema: dict, *, owner_id: str, header, project_select
                 st.session_state.pop(prefix+"-target-upload", None)
                 st.rerun()
             source = render_target_source(key_prefix=prefix, label="Target / motif structure", example_code="1BNA" if task == "nucleic_acid_binder" else "5O45", owner_id=owner_id,
-                                          allow_cif=True, allow_non_protein=True, upload_help="PDB or mmCIF. Protein, DNA/RNA and ligand-only structures are supported.", upload_label="Upload structure")
+                                          allow_cif=True, allow_non_protein=True, allow_saved_targets=True, project_id=project or "",
+                                          upload_help="PDB or mmCIF. Protein, DNA/RNA and ligand-only structures are supported.", upload_label="Upload structure")
             info = None
             if source.path:
                 p["target_structure"] = str(source.path)

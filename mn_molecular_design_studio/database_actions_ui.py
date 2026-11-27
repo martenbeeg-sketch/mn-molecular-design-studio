@@ -100,9 +100,9 @@ def render_library_actions(database, user, projects, *, dataset_mode=False, brow
     with st.popover("Library actions", icon=":material/settings:"):
         if read_only:
             st.caption("Read-only preview: importing and collection changes are disabled.")
-        if not browser_only and st.button("Import molecules", key="data-browser-import", disabled=read_only):
+        if not browser_only and not dataset_mode and st.button("Import molecules", key="data-browser-import", disabled=read_only):
             st.session_state.update({"molecular-import-open": True, "molecular-import-step": 0})
-        if not browser_only and st.button("New collection", key="data-browser-new-collection", disabled=read_only):
+        if not browser_only and not dataset_mode and st.button("New collection", key="data-browser-new-collection", disabled=read_only):
             st.session_state["data-browser-management"] = {"kind": "group", "ids": []}
         if st.button("Manage collections", key="data-browser-manage-collections", disabled=not database.path.is_file()):
             st.session_state["data-browser-management"] = {"kind": "collections"}
@@ -143,7 +143,7 @@ def _selection_dialog(database, user, projects, entries, project_id):
     ids = list(dict.fromkeys(entry["result"]["molecule_id"] for entry in entries))
     st.caption(f"{len(entries):,} saved results · {len(ids):,} distinct molecules. No admission decisions are changed.")
     read_only = read_only_workspace()
-    if st.button("Create collection from these molecules", disabled=read_only, key="data-browser-collect-selection"):
+    if st.button("Save as reusable dataset", disabled=read_only, key="data-browser-collect-selection"):
         st.session_state["data-browser-management"] = {"kind": "group", "ids": ids, "project_id": project_id}
         _dismiss_selection()
         from mn_molecular_design_studio.navigation import open_datasets

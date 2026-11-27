@@ -13,7 +13,7 @@ from mn_molecular_design_studio import datasets
 from mn_molecular_design_studio.data_browser import ReadOnlyLibrary
 from mn_molecular_design_studio.database_actions_ui import ERRORS, read_only_workspace, render_library_actions, render_selection_actions
 from mn_molecular_design_studio.folder_tree import render_tree
-from mn_molecular_design_studio.navigation import open_dataset_results
+from mn_molecular_design_studio.navigation import open_dataset_results, open_project_database, request_dataset_import
 
 
 def _dismiss_references():
@@ -70,18 +70,27 @@ def render_datasets(user, projects, *, database=None):
         database = ReadOnlyLibrary(Path(configured) if configured else None)
     read_only = read_only_workspace()
     st.title("Datasets")
-    st.caption("Reusable compounds, sequences and reference structures. A dataset does not need to belong to a project.")
+    st.caption("Import reusable molecular inputs or save a selection from Data browser for another study.")
     from mn_molecular_design_studio.entity_properties_ui import render_folder_properties, render_notice, render_record_properties
     render_notice()
-    import_column, new_column, results_column = st.columns([1, 1, 2])
-    if import_column.button("Import data", icon=":material/upload:", type="primary", disabled=read_only, key="datasets-import"):
-        st.session_state.update({"molecular-import-open": True, "molecular-import-step": 0})
-        st.session_state.pop("molecular-import-destination", None)
+    if return_to := st.session_state.get("dataset-import-return"):
+        if st.button("Return to setup", key="datasets-return-to-setup"):
+            st.session_state["page"] = return_to
+            st.session_state.pop("dataset-import-return", None)
+            st.session_state.pop("molecular-import-open", None)
+            st.rerun()
+    columns = st.columns(4)
+    for column, label, kind, icon in zip(columns, ("Import proteins", "Import compounds", "Import sequences", "Other formats"),
+            ("protein", "compound", "sequence", ""), (":material/biotech:", ":material/science:", ":material/notes:", ":material/upload:")):
+        if column.button(label, icon=icon, disabled=read_only, width="stretch", key=f"datasets-import{('-' + kind) if kind else ''}"):
+            request_dataset_import(st.session_state, kind, project_id=st.session_state.get("datasets-project", ""))
+    new_column, results_column, _ = st.columns([1, 2, 2])
     if new_column.button("New dataset", icon=":material/add:", disabled=read_only, key="datasets-new"):
         st.session_state["data-browser-management"] = {"kind": "group", "ids": [],
             "project_id": st.session_state.get("datasets-project", "")}
-    if results_column.button("Open Data browser", icon=":material/folder_copy:", key="datasets-open-browser"):
-        st.session_state["page"] = "Data Browser"
+    if results_column.button("Start from saved results", icon=":material/folder_copy:", key="datasets-open-browser"):
+        open_project_database(st.session_state, st.session_state.get("datasets-project", ""))
+        st.session_state["dataset-reuse-request"] = True
         st.rerun()
     render_library_actions(database, user, projects, dataset_mode=True, reference_project=st.session_state.get("datasets-project", ""))
     if not database.path.is_file():
@@ -102,7 +111,7 @@ def render_datasets(user, projects, *, database=None):
             st.warning("The requested dataset is no longer accessible. No other dataset has been substituted.")
             st.session_state["datasets-selected"] = ""
     if not groups:
-        st.info("No reusable input datasets are accessible. Automatic run outputs and analysis batches are not input libraries.")
+        st.info("Import inputs above, or start from a selection in Data browser.")
         return
     labels = datasets.display_labels(groups, projects)
     groups = [{**group, "display_label": labels[group["id"]]} for group in groups]
@@ -134,7 +143,7 @@ def render_datasets(user, projects, *, database=None):
                 st.session_state["datasets-member-query"] = ""
                 st.session_state.pop("datasets-page-selection", None)
                 st.rerun()
-        st.caption(f"{len(visible):,} datasets. Each folder references existing SQL members, not another copy of their molecules.")
+        st.caption(f"{len(visible):,} datasets")
     if not selected:
         with middle:
             st.info("No dataset matches this selection. Clear the dataset search or choose All datasets.")
@@ -145,12 +154,10 @@ def render_datasets(user, projects, *, database=None):
         st.markdown("### " + group["name"])
         access = "Private to its owner" if not group["project_id"] else "Shared through its original project: " + project_names.get(group["project_id"], "Project")
         st.caption(f"{group['molecule_count']:,} input members · {access}")
-        st.caption("Input membership is not evidence of a passing design or a completed calculation. Scores and post-analysis are inspected in Data browser.")
         scope = {"id": "dataset:" + selected, "label": group["name"], "entity": {"kind": "dataset", "group_id": selected}}
         render_folder_properties(database, user, {}, scope, projects, read_only=read_only, key_prefix="datasets-folder")
         labels = [project_names.get(project_id, "Unavailable project") for project_id in group["project_references"]]
         st.caption("Referenced by projects: " + (", ".join(labels) or "None — reusable independent library"))
-        st.caption("This is an input-library summary, not a results list. References are explicitly recorded links; they do not imply that a calculation was completed.")
         if st.button("Edit project references", key="datasets-project-references", disabled=read_only or group["read_only"] or (
                 user.get("role") != "admin" and group["owner_id"] != user["id"])):
             snapshot = database.group(selected, user)
