@@ -65,7 +65,7 @@ def dataset_tree(groups, *, by_project=False, projects=()):
     return sorted(buckets.values(), key=lambda node: node["label"].casefold()), choices
 
 
-def render_datasets(user, projects, *, database=None):
+def render_datasets(user, projects, *, database=None, submit=None):
     if database is None:
         configured = os.environ.get("MDS_DATA_BROWSER_DATABASE_ROOT", "").strip()
         database = ReadOnlyLibrary(Path(configured) if configured else None)
@@ -216,7 +216,9 @@ def render_datasets(user, projects, *, database=None):
                     _render_structure(view, user, record, "")
                     from mn_molecular_design_studio.dataset_preparation_ui import render_preparation
 
-                    render_preparation(view, user, record)
+                    render_preparation(view, user, record, projects=projects,
+                                       preferred_projects=([project] if project else datasets.project_references(group)),
+                                       submit=submit)
                 else:
                     st.caption("No coordinates are stored in this input dataset. This does not mean that no calculated structures exist elsewhere.")
                 if st.button("Open this member’s results in Data browser", key="datasets-member-results"):

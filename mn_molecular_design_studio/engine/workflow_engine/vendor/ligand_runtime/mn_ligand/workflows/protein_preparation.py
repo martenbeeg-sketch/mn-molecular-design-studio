@@ -769,7 +769,7 @@ def detect_modeller_internal_gaps(
         {
             line[21].strip() or "_"
             for line in pdb_data.splitlines()
-            if line.startswith("ATOM  ") and len(line) >= 27
+            if line.startswith("ATOM  ") and len(line) >= 27 and line[17:20].strip() in CANONICAL_AMINO_ACIDS
         }
     )
     for chain in chains:
@@ -1179,6 +1179,7 @@ def model_internal_gaps_with_modeller(
     model_count: int = 10,
     modeller_python: Path | None = None,
     user_gap_definitions: list[dict[str, Any]] | None = None,
+    confirmed_only: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     """Model every eligible internal sequence gap as a MODELLER ensemble."""
     if not 1 <= int(model_count) <= 50:
@@ -1188,6 +1189,9 @@ def model_internal_gaps_with_modeller(
         max_internal_gap=int(max_internal_gap),
         user_gap_definitions=user_gap_definitions,
     )
+    if confirmed_only:
+        selected_chains = {gap["chain"] for gap in user_gap_definitions or []}
+        detected = {chain: model for chain, model in detected.items() if chain in selected_chains}
     report: dict[str, Any] = {
         "enabled": True,
         "engine": "MODELLER",

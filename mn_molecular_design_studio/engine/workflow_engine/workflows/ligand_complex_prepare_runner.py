@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -68,6 +70,97 @@ def _parse_ranges(value: object) -> dict[str, tuple[int, int]]:
     return result
 
 
+def describe_gaps(source: str) -> list[dict]:
+    from mn_ligand.workflows.protein_preparation import coordinate_gap_candidates, detect_modeller_internal_gaps
+
+    candidates = coordinate_gap_candidates(source)
+    detected = detect_modeller_internal_gaps(source, max_internal_gap=15)
+    for candidate in candidates:
+        known = next((
+            gap for gap in detected.get(candidate["chain"], {}).get("gaps", [])
+            if not gap.get("terminal") and (
+                (gap.get("author_start"), gap.get("author_end")) == (candidate["author_start"], candidate["author_end"])
+                or (gap.get("author_start") is None and gap.get("insertion_index") == candidate["insertion_index"]
+                    and gap.get("length") == candidate["numbering_gap_length"])
+            )
+        ), {})
+        candidate["suggestion"] = known.get("sequence", "")
+    return candidates
+
+
+
+def rebuild_confirmed_gaps(source: str, gaps: list[dict], work_dir: Path):
+    from mn_ligand.workflows.protein_preparation import coordinate_gap_candidates, model_internal_gaps_with_modeller
+    from mn_molecular_design_studio.protein_modelling import MAX_MODELED_GAP, observed_chains
+
+    observed_chains(source)
+    fields = ("chain", "left_resseq", "right_resseq")
+    candidates = {tuple(row[key] for key in fields): row for row in coordinate_gap_candidates(source)}
+    definitions = []
+    for gap in gaps:
+        key = tuple(gap[field] for field in fields)
+        candidate = candidates.pop(key, None)
+        if candidate is None:
+            raise ValueError("A confirmed gap must match distinct observed flanks in the source PDB.")
+        definitions.append({**candidate, "sequence": gap["sequence"],
+                            "confirmed": True, "evidence": "User-confirmed missing sequence and coordinate flanks"})
+    modeled, report = model_internal_gaps_with_modeller(
+        source, work_dir=work_dir, max_internal_gap=MAX_MODELED_GAP,
+        user_gap_definitions=definitions, confirmed_only=True,
+    )
+    if len(report["modeled_gaps"]) != len(definitions):
+        raise ValueError("MODELLER did not rebuild every confirmed gap.")
+    return modeled, report
+
+
+def remodel_observed_loop(source: str, options: dict, work_dir: Path):
+    from mn_ligand.modeller_runtime import modeller_python
+    from mn_ligand.ligandx.lib.chemistry.preparation.target_validation import audit_target_geometry
+    from mn_molecular_design_studio.protein_modelling import loop_residues, observed_chains
+
+    labels = set(loop_residues(observed_chains(source), options))
+    chain = options["chain"]
+
+    def selected(line):
+        return (line.startswith("ATOM  ") and len(line) >= 54 and (line[21].strip() or "_") == chain
+                and line[22:26].strip() + line[26].strip() in labels)
+
+    lines = source.splitlines()
+    if any(line[16].strip() for line in lines if selected(line)):
+        raise ValueError("Choose a loop with one atom conformation per residue.")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    template = work_dir / "source.pdb"
+    template.write_text(_protein_only(source), encoding="utf-8")
+    native = Path(__file__).resolve().parents[1] / "vendor/ligand_runtime/mn_ligand/workflows/modeller_existing_loop_runner.py"
+    process = subprocess.run(
+        [str(modeller_python()), str(native), template.name, json.dumps(options)],
+        cwd=work_dir, capture_output=True, text=True, check=False,
+    )
+    if process.returncode:
+        raise RuntimeError(f"MODELLER loop refinement failed: {(process.stderr or process.stdout)[-2500:]}")
+    results = json.loads((work_dir / "models.json").read_text(encoding="utf-8"))
+
+    def score(result):
+        value = result.get("dope")
+        return value if isinstance(value, (int, float)) and math.isfinite(value) else float("inf")
+
+    for model in sorted(results, key=score):
+        candidate = (work_dir / Path(model["name"]).name).read_text(encoding="utf-8")
+        coordinates = {line[12:27]: line[30:54] for line in candidate.splitlines() if selected(line)}
+        if any(line[12:27] not in coordinates for line in lines if selected(line)):
+            continue
+        merged = "\n".join(line[:30] + coordinates[line[12:27]] + line[54:] if selected(line) else line
+                           for line in lines) + "\n"
+        try:
+            loop_residues(observed_chains(merged), options)
+        except ValueError:
+            continue
+        if audit_target_geometry(merged)["valid"]:
+            return merged, {"enabled": True, "engine": "MODELLER LoopModel", **options,
+                            "selected_model": model, "successful_models": results}
+    raise ValueError("MODELLER did not produce a loop with matching atom identifiers and valid protein geometry.")
+
+
 def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
     from mn_ligand.core.artifacts import ArtifactRef, write_artifact_manifest
     from mn_ligand.core.jobs import JobRecord
@@ -83,7 +176,10 @@ def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
     from mn_ligand.workflows.target_trimming import trim_pdb_data
     from mn_ligand.workflows.terminal_repair import create_terminal_repair_job
 
+    from mn_molecular_design_studio.protein_modelling import parse_options
+
     params = json.loads(params_path.read_text(encoding="utf-8"))
+    modelling = parse_options(params.get("modelling_json", ""))
     source_data = input_path.read_text(encoding="utf-8", errors="replace")
     import_job = create_protein_import_job(
         source_data,
@@ -148,7 +244,7 @@ def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
         )
         complex_data = complex_path.read_text(encoding="utf-8", errors="replace")
     else:
-        complex_data = _merge_repaired_protein_with_source_heterogens(source_data, source_data)
+        complex_data = source_data if modelling else _merge_repaired_protein_with_source_heterogens(source_data, source_data)
 
     extension_report: dict[str, Any] = {"enabled": False}
     extension_sequence = str(params.get("extension_sequence") or "").strip()
@@ -197,6 +293,17 @@ def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
         complex_data = extension_complex.read_text(encoding="utf-8", errors="replace")
         extension_report = dict(extension_job.result)
 
+    gap_report = {"enabled": False}
+    if modelling.get("gaps"):
+        complex_data, gap_report = rebuild_confirmed_gaps(
+            complex_data, modelling["gaps"], output_dir / "confirmed_gaps",
+        )
+    loop_report = {"enabled": False}
+    if "loop" in modelling:
+        complex_data, loop_report = remodel_observed_loop(
+            complex_data, modelling["loop"], output_dir / "loop_models",
+        )
+
     trim_ranges = _parse_ranges(params.get("trim_ranges_json"))
     trim_report: dict[str, Any] = {"enabled": False}
     if trim_ranges:
@@ -216,6 +323,8 @@ def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
         },
         "protein_repair": repair_report,
         "terminal_extension": extension_report,
+        "confirmed_gap_repair": gap_report,
+        "loop_remodelling": loop_report,
         "trimming": trim_report,
         "target_validation": target_validation,
         "parameters": params,
@@ -225,6 +334,9 @@ def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) == 2 and args[0] == "--inspect":
+        print(json.dumps(describe_gaps(Path(args[1]).read_text(encoding="utf-8"))))
+        return 0
     if len(args) != 3:
         raise SystemExit("usage: ligand_complex_prepare_runner.py INPUT_PDB OUTPUT_DIR PARAMS_JSON")
     input_path, output_dir, params_path = (Path(item).expanduser().resolve() for item in args)

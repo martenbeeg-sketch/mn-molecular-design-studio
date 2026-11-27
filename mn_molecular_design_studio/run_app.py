@@ -9386,7 +9386,7 @@ elif page in {"Database", "Data Browser"}:
     _render_database()
 elif page == "Datasets":
     from mn_molecular_design_studio.datasets_ui import render_datasets
-    render_datasets(CURRENT_USER, _studio_projects(include_archived=True))
+    render_datasets(CURRENT_USER, _studio_projects(include_archived=True), submit=_submit_cofolding_job)
 elif page == "Complex Analysis":
     from mn_molecular_design_studio.complex_analysis_ui import initialize_workspace_view, render_complex_analysis_workspace
     initialize_workspace_view(st.session_state)

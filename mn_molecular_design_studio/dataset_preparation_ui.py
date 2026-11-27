@@ -12,7 +12,7 @@ from mn_molecular_design_studio.molecular_preparation import prepare_coordinate_
 from mn_molecular_design_studio.navigation import open_datasets, open_workflow_tool, request_dataset_import
 
 
-def render_preparation(view, user, record):
+def render_preparation(view, user, record, *, projects=(), preferred_projects=(), submit=None):
     formats = {"pdb", "ent", "cif", "mmcif"}
     structures = {item["id"]: item for item in record["structures"] if item["format"] in formats}
     if not structures or read_only_workspace():
@@ -33,6 +33,11 @@ def render_preparation(view, user, record):
                 open_workflow_tool(st.session_state, "ligand.complex.prepare")
                 st.rerun()
             data = path.read_bytes()
+            if submit and path.suffix.lower() in {".pdb", ".ent"} and any(
+                    component["type"] == "protein" for component in record["components"]):
+                from mn_molecular_design_studio.dataset_modelling_ui import render_modelling
+
+                render_modelling(path, data.decode("utf-8"), key, projects, preferred_projects, submit)
             model = next(molecule_imports.read_coordinate_structure(data, path.name).get_models())
             ranges = {chain.id.strip() or "_": (min(res.id[1] for res in chain), max(res.id[1] for res in chain))
                       for chain in model if len(chain)}

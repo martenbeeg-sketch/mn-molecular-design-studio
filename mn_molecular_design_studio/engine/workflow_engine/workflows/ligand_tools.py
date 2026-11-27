@@ -908,6 +908,9 @@ def _pdb_polymer_chain_ranges(pdb_data: str) -> dict[str, dict[str, Any]]:
 
 
 def _validate_complex_preparation_request(parameters: dict[str, Any], *, require_files: bool) -> None:
+    from mn_molecular_design_studio.protein_modelling import loop_residues, observed_chains, parse_options
+
+    options = parse_options(parameters.get("modelling_json", ""))
     max_gap = parameters.get("max_internal_gap", 15)
     if type(max_gap) is not int or not 0 <= max_gap <= 100:
         raise ValueError("Maximum internal gap must be an integer from 0 to 100 residues.")
@@ -928,6 +931,13 @@ def _validate_complex_preparation_request(parameters: dict[str, Any], *, require
             )
         pdb_data = source.read_text(encoding="utf-8", errors="replace")
         chains = _pdb_polymer_chain_ranges(pdb_data)
+        if options:
+            observed = observed_chains(pdb_data)
+            if "loop" in options:
+                native = _studio_ligand_runtime_root() / "mn_ligand/workflows/modeller_existing_loop_runner.py"
+                if not native.is_file():
+                    raise ValueError("The bundled MODELLER loop runner is unavailable on this workstation.")
+                loop_residues(observed, options["loop"])
         if not chains:
             raise ValueError("The uploaded complex must contain at least one protein chain.")
         if extension and str(parameters.get("extension_chain") or "") not in chains:
@@ -971,6 +981,7 @@ def run_ligand_complex_prepare(
     extension_sequence: str = "",
     extension_models: int = 10,
     trim_ranges_json: str = "",
+    modelling_json: str = "",
 ) -> Path:
     """Import and repair a ligand complex using Studio's bundled ligand runtime."""
     source_pdb = Path(source_pdb).expanduser().resolve()
@@ -984,6 +995,7 @@ def run_ligand_complex_prepare(
         "extension_sequence": extension_sequence,
         "extension_models": extension_models,
         "trim_ranges_json": trim_ranges_json,
+        "modelling_json": modelling_json,
     }
     validate_ligand_tool_request("ligand.complex.prepare", parameters)
     job = create_job(
@@ -1010,8 +1022,7 @@ def run_ligand_complex_prepare(
     )
     update_status(job.run_dir, "running", current_phase="Importing and preparing protein–ligand complex")
     environment = os.environ.copy()
-    existing_pythonpath = environment.get("PYTHONPATH", "")
-    environment["PYTHONPATH"] = str(source_root) + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
+    environment["PYTHONPATH"] = _ligand_runtime_pythonpath()
     environment["MN_LIGAND_RUN_DIR"] = str(job.run_dir / "artifacts" / "mn_ligand_runs")
     try:
         process = subprocess.run(command, capture_output=True, text=True, check=False, env=environment)
@@ -1048,6 +1059,28 @@ def run_ligand_complex_prepare(
         finish_job(job.run_dir, False, {"outputs": {}, "metrics": {}, "error": f"{type(exc).__name__}: {exc}"})
         raise
     return job.run_dir
+
+
+def _ligand_runtime_pythonpath() -> str:
+    paths = [str(_studio_ligand_runtime_root()), str(Path(__file__).resolve().parents[4])]
+    if existing := os.environ.get("PYTHONPATH"):
+        paths.append(existing)
+    return os.pathsep.join(paths)
+
+
+def inspect_complex_gaps(source: Path) -> list[dict]:
+    helper = Path(__file__).with_name("ligand_complex_prepare_runner.py")
+    try:
+        process = subprocess.run(
+            [sys.executable, str(helper), "--inspect", str(source)],
+            capture_output=True, text=True, check=False,
+            env={**os.environ, "PYTHONPATH": _ligand_runtime_pythonpath()}, timeout=20,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("Inspecting the selected PDB for gaps took too long.") from exc
+    if process.returncode:
+        raise ValueError("Could not inspect the selected PDB for missing internal residues.")
+    return json.loads(process.stdout)
 
 
 def _studio_ligand_runtime_root() -> Path:
