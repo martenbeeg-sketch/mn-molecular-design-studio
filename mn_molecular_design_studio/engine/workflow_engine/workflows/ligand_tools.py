@@ -910,7 +910,7 @@ def _pdb_polymer_chain_ranges(pdb_data: str) -> dict[str, dict[str, Any]]:
 def _validate_complex_preparation_request(parameters: dict[str, Any], *, require_files: bool) -> None:
     from mn_molecular_design_studio.protein_modelling import loop_residues, observed_chains, parse_options
 
-    options = parse_options(parameters.get("modelling_json", ""))
+    options = parse_options(parameters.get("modelling_options"))
     max_gap = parameters.get("max_internal_gap", 15)
     if type(max_gap) is not int or not 0 <= max_gap <= 100:
         raise ValueError("Maximum internal gap must be an integer from 0 to 100 residues.")
@@ -981,7 +981,7 @@ def run_ligand_complex_prepare(
     extension_sequence: str = "",
     extension_models: int = 10,
     trim_ranges_json: str = "",
-    modelling_json: str = "",
+    modelling_options: dict[str, Any] | None = None,
 ) -> Path:
     """Import and repair a ligand complex using Studio's bundled ligand runtime."""
     source_pdb = Path(source_pdb).expanduser().resolve()
@@ -995,7 +995,7 @@ def run_ligand_complex_prepare(
         "extension_sequence": extension_sequence,
         "extension_models": extension_models,
         "trim_ranges_json": trim_ranges_json,
-        "modelling_json": modelling_json,
+        "modelling_options": modelling_options,
     }
     validate_ligand_tool_request("ligand.complex.prepare", parameters)
     job = create_job(

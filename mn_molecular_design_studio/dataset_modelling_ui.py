@@ -1,7 +1,6 @@
 """Review a saved PDB and submit a focused MODELLER preparation job."""
 from __future__ import annotations
 
-import json
 import secrets
 from pathlib import Path
 
@@ -78,7 +77,7 @@ def render_modelling(path, source, key, projects, preferred_projects, submit):
             else:
                 options, ready = _loop_options(source, key)
             if ready:
-                parse_options(json.dumps(options))
+                parse_options(options)
         except (*ERRORS, RuntimeError) as exc:
             st.error(str(exc))
             ready = False
@@ -95,7 +94,7 @@ def render_modelling(path, source, key, projects, preferred_projects, submit):
                 workflow = "ligand.complex.prepare"
                 execution = {"placement": "local", "idempotency_key": secrets.token_urlsafe(24)}
                 result = submit(workflow_schema(workflow), workflow,
-                                {"source_pdb": str(path), "repair": False, "modelling_json": json.dumps(options)},
+                                {"source_pdb": str(path), "repair": False, "modelling_options": options},
                                 project, {"_execution": execution}, operation)
                 if result and (run_id := result["job"].get("run_id")):
                     task_group = result["job"].get("task_group") or "ligand-preparation"

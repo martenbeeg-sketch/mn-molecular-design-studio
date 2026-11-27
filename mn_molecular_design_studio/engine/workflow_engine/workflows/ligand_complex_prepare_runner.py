@@ -179,7 +179,7 @@ def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
     from mn_molecular_design_studio.protein_modelling import parse_options
 
     params = json.loads(params_path.read_text(encoding="utf-8"))
-    modelling = parse_options(params.get("modelling_json", ""))
+    modelling = parse_options(params.get("modelling_options"))
     source_data = input_path.read_text(encoding="utf-8", errors="replace")
     import_job = create_protein_import_job(
         source_data,

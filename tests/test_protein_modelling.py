@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import pytest
@@ -25,8 +24,8 @@ def test_modelling_requires_confirmation_and_a_connected_loop(gapped_pdb):
     assert gap["suggestion"] == "T"
     selection = {"chain": "A", "left_resseq": 20, "right_resseq": 22, "sequence": "T"}
     with pytest.raises(ValueError, match="Confirm"):
-        parse_options(json.dumps({"gaps": [selection]}))
-    assert parse_options(json.dumps({"gaps": [{**selection, "confirmed": True}]}))["gaps"][0]["sequence"] == "T"
+        parse_options({"gaps": [selection]})
+    assert parse_options({"gaps": [{**selection, "confirmed": True}]})["gaps"][0]["sequence"] == "T"
     loop = {"chain": "A", "start": "20", "end": "22"}
     assert loop_residues(observed_chains(PUBLIC_PDB.read_text()), loop) == ["20", "21", "22"]
     with pytest.raises(ValueError, match="backbone break"):
@@ -57,6 +56,6 @@ def test_dataset_gap_editor_queues_only_confirmed_input(gapped_pdb, monkeypatch)
     assert not app.exception
     workflow, parameters, project = app.session_state["submitted"]
     assert workflow == "ligand.complex.prepare" and project == "p1"
-    assert json.loads(parameters["modelling_json"]) == {"gaps": [
+    assert parameters["modelling_options"] == {"gaps": [
         {"chain": "A", "left_resseq": 20, "right_resseq": 22, "sequence": "T", "confirmed": True}
     ]}

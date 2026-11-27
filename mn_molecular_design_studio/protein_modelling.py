@@ -1,7 +1,7 @@
 """Validate user-selected regions for MODELLER structure preparation."""
 from __future__ import annotations
 
-import json
+from copy import deepcopy
 import re
 
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
@@ -10,15 +10,12 @@ MAX_MODELED_LOOP = 30
 MAX_LOOP_MODELS = 20
 
 
-def parse_options(value: str) -> dict:
-    if not value:
+def parse_options(value: dict | None) -> dict:
+    if value is None:
         return {}
-    try:
-        options = json.loads(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("MODELLER settings must be valid JSON.") from exc
-    if not isinstance(options, dict) or set(options) - {"gaps", "loop"}:
+    if not isinstance(value, dict) or set(value) - {"gaps", "loop"}:
         raise ValueError("MODELLER settings must specify gaps or a loop.")
+    options = deepcopy(value)
     gaps = options.get("gaps", [])
     if not isinstance(gaps, list) or len(gaps) > 50:
         raise ValueError("Choose at most 50 missing segments.")
