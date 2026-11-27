@@ -908,7 +908,8 @@ def _pdb_polymer_chain_ranges(pdb_data: str) -> dict[str, dict[str, Any]]:
 
 
 def _validate_complex_preparation_request(parameters: dict[str, Any], *, require_files: bool) -> None:
-    from mn_molecular_design_studio.protein_modelling import loop_residues, observed_chains, parse_options
+    from mn_molecular_design_studio.preparation_history import parse_history_text, sha256, validate_history
+    from mn_molecular_design_studio.protein_modelling import loop_residues, observed_chains, parse_options, substitution_sites
 
     options = parse_options(parameters.get("modelling_options"))
     max_gap = parameters.get("max_internal_gap", 15)
@@ -916,6 +917,12 @@ def _validate_complex_preparation_request(parameters: dict[str, Any], *, require
         raise ValueError("Maximum internal gap must be an integer from 0 to 100 residues.")
     if type(parameters.get("repair", True)) is not bool:
         raise ValueError("repair must be a boolean.")
+    if type(parameters.get("refine_rebuilt_positions", True)) is not bool:
+        raise ValueError("OpenMM refinement must be enabled or disabled.")
+    if type(parameters.get("preserve_original_backbone", False)) is not bool:
+        raise ValueError("The original-backbone restraint must be enabled or disabled.")
+    history_text = parameters.get("input_preparation_history_text") or ""
+    history = parse_history_text(history_text) if history_text else None
     extension = "".join(str(parameters.get("extension_sequence") or "").split()).upper()
     if len(extension) > 30 or any(residue not in "ACDEFGHIKLMNPQRSTVWY" for residue in extension):
         raise ValueError("C-terminal extension must use up to 30 canonical amino-acid letters.")
@@ -929,10 +936,15 @@ def _validate_complex_preparation_request(parameters: dict[str, Any], *, require
             raise ValueError(
                 f"Studio's bundled complex-preparation runtime is unavailable at {ligand_complex_preparation_readiness()['source']}."
             )
-        pdb_data = source.read_text(encoding="utf-8", errors="replace")
+        source_bytes = source.read_bytes()
+        if history is not None:
+            validate_history(history, sha256(source_bytes))
+        pdb_data = source_bytes.decode("utf-8", errors="replace")
         chains = _pdb_polymer_chain_ranges(pdb_data)
         if options:
             observed = observed_chains(pdb_data)
+            if options.get("substitutions"):
+                substitution_sites(observed, options["substitutions"])
             if "loop" in options:
                 native = _studio_ligand_runtime_root() / "mn_ligand/workflows/modeller_existing_loop_runner.py"
                 if not native.is_file():
@@ -982,6 +994,9 @@ def run_ligand_complex_prepare(
     extension_models: int = 10,
     trim_ranges_json: str = "",
     modelling_options: dict[str, Any] | None = None,
+    refine_rebuilt_positions: bool = True,
+    preserve_original_backbone: bool = False,
+    input_preparation_history_text: str = "",
 ) -> Path:
     """Import and repair a ligand complex using Studio's bundled ligand runtime."""
     source_pdb = Path(source_pdb).expanduser().resolve()
@@ -996,6 +1011,9 @@ def run_ligand_complex_prepare(
         "extension_models": extension_models,
         "trim_ranges_json": trim_ranges_json,
         "modelling_options": modelling_options,
+        "refine_rebuilt_positions": refine_rebuilt_positions,
+        "preserve_original_backbone": preserve_original_backbone,
+        "input_preparation_history_text": input_preparation_history_text,
     }
     validate_ligand_tool_request("ligand.complex.prepare", parameters)
     job = create_job(
@@ -1042,6 +1060,7 @@ def run_ligand_complex_prepare(
             "outputs": {"artifacts": artifact_outputs},
             "metrics": {
                 "repair_enabled": bool(repair),
+                "openmm_refinement_requested": bool(repair and refine_rebuilt_positions),
                 "terminal_extension_enabled": bool(str(extension_sequence).strip()),
                 "trimming_enabled": bool(str(trim_ranges_json).strip()),
                 "source": "Studio-bundled complex import, protein repair, optional MODELLER C-terminal extension, and chain-aware trimming",

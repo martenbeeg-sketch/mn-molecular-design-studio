@@ -5,7 +5,7 @@ from streamlit.testing.v1 import AppTest
 
 from mn_molecular_design_studio import dataset_modelling_ui
 from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import inspect_complex_gaps
-from mn_molecular_design_studio.protein_modelling import loop_residues, observed_chains, parse_options
+from mn_molecular_design_studio.protein_modelling import loop_residues, observed_chains, parse_options, substitution_sites
 
 
 PUBLIC_PDB = Path(dataset_modelling_ui.__file__).parent / "assets/inverse_folding/1CRN.pdb"
@@ -33,29 +33,43 @@ def test_modelling_requires_confirmation_and_a_connected_loop(gapped_pdb):
 
 
 def test_dataset_gap_editor_queues_only_confirmed_input(gapped_pdb, monkeypatch):
-    expander = dataset_modelling_ui.st.expander
-    monkeypatch.setattr(dataset_modelling_ui.st, "expander", lambda label, **kwargs: expander(label, expanded=True, **kwargs))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", str(gapped_pdb.parent / "workspace"))
     app = AppTest.from_string(
         "import streamlit as st\nfrom pathlib import Path\n"
-        "from mn_molecular_design_studio.dataset_modelling_ui import render_modelling\n"
+        "from mn_molecular_design_studio.dataset_modelling_ui import render_protein_tools\n"
+        "from mn_molecular_design_studio.preparation_history import extend_history, sha256\n"
         f"source = Path({str(gapped_pdb)!r})\n"
         "def capture(schema, workflow, parameters, project, settings, label):\n"
         "    st.session_state['submitted'] = (workflow, parameters, project)\n"
         "    return {'job': {'run_id': 'test-modelling-job'}}\n"
-        "render_modelling(source, source.read_text(), 'test', [{'id':'p1','name':'Project'}], ['p1'], capture)",
+        "content = source.read_bytes()\n"
+        "history = extend_history(None, sha256(content), sha256(content), [{'label':'Trim structure'}])\n"
+        "render_protein_tools({'id':'a' * 32}, source, content, history, 'test', [{'id':'p1','name':'Project'}], ['p1'], capture)",
         default_timeout=30,
     ).run()
     assert not app.exception
-    assert app.button(key="test-run-modeller").disabled
+    app.selectbox(key="test-operation").set_value("Rebuild missing residues or a loop").run()
+    assert app.button(key="test-run-preparation").disabled
     gap = next(value for value in app.multiselect[0].options if "G20–P22" in value)
     app.multiselect[0].set_value([gap]).run()
     assert app.text_input[0].value == "T"
-    assert app.button(key="test-run-modeller").disabled
+    assert app.button(key="test-run-preparation").disabled
     app.checkbox[0].set_value(True).run()
-    app.button(key="test-run-modeller").click().run()
+    app.button(key="test-run-preparation").click().run()
     assert not app.exception
     workflow, parameters, project = app.session_state["submitted"]
     assert workflow == "ligand.complex.prepare" and project == "p1"
     assert parameters["modelling_options"] == {"gaps": [
         {"chain": "A", "left_resseq": 20, "right_resseq": 22, "sequence": "T", "confirmed": True}
     ]}
+
+
+def test_amino_acid_substitution_uses_an_exact_observed_residue(gapped_pdb):
+    change = {"chain": "A", "residue": "21", "amino_acid": "a"}
+    options = parse_options({"substitutions": [change]})
+    site, = substitution_sites(observed_chains(PUBLIC_PDB.read_text()), options["substitutions"])
+    assert (site["resseq"], site["resname"], site["target"]) == ("21", "THR", "ALA")
+    with pytest.raises(ValueError, match="observed backbone coordinates"):
+        substitution_sites(observed_chains(gapped_pdb.read_text()), options["substitutions"])
+    with pytest.raises(ValueError, match="single substitution"):
+        parse_options({"substitutions": [change, change]})

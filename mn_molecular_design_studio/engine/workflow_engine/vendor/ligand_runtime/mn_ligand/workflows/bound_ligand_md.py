@@ -1808,6 +1808,7 @@ def prepare_structure(config: dict[str, Any], output_path: Path) -> dict[str, An
             ),
             "max_internal_gap": config.get("max_internal_gap", 15),
             "refine_rebuilt_positions": bool(config.get("refine_rebuilt_positions", True)),
+            "preserve_original_backbone": bool(config.get("preserve_original_backbone", False)),
         },
     )
     cleaning_succeeded = bool(processed.get("cleaning_succeeded", not config.get("clean_protein", True)))

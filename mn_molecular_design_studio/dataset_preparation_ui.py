@@ -10,7 +10,7 @@ from mn_molecular_design_studio import datasets, molecule_imports
 from mn_molecular_design_studio.database_actions_ui import ERRORS, read_only_workspace
 from mn_molecular_design_studio.molecular_database import MolecularDatabase
 from mn_molecular_design_studio.molecular_preparation import coordinate_chain_ranges, prepare_coordinate_subset
-from mn_molecular_design_studio.navigation import open_datasets, open_workflow_tool, request_dataset_import
+from mn_molecular_design_studio.navigation import open_datasets, request_dataset_import
 from mn_molecular_design_studio.preparation_history import extend_history, report_steps, sha256
 
 
@@ -81,6 +81,12 @@ def _render_preparation_options(view, user, record, structures, projects, prefer
         save = st.button("Save prepared variant", disabled=not has_polymer, key=key + "-save")
         changed = prepare_coordinate_subset(data, path.name, chosen, remove_waters=remove_waters,
                                             remove_nonpolymer=remove_nonpolymer) if has_polymer else b""
+        run_tools = submit and pdb and has_polymer and any(
+            component["type"] == "protein" and component["chain"] in chosen for component in record["components"])
+        if save or run_tools:
+            settings = {"ranges": chosen, "remove_waters": remove_waters, "remove_nonpolymer": remove_nonpolymer}
+            history = extend_history((structures[selected].get("context") or {}).get("preparation_history"),
+                sha256(data), sha256(changed), [{"label": "Trim structure", "details": settings}])
         with preview:
             if has_polymer:
                 st.caption("Selected chains and residue ranges")
@@ -91,9 +97,6 @@ def _render_preparation_options(view, user, record, structures, projects, prefer
         if save:
             filename = Path(record["name"]).stem + "-prepared" + path.suffix
             prepared, = molecule_imports.parse_structure(changed, filename)
-            settings = {"ranges": chosen, "remove_waters": remove_waters, "remove_nonpolymer": remove_nonpolymer}
-            history = extend_history((structures[selected].get("context") or {}).get("preparation_history"),
-                                     sha256(data), sha256(changed), [{"label": "Trim structure", "details": settings}])
             prepared["files"][0].update(label="Prepared structure", derived_from_structure_id=selected,
                                         preparation=settings, preparation_history=history)
             writable = MolecularDatabase(view.root)
@@ -109,15 +112,10 @@ def _render_preparation_options(view, user, record, structures, projects, prefer
             st.session_state["molecular-database-flash"] = "Prepared structure saved."
             open_datasets(st.session_state, group_id=view.group_id, molecule_id=molecule_id)
             st.rerun()
-        if pdb and st.button("Open repair and extension tools", key=key + "-repair"):
-            _dismiss_preparation()
-            st.session_state["ligand-complex-prepare-pending-source"] = str(path)
-            open_workflow_tool(st.session_state, "ligand.complex.prepare")
-            st.rerun()
-        if submit and pdb and any(component["type"] == "protein" for component in record["components"]):
-            from mn_molecular_design_studio.dataset_modelling_ui import render_modelling
+        if run_tools:
+            from mn_molecular_design_studio.dataset_modelling_ui import render_protein_tools
 
-            render_modelling(path, data.decode("utf-8"), key, projects, preferred_projects, submit)
+            render_protein_tools(user, path, changed, history, key, projects, preferred_projects, submit)
     except (*ERRORS, UnicodeError, StopIteration) as exc:
         st.error(f"Could not prepare the structure: {exc}")
 
@@ -145,7 +143,9 @@ def render_prepared_outputs(artifact_paths, run_id, project_id, *, user=None):
                 if output_sha and output_sha != sha256(content):
                     raise ValueError("The prepared coordinates no longer match the run's repair report.")
                 input_sha = payload.get("source_sha256")
-                parent = _source_history(user, input_sha) if user and input_sha else None
+                parent = payload.get("input_preparation_history")
+                if parent is None and user and input_sha:
+                    parent = _source_history(user, input_sha)
                 history = extend_history(parent, input_sha, sha256(content), report_steps(payload), artifact={
                     "run_id": run_id, "path": path.name, "sha256": sha256(content), "report_sha256": sha256(raw),
                 })

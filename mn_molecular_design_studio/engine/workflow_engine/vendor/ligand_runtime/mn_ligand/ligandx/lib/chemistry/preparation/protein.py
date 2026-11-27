@@ -144,6 +144,7 @@ class ProteinPreparer:
         *,
         original_atom_keys: set[tuple[str, str, str, str]],
         ligand_sdf_data: str | None = None,
+        preserve_original_backbone: bool = False,
     ) -> dict[str, Any]:
         """Minimize rebuilt content while restraining the experimental scaffold.
 
@@ -224,6 +225,8 @@ class ProteinPreparer:
         backbone_clashing_residue_indices: set[int] = set()
         clash_examples: list[dict[str, Any]] = []
         backbone_names = {"N", "CA", "C", "O", "OXT"}
+        original_backbone_indices = {atom.index for atom in protein_heavy_atoms
+            if atom.name in backbone_names and self._atom_key(atom) in original_atom_keys}
         for index, left in enumerate(protein_heavy_atoms):
             left_position = positions[left.index].value_in_unit(unit.angstrom)
             for right in protein_heavy_atoms[index + 1 :]:
@@ -296,7 +299,7 @@ class ProteinPreparer:
                 atom.residue.index in sidechain_clashing_residue_indices
                 and atom.name not in backbone_names
             )
-            if atom.index in ligand_atom_indices:
+            if atom.index in ligand_atom_indices or (preserve_original_backbone and atom.index in original_backbone_indices):
                 system.setParticleMass(atom.index, 0.0)
                 frozen_atoms += 1
                 frozen_atom_indices.add(atom.index)
@@ -377,21 +380,25 @@ class ProteinPreparer:
                 frozen_heavy_atom_indices
             ),
         }
+        if preserve_original_backbone:
+            displacement["original_backbone_atoms"] = displacement_summary(sorted(original_backbone_indices))
         if displacement["frozen_scaffold_heavy_atoms"]["max_angstrom"] > 0.01:
             raise RuntimeError(
                 "Restrained target repair moved the frozen experimental scaffold by "
                 f"{displacement['frozen_scaffold_heavy_atoms']['max_angstrom']:.3f} Å"
             )
-        if displacement["protein_backbone_atoms"]["rmsd_angstrom"] > 0.25:
+        checked_backbone = displacement.get("original_backbone_atoms", displacement["protein_backbone_atoms"])
+        if checked_backbone["rmsd_angstrom"] > 0.25:
             raise RuntimeError(
                 "Restrained target repair exceeded the protein-backbone RMSD limit: "
-                f"{displacement['protein_backbone_atoms']['rmsd_angstrom']:.3f} Å"
+                f"{checked_backbone['rmsd_angstrom']:.3f} Å"
             )
         return {
             "engine": "OpenMM LocalEnergyMinimizer",
             "platform": simulation.context.getPlatform().getName(),
             "forcefield": ["amber14-all.xml", "amber14/tip3p.xml"],
-            "restraint_strategy": "freeze_original_heavy_atoms_except_rebuilt-neighbor_residues",
+            "restraint_strategy": ("freeze_observed_backbone_and_scaffold" if preserve_original_backbone
+                                   else "freeze_original_heavy_atoms_except_rebuilt-neighbor_residues"),
             "rebuilt_residue_count": len(rebuilt_residue_indices),
             "clashing_residue_count": len(
                 sidechain_clashing_residue_indices
@@ -434,6 +441,7 @@ class ProteinPreparer:
         max_internal_gap: int | None = 15,
         refine_rebuilt_positions: bool = True,
         ligand_sdf_data: str | None = None,
+        preserve_original_backbone: bool = False,
     ) -> Dict[str, Any]:
         """Run one strict PDBFixer pass while sequence records are still available."""
         if not PDBFIXER_AVAILABLE:
@@ -497,6 +505,7 @@ class ProteinPreparer:
                 fixer,
                 original_atom_keys=original_atom_keys,
                 ligand_sdf_data=ligand_sdf_data,
+                preserve_original_backbone=preserve_original_backbone,
             )
             if refine_rebuilt_positions
             else {"enabled": False}

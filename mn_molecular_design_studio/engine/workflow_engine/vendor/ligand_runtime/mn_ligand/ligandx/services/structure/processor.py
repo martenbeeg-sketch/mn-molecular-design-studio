@@ -431,6 +431,7 @@ class StructureProcessor:
                         options.get("refine_rebuilt_positions", True)
                     ),
                     ligand_sdf_data=primary_ligand_sdf,
+                    preserve_original_backbone=bool(options.get("preserve_original_backbone", False)),
                 )
                 cleaned_protein_data = cleaning_result["pdb_data"]
                 repair_report = {

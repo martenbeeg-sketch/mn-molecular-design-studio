@@ -257,6 +257,9 @@ def test_pdb_import_opens_preparation_for_the_selected_chain(database, monkeypat
 
 
 def test_preparation_saves_a_separate_trim_with_original_residue_numbers(database):
+    import json
+    from pathlib import Path
+
     from mn_molecular_design_studio import molecule_imports
     from test_molecular_database_policy import _pdb_acd
 
@@ -267,6 +270,7 @@ def test_preparation_saves_a_separate_trim_with_original_residue_numbers(databas
                                        name="Target inputs", origin=datasets.input_origin(USER))
     group_id = imported["group_id"]
     app = AppTest.from_string(
+        "import streamlit as st\n"
         "from pathlib import Path\n"
         "from mn_molecular_design_studio.data_browser import ReadOnlyLibrary\n"
         "from mn_molecular_design_studio.datasets import DatasetView\n"
@@ -274,13 +278,26 @@ def test_preparation_saves_a_separate_trim_with_original_residue_numbers(databas
         f"user = {USER!r}\n"
         f"view = DatasetView(ReadOnlyLibrary(Path({str(database.root)!r})), {group_id!r})\n"
         f"record = view.list_molecules(user, molecule_ids={imported['molecule_ids']!r}, limit=1)['items'][0]\n"
-        "render_preparation(view, user, record)\n"
+        "def capture(schema, workflow, parameters, project, settings, label):\n"
+        "    st.session_state['queued'] = parameters\n"
+        "    return {'job':{'run_id':'previewed-trim'}}\n"
+        "render_preparation(view, user, record, projects=[{'id':'p1','name':'Project'}], preferred_projects=['p1'], submit=capture)\n"
     ).run()
     assert not app.exception
     assert app.slider[0].proto.max == 3
     assert len(app.slider) == 1
     app.slider[0].set_value((2, 3)).run()
     next(item for item in app.checkbox if item.label == "Remove waters").set_value(False).run()
+    next(item for item in app.checkbox if item.label == "Refine rebuilt atoms with OpenMM").set_value(False).run()
+    next(item for item in app.button if item.label == "Run preparation").click().run()
+    assert not app.exception and not app.error
+    queued = app.session_state["queued"]
+    assert queued["repair"] and queued["refine_rebuilt_positions"] is False
+    pending = Path(queued["source_pdb"]).read_text()
+    assert "CYS A   2" in pending and "ALA A   1" not in pending and "HOH A 230" in pending
+    history = json.loads(queued["input_preparation_history_text"])
+    assert history["steps"][0]["details"]["ranges"]["A"] == [2, 3]
+    assert len(datasets.DatasetView(database, group_id).list_molecules(USER)["items"]) == 1
     next(button for button in app.button if button.label == "Save prepared variant").click().run()
     assert not app.exception
     view = datasets.DatasetView(database, group_id)
@@ -352,15 +369,19 @@ def test_pubchem_component_review_is_saved_with_dataset_member(database, monkeyp
 def test_completed_preparation_can_be_saved_in_datasets_without_reupload(database, monkeypatch, tmp_path):
     import json
 
-    from mn_molecular_design_studio.preparation_history import sha256
+    from mn_molecular_design_studio.preparation_history import extend_history, sha256
     from test_molecular_database_policy import _pdb_acd
 
     prepared = tmp_path / "prepared_target.pdb"
     prepared.write_text(_pdb_acd(), encoding="utf-8")
     digest = sha256(prepared.read_bytes())
+    selected_digest = sha256(b"selected residues")
+    parent = extend_history(None, sha256(b"original pdb"), selected_digest, [{"label": "Trim structure"}])
     report = tmp_path / "repair_report.json"
     report.write_text(json.dumps({
         "output_sha256": {prepared.name: digest},
+        "source_sha256": selected_digest,
+        "input_preparation_history": parent,
         "loop_remodelling": {"enabled": True, "chain": "A", "start": 2, "end": 2},
     }), encoding="utf-8")
     app = AppTest.from_string(
@@ -387,7 +408,7 @@ def test_completed_preparation_can_be_saved_in_datasets_without_reupload(databas
     assert context["preparation_run_id"] == "repair-1"
     history = context["preparation_history"]
     assert history["structure_sha256"] == digest
-    assert history["steps"] == [{
+    assert history["steps"] == [{"label": "Trim structure"}, {
         "label": "MODELLER existing-loop remodelling", "details": {"chain": "A", "start": 2, "end": 2},
     }]
     assert history["artifacts"][0]["report_sha256"] == sha256(report.read_bytes())

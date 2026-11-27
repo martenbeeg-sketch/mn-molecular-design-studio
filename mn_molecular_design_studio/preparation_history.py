@@ -34,6 +34,14 @@ def validate_history(history, expected_sha256):
     return history
 
 
+def parse_history_text(content, expected_sha256=None):
+    if not isinstance(content, str) or len(content.encode()) > MAX_MANIFEST_BYTES:
+        raise ValueError("The preparation history must be a JSON document of at most 256 KB.")
+    history = json.loads(content)
+    digest = history.get("structure_sha256") if isinstance(history, dict) else None
+    return validate_history(history, expected_sha256 if expected_sha256 is not None else digest)
+
+
 def extend_history(parent, source_sha256, output_sha256, steps, *, application="Molecular Design Studio", artifact=None):
     previous = validate_history(parent, source_sha256) if parent else {}
     result = {
@@ -78,7 +86,8 @@ def report_steps(report):
         refinement = fixer.get("refinement") or {}
         if refinement.get("engine") or refinement.get("potential_energy_after_kj_mol") is not None:
             add("OpenMM minimization", {key: refinement[key] for key in (
-                "engine", "forcefield", "ligand_context", "potential_energy_before_kj_mol", "potential_energy_after_kj_mol")
+                "engine", "forcefield", "ligand_context", "restraint_strategy",
+                "potential_energy_before_kj_mol", "potential_energy_after_kj_mol")
                                        if key in refinement})
     if extension := report.get("terminal_extension"):
         if extension.get("enabled") is not False and parameters.get("extension_sequence"):
@@ -90,6 +99,11 @@ def report_steps(report):
     if loop.get("enabled"):
         add("MODELLER existing-loop remodelling",
             {key: loop[key] for key in ("chain", "start", "end", "models", "selected_model") if key in loop})
+    substitutions = report.get("residue_substitutions") or {}
+    if substitutions.get("enabled"):
+        add("MODELLER amino-acid substitutions", {"replacements": [
+            {key: row.get(key) for key in ("chain", "resseq", "icode", "resname", "target")}
+            for row in substitutions.get("replacements", [])]})
     trim = report.get("trimming") or {}
     if trim.get("enabled"):
         add("Chain trimming", {"ranges": json.loads(parameters.get("trim_ranges_json") or "{}")})

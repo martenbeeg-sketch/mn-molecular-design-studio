@@ -13,8 +13,8 @@ MAX_LOOP_MODELS = 20
 def parse_options(value: dict | None) -> dict:
     if value is None:
         return {}
-    if not isinstance(value, dict) or set(value) - {"gaps", "loop"}:
-        raise ValueError("MODELLER settings must specify gaps or a loop.")
+    if not isinstance(value, dict) or set(value) - {"gaps", "loop", "substitutions"}:
+        raise ValueError("MODELLER settings must specify missing residues, a loop, or amino-acid substitutions.")
     options = deepcopy(value)
     gaps = options.get("gaps", [])
     if not isinstance(gaps, list) or len(gaps) > 50:
@@ -42,8 +42,26 @@ def parse_options(value: dict | None) -> dict:
         if type(models) is not int or not 1 <= models <= MAX_LOOP_MODELS:
             raise ValueError(f"Choose between 1 and {MAX_LOOP_MODELS} loop conformations.")
         loop["models"] = models
-    if not gaps and "loop" not in options:
-        raise ValueError("Select a missing segment or an existing loop.")
+    substitutions = options.get("substitutions", [])
+    if not isinstance(substitutions, list) or len(substitutions) > 50:
+        raise ValueError("Select at most 50 amino-acid substitutions.")
+    selected = set()
+    for item in substitutions:
+        if not isinstance(item, dict) or not _valid_chain(item.get("chain")):
+            raise ValueError("Select a chain and an observed residue for each substitution.")
+        residue = item.get("residue")
+        if not isinstance(residue, str) or not re.fullmatch(r"-?\d{1,4}[A-Za-z]?", residue):
+            raise ValueError("Choose an observed residue number for each substitution.")
+        amino_acid = str(item.get("amino_acid") or "").strip().upper()
+        if len(amino_acid) != 1 or amino_acid not in AMINO_ACIDS:
+            raise ValueError("Choose a canonical amino acid for each substitution.")
+        site = (item["chain"], residue)
+        if site in selected:
+            raise ValueError("Choose a single substitution for each residue.")
+        selected.add(site)
+        item["amino_acid"] = amino_acid
+    if not gaps and "loop" not in options and not substitutions:
+        raise ValueError("Select missing residues, an existing loop, or amino-acid substitutions.")
     return options
 
 
@@ -61,6 +79,25 @@ def observed_chains(source: str):
     return {chain.id.strip() or "_": {f"{residue.id[1]}{residue.id[2].strip()}": residue
                                      for residue in chain if is_aa(residue, standard=True)}
             for chain in models[0] if _valid_chain(chain.id.strip() or "_")}
+
+
+def substitution_sites(chains, substitutions):
+    from Bio.SeqUtils import seq3
+
+    sites = []
+    for substitution in substitutions:
+        chain, label = substitution["chain"], substitution["residue"]
+        residue = chains.get(chain, {}).get(label)
+        if residue is None or any(atom not in residue for atom in ("N", "CA", "C")):
+            raise ValueError(f"Chain {chain} residue {label} needs observed backbone coordinates for substitution.")
+        resname = residue.resname
+        target = seq3(substitution["amino_acid"]).upper()
+        if resname == target:
+            raise ValueError(f"Chain {chain} residue {label} is already {target}.")
+        number, insertion = str(residue.id[1]), residue.id[2].strip()
+        sites.append({"key": "|".join((resname, chain, number, insertion or "_")), "chain": chain,
+                      "resseq": number, "icode": insertion, "resname": resname, "target": target})
+    return sites
 
 
 def loop_residues(chains, loop):

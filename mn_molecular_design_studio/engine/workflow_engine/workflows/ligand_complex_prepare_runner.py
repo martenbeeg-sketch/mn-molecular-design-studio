@@ -171,17 +171,23 @@ def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
     from mn_ligand.workflows.protein_preparation import (
         create_protein_import_job,
         imported_target,
+        model_residue_replacements,
         prepared_target,
         run_protein_cleaning_job,
     )
     from mn_ligand.workflows.target_trimming import trim_pdb_data
     from mn_ligand.workflows.terminal_repair import create_terminal_repair_job
 
-    from mn_molecular_design_studio.protein_modelling import parse_options
+    from mn_molecular_design_studio.preparation_history import parse_history_text
+    from mn_molecular_design_studio.protein_modelling import observed_chains, parse_options, substitution_sites
 
     params = json.loads(params_path.read_text(encoding="utf-8"))
     modelling = parse_options(params.get("modelling_options"))
-    source_data = input_path.read_text(encoding="utf-8", errors="replace")
+    source_bytes = input_path.read_bytes()
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    history_text = params.pop("input_preparation_history_text", "")
+    input_history = parse_history_text(history_text, source_sha256) if history_text else None
+    source_data = source_bytes.decode("utf-8", errors="replace")
     import_job = create_protein_import_job(
         source_data,
         filename=input_path.name,
@@ -198,7 +204,8 @@ def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
             map_modified_residues=bool(params.get("map_modified_residues", True)),
             skip_terminal_missing_residues=bool(params.get("skip_terminal_missing_residues", True)),
             max_internal_gap=int(params.get("max_internal_gap", 15)),
-            refine_rebuilt_positions=True,
+            refine_rebuilt_positions=bool(params.get("refine_rebuilt_positions", True)),
+            preserve_original_backbone=bool(params.get("preserve_original_backbone", False)),
             preserve_nonwater_heterogens=False,
         )
         if repair_job.status != "completed" or not native_payload.get("success"):
@@ -305,6 +312,18 @@ def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
             complex_data, modelling["loop"], output_dir / "loop_models",
         )
 
+    substitution_report = {"enabled": False}
+    if substitutions := modelling.get("substitutions"):
+        sites = substitution_sites(observed_chains(complex_data), substitutions)
+        complex_data, details = model_residue_replacements(complex_data, sites, work_dir=output_dir / "residue_substitutions")
+        observed = observed_chains(complex_data)
+        for site in sites:
+            label = site["resseq"] + site["icode"]
+            residue = observed.get(site["chain"], {}).get(label)
+            if residue is None or residue.resname != site["target"]:
+                raise ValueError(f"MODELLER did not produce {site['target']} at {site['chain']} {label}.")
+        substitution_report = {**details, "enabled": True}
+
     trim_ranges = _parse_ranges(params.get("trim_ranges_json"))
     trim_report: dict[str, Any] = {"enabled": False}
     if trim_ranges:
@@ -316,7 +335,7 @@ def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
     (output_dir / "prepared_complex.pdb").write_text(complex_data, encoding="utf-8")
     (output_dir / "prepared_target.pdb").write_text(prepared_target_data, encoding="utf-8")
     report = {
-        "source_sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
+        "source_sha256": source_sha256,
         "output_sha256": {name: hashlib.sha256((output_dir / name).read_bytes()).hexdigest()
                           for name in ("prepared_complex.pdb", "prepared_target.pdb")},
         "source_import": {
@@ -329,10 +348,13 @@ def run(input_path: Path, output_dir: Path, params_path: Path) -> None:
         "terminal_extension": extension_report,
         "confirmed_gap_repair": gap_report,
         "loop_remodelling": loop_report,
+        "residue_substitutions": substitution_report,
         "trimming": trim_report,
         "target_validation": target_validation,
         "parameters": params,
     }
+    if input_history is not None:
+        report["input_preparation_history"] = input_history
     _write_json(output_dir / "repair_report.json", report)
 
 

@@ -1826,9 +1826,15 @@ class MolecularDatabase:
             path = Path(row["path"])
         if not path.is_file():
             raise FileNotFoundError("The source structure is unavailable on this workstation.")
-        from mn_molecular_design_studio.auth import user_input_root
         content = self._verified_structure_content(row, path)
-        destination = user_input_root(user["id"]) / "database_structures" / (hashlib.sha256(content).hexdigest() + path.suffix)
+        return self.materialize_structure_input(user, content, path.suffix)
+
+    @staticmethod
+    def materialize_structure_input(user, content, suffix):
+        """Stage coordinate bytes as a private job input without creating a Dataset entry."""
+        from mn_molecular_design_studio.auth import user_input_root
+
+        destination = user_input_root(user["id"]) / "database_structures" / (hashlib.sha256(content).hexdigest() + suffix)
         destination.parent.mkdir(parents=True, exist_ok=True)
         # Replace atomically with only the validated bytes. Concurrent readers
         # of this content-addressed path therefore see the same exact payload;

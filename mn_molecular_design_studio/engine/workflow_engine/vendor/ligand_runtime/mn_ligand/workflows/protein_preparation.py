@@ -406,13 +406,18 @@ def repair_noncanonical_residues_with_modeller(
             }
         )
 
+    return model_residue_replacements(pdb_data, normalized, work_dir=work_dir, modeller_python=modeller_python)
+
+
+def model_residue_replacements(pdb_data, replacements, *, work_dir, modeller_python=None):
+    """Model the validated sites and merge only their coordinates into the source."""
     work_dir.mkdir(parents=True, exist_ok=True)
     source_path = work_dir / "modeller_input.pdb"
     replacements_path = work_dir / "modeller_replacements.json"
     modeled_path = work_dir / "modeller_repaired.pdb"
     report_path = work_dir / "modeller_report.json"
     source_path.write_text(pdb_data if pdb_data.endswith("\n") else pdb_data + "\n")
-    _write_json(replacements_path, normalized)
+    _write_json(replacements_path, replacements)
     runner = PROJECT_DIR / "mn_ligand" / "workflows" / "modeller_residue_repair_runner.py"
     command = [
         str(modeller_python or resolve_modeller_python()),
@@ -1595,6 +1600,7 @@ def run_protein_cleaning_job(
     skip_terminal_missing_residues: bool = True,
     max_internal_gap: int = 15,
     refine_rebuilt_positions: bool = True,
+    preserve_original_backbone: bool = False,
     biological_assembly_id: str = "",
     preserve_nonwater_heterogens: bool = False,
     noncanonical_replacements: list[dict[str, str]] | None = None,
@@ -1683,6 +1689,7 @@ def run_protein_cleaning_job(
             "skip_terminal_missing_residues": skip_terminal_missing_residues,
             "max_internal_gap": int(max_internal_gap),
             "refine_rebuilt_positions": refine_rebuilt_positions,
+            "preserve_original_backbone": preserve_original_backbone,
             "biological_assembly_id": str(biological_assembly_id or ""),
             "preserve_nonwater_heterogens": bool(preserve_nonwater_heterogens),
             "noncanonical_replacements": list(noncanonical_replacements or []),
@@ -1708,6 +1715,7 @@ def run_protein_cleaning_job(
             "skip_terminal_missing_residues": skip_terminal_missing_residues,
             "max_internal_gap": int(max_internal_gap),
             "refine_rebuilt_positions": refine_rebuilt_positions,
+            "preserve_original_backbone": preserve_original_backbone,
             "biological_assembly_id": str(biological_assembly_id or ""),
             "preserve_nonwater_heterogens": bool(preserve_nonwater_heterogens),
         },
