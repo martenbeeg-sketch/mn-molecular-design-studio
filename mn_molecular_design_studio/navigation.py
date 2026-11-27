@@ -121,7 +121,7 @@ def database_destination(state):
             if str(key).startswith(("data-browser-activity-", "data-browser-construct-")) or key in {
                 "data-browser-page-selection", "data-browser-scope-path", "data-browser-expanded",
                 "data-browser-source-group", "binderscope-browser-preflight",
-                "data-browser-dataset-context",
+                "data-browser-dataset-context", "data-browser-foldseek-selection",
             }:
                 state.pop(key, None)
         state.update({"data-browser-result-query": "", "data-browser-folder-query": "",

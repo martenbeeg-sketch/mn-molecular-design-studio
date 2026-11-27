@@ -403,6 +403,17 @@ def _inspect_current_user_job(
             raise AutomationError("No accessible job matches that reference.") from exc
         raise
     _require_current_user_job_access(row)
+    if include_candidates and row.get("tool") == "visual_pipeline":
+        from mn_molecular_design_studio.foldseek_results_ui import inspect_clustering_pipeline
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json_raw
+
+        if summary := inspect_clustering_pipeline(row):
+            run_dir = Path(row["run_dir"])
+            return {
+                "job": row, "metadata": read_json_raw(run_dir / "metadata.json"),
+                "input": read_json_raw(run_dir / "input.json"), "foldseek_summary": summary,
+                "candidate_count": len(summary["rows"]),
+            }
     return inspect_job(reference, include_candidates=include_candidates, include_hidden=include_hidden)
 
 
@@ -7224,7 +7235,10 @@ def _render_job_details() -> None:
         "No project",
     )
     is_pipeline = str(job.get("tool")) == "visual_pipeline"
+    foldseek_summary = details.get("foldseek_summary")
     output_summary = ("Result records" if is_pipeline else "Candidates", str(details.get("candidate_count", 0)))
+    if foldseek_summary:
+        output_summary = ("Designs clustered", f'{sum(row["cluster"] is not None for row in foldseek_summary["rows"]):,}')
     job_metrics = result.get("metrics") or {}
     linked_analysis_count = (job_metrics.get("surface_analysis_count") or 0) + (job_metrics.get("md_analysis_count") or 0)
     ensemble_count = sum(
@@ -7274,8 +7288,8 @@ def _render_job_details() -> None:
         from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json_raw
         from mn_molecular_design_studio.pipeline_run_results_ui import render_pipeline_steps
 
-        saved_graph = read_json_raw(run_dir / "graph_snapshot.json")
-        execution = read_json_raw(run_dir / "graph_execution.json")
+        saved_graph = foldseek_summary["graph"] if foldseek_summary else read_json_raw(run_dir / "graph_snapshot.json")
+        execution = foldseek_summary["execution"] if foldseek_summary else read_json_raw(run_dir / "graph_execution.json")
         with st.expander("Pipeline steps & saved graph", expanded=True):
             states = execution.get("nodes") or {}
             cached_workers = st.session_state.get("job-linked-workers") or {}
@@ -7512,7 +7526,13 @@ def _render_job_details() -> None:
             else:
                 st.info("This job does not have citation details recorded in its metadata or result files.")
 
-    if not results_tab.open:
+    if results_tab.open is False:
+        return
+    if foldseek_summary:
+        from mn_molecular_design_studio.foldseek_results_ui import render_clustering_results
+
+        with results_tab:
+            render_clustering_results(foldseek_summary, project_id, run_id)
         return
 
     artifact_paths = _job_artifact_paths(details)

@@ -623,6 +623,20 @@ def navigation_tree(scopes, *, active_scope, children, query="", limit=100, root
     return [render(category) for category in categories], hidden
 
 
+def foldseek_membership(inventory, members):
+    """Match the requested model to an accessible original result in its exact collection."""
+    selected = {(row["molecule_id"], row["group_id"]): row["structure_id"] for row in members}
+    original_ids, structures = set(), {}
+    for outcome in inventory:
+        for result in outcome["originals"]:
+            molecule_id = result["molecule_id"]
+            structure_id = selected.get((molecule_id, result["group_id"]))
+            if structure_id and structure_id in result["structure_ids"]:
+                original_ids.add(result["id"])
+                structures[molecule_id] = structure_id
+    return original_ids, structures
+
+
 def listed_results(results, *, selection=None, query="", structures=False):
     selection = selection or {}
     terms = query.casefold().split()

@@ -375,6 +375,13 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
         database = ReadOnlyLibrary(Path(configured) if configured else None)
     st.markdown('<style>[data-testid="stMainBlockContainer"]{padding:1.5rem 1.6rem;max-width:none}.stMarkdown h4{overflow-wrap:anywhere}</style>', unsafe_allow_html=True)
     destination = database_destination(st.session_state)
+    if destination and destination.get("foldseek_members"):
+        st.session_state["data-browser-foldseek-selection"] = {
+            "project_id": destination["project_id"], "members": destination["foldseek_members"],
+        }
+        st.session_state["data-browser-rows-shown"] = "All"
+        if destination.get("molecule_id") and st.session_state.get("data-browser-layout") == "Table":
+            st.session_state.pop("data-browser-layout")
     dataset_request = st.session_state.pop("dataset-results-request", None)
     if destination and dataset_request and destination.get("group_id") == dataset_request["group_id"]:
         st.session_state["data-browser-dataset-context"] = dataset_request
@@ -512,6 +519,18 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
     md_context = None
     with middle:
         selection = selections.get(selected_id, {})
+        foldseek = st.session_state.get("data-browser-foldseek-selection") or {}
+        foldseek_structures = {}
+        if scope_id == "project:" + str(foldseek.get("project_id") or "") and selected_id == scope_id:
+            from mn_molecular_design_studio.data_browser import foldseek_membership
+
+            original_ids, foldseek_structures = foldseek_membership(inventory, foldseek["members"])
+            inventory = [outcome for outcome in inventory if any(row["id"] in original_ids for row in outcome["originals"])]
+            selection = {**selection, "original_ids": original_ids}
+            st.caption(f"Foldseek selection · {len(foldseek_structures):,} of {len(foldseek['members']):,} saved structures available")
+            if st.button("Clear Foldseek selection", key="data-browser-clear-foldseek"):
+                st.session_state.pop("data-browser-foldseek-selection", None)
+                st.rerun()
         breadcrumb = [scopes[key]["label"] for key in scope_path(scopes, scope_id)]
         breadcrumb += selection.get("path", [])
         st.caption(" / ".join(breadcrumb))
@@ -534,7 +553,9 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
             else:
                 if layout != "Structure":
                     st.markdown("### Saved results")
-                listing = st.segmented_control("Listing", ["Saved results", "All saved structures"], default="Saved results", key="data-browser-listing")
+                listing = "Saved results"
+                if not foldseek_structures:
+                    listing = st.segmented_control("Listing", ["Saved results", "All saved structures"], default="Saved results", key="data-browser-listing")
                 search_column, clear_column = st.columns([5, 1], vertical_alignment="bottom")
                 with search_column:
                     query = st.text_input("Search this folder", placeholder="Name, original identifier, tool or campaign…", key="data-browser-result-query")
@@ -544,9 +565,14 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
             not construct or row.get("target_id") == construct) and (
             not coordinates_only or row["structure_count"]) and (not molecule_type or any(
                 component["type"] == molecule_type for component in index["molecules"][row["molecule_id"]]["components"]))]
-        entries = listed_results(refined, selection=selection, query=query, structures=listing == "All saved structures")
+        entries = listed_results(refined, selection=selection, query=query,
+                                 structures=listing == "All saved structures" and not foldseek_structures)
+        for entry in entries:
+            if structure_id := foldseek_structures.get(entry["result"]["molecule_id"]):
+                entry["structure_id"] = structure_id
         entries.sort(key=lambda entry: not bool(entry["result"]["structure_ids"]))
-        signature = hashlib.sha256(json.dumps([scope_id, selected_id, query, listing, [entry["id"] for entry in entries]]).encode()).hexdigest()[:20]
+        signature = hashlib.sha256(json.dumps([scope_id, selected_id, query, listing,
+            [(entry["id"], entry["structure_id"]) for entry in entries]]).encode()).hexdigest()[:20]
         if md_selected:
             visible, page, view_signature = entries[:50], 1, signature
             analysis_toolbar = None
@@ -595,6 +621,13 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
                     displayed_columns.insert(displayed_columns.index("Name") + 1 if "Name" in displayed_columns else 0, VIEWER_COLUMN)
                 displayed_rows = [{field: _result_table_cell(field, row.get(field)) for field in displayed_columns}
                                   for row in displayed_rows]
+                table_key = "data-browser-table-" + view_signature + str(page)
+                if foldseek_structures:
+                    with result_controls:
+                        if st.button(f"Select all {len(visible):,} shown", key=f"data-browser-select-foldseek-{view_signature}"):
+                            page_selection["selected"] = [entry["id"] for entry in visible]
+                            page_selection["table_revision"] = page_selection.get("table_revision", 0) + 1
+                    table_key += f'-{page_selection.get("table_revision", 0)}'
                 retained_rows = [position for position, entry in enumerate(visible) if entry["id"] in page_selection["selected"]]
                 event = st.dataframe(displayed_rows, hide_index=True, width="stretch", height=720 if layout == "Table" else 565,
                     column_order=displayed_columns,
@@ -612,7 +645,7 @@ def render_data_browser(user, projects, *, database=None, workflow_schema=None, 
                         "Structures": st.column_config.NumberColumn(width="small"),
                         "Admission": st.column_config.TextColumn(width="small")},
                     on_select="rerun", selection_mode="multi-row", selection_default={"selection": {"rows": retained_rows}},
-                    key="data-browser-table-" + view_signature + str(page))
+                    key=table_key)
                 selected_ids = [visible[position]["id"] for position in event.selection.rows if 0 <= position < len(visible)]
                 if selected_ids != page_selection["selected"]:
                     page_selection["focused"] = selected_ids[-1] if selected_ids else visible[0]["id"]
