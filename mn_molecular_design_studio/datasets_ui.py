@@ -64,6 +64,23 @@ def dataset_tree(groups, *, by_project=False, projects=()):
     return sorted(buckets.values(), key=lambda node: node["label"].casefold()), choices
 
 
+def _dataset_columns():
+    folders_key = "datasets-folders-width"
+    details_key = "datasets-details-width"
+    defaults = {folders_key: 24, details_key: 28}
+    preferences = st.session_state.get("datasets-column-widths", defaults)
+    for key, width in preferences.items():
+        st.session_state.setdefault(key, width)
+    with st.popover("Column widths", icon=":material/view_column:"):
+        folders = st.slider("Browse datasets", 12, 34, format="%d%%", key=folders_key)
+        details = st.slider("Member details", 16, 50, format="%d%%", key=details_key)
+        members = 100 - folders - details
+        st.caption(f"The member table uses the remaining {members}%.")
+        st.button("Reset widths", key="datasets-reset-widths", on_click=st.session_state.update, args=(defaults,))
+    st.session_state["datasets-column-widths"] = {folders_key: folders, details_key: details}
+    return st.columns([folders, members, details], gap="medium")
+
+
 def render_datasets(user, projects, *, database=None):
     if database is None:
         configured = os.environ.get("MDS_DATA_BROWSER_DATABASE_ROOT", "").strip()
@@ -118,7 +135,7 @@ def render_datasets(user, projects, *, database=None):
         return
     labels = datasets.display_labels(groups, projects)
     groups = [{**group, "display_label": labels[group["id"]]} for group in groups]
-    left, middle, right = st.columns([.24, .48, .28], gap="medium")
+    left, middle, right = _dataset_columns()
     project_names = {project["id"]: project["name"] for project in projects if not project.get("deleted_at")}
     with left:
         st.markdown("### Browse datasets")
