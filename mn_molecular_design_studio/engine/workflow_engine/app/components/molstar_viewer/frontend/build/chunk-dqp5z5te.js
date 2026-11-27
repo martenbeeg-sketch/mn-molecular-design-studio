@@ -151295,7 +151295,7 @@ function dBt(e) {
         e.updateStreamlitComponentValue({
           sequenceSelections: [],
           residuePick: {
-            eventId: ++F,
+            eventId: `${performance.timeOrigin}:${++F}`,
             chainId: Ct.chain.auth_asym_id(U),
             residueNumber: Ct.residue.auth_seq_id(U),
             insertionCode: Ct.residue.pdbx_PDB_ins_code(U),

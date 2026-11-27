@@ -21,7 +21,7 @@ export type SequenceSelection = {
 export type StreamlitComponentValue = {
     sequenceSelections: SequenceSelection[];
     residuePick?: {
-        eventId: number;
+        eventId: string;
         chainId: string;
         residueNumber: number;
         insertionCode: string;

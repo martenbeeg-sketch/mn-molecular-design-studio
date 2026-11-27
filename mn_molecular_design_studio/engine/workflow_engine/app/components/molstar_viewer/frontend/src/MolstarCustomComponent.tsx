@@ -146,7 +146,7 @@ function MolstarCustomComponent(props: Props) {
         props.updateStreamlitComponentValue({
           sequenceSelections: [],
           residuePick: {
-            eventId: ++eventId,
+            eventId: `${performance.timeOrigin}:${++eventId}`,
             chainId: StructureProperties.chain.auth_asym_id(location),
             residueNumber: StructureProperties.residue.auth_seq_id(location),
             insertionCode: StructureProperties.residue.pdbx_PDB_ins_code(location),
